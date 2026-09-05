@@ -296,5 +296,84 @@ class TestHttpApi(unittest.TestCase):
         self.assertTrue(any(b["phone"] == "79033334455" for b in bl))
 
 
+
+class TestLoginThrottle(unittest.TestCase):
+    """Защита входа от перебора: после MAX_FAILS неудач -> 429, потом снова можно."""
+    def test_lock_after_failed_attempts(self):
+        from app import api as ap
+        login = "hacker-throttle"
+        ap._login_ok(login)  # сброс
+        for _ in range(ap.MAX_FAILS):
+            _body, code = ap.route("POST", "/api/v2/auth/login",
+                                   {"login": login, "password": "wrong"}, {})
+            self.assertEqual(code, 403)
+        body, code = ap.route("POST", "/api/v2/auth/login",
+                              {"login": login, "password": "wrong"}, {})
+        self.assertEqual(code, 429)
+        self.assertIn("retry_after_sec", body)
+        ap._login_ok(login)  # очистка, чтобы не влиять на другие тесты
+
+
+class TestReportsEndpoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from app.server import create_server
+        db.init_db()
+        cls.engine = Engine(auto_start=False)
+        api.ENGINE = cls.engine
+        cls.httpd = create_server("127.0.0.1", 0)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        time.sleep(0.2)
+        cls.base = "http://127.0.0.1:{}".format(cls.port)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.engine.stop()
+        cls.httpd.shutdown()
+
+    def call(self, method, path, body=None, token=""):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("X-Ats-Token", token)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode())
+            except Exception:
+                return e.code, {}
+
+    def test_reports_shape(self):
+        s, j = self.call("POST", "/api/v2/auth/login", {"login": "admin", "password": "TestAdmin123!"})
+        tok = j["token"]
+        code, rep = self.call("GET", "/api/v2/reports", token=tok)
+        self.assertEqual(code, 200)
+        self.assertIn("today", rep)
+        self.assertIn("by_campaign", rep)
+        self.assertIn("by_number", rep)
+        self.assertIn("trend", rep)
+        self.assertIn("by_result", rep)
+        self.assertEqual(len(rep["trend"]), 7)
+
+    def test_export_calls_admin_only(self):
+        s, j = self.call("POST", "/api/v2/auth/login", {"login": "admin", "password": "TestAdmin123!"})
+        tok = j["token"]
+        req = urllib.request.Request(self.base + "/api/v2/export/calls.csv", headers={"X-Ats-Token": tok})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertEqual(r.status, 200)
+            head = r.read(60).decode("utf-8-sig", "ignore")
+            self.assertIn("id", head)
+        # оператор не может
+        s, j = self.call("POST", "/api/v2/auth/login", {"login": "operator", "password": "operator1234"})
+        otok = j["token"]
+        code, _ = self.call("GET", "/api/v2/export/calls.csv", token=otok)
+        self.assertEqual(code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

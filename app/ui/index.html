@@ -57,6 +57,7 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
   <div class="brand">ATS <span>v2</span></div>
   <div class="nav" id="nav">
     <button class="active" data-tab="dash">Обзор</button>
+    <button data-tab="reports">Отчёты</button>
     <button data-tab="campaigns">Кампании</button>
     <button data-tab="contacts">Контакты</button>
     <button data-tab="numbers">Номера</button>
@@ -97,6 +98,15 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
     </div>
   </section>
 
+  <!-- ОТЧЁТЫ -->
+  <section id="reports" class="section">
+    <div class="cards" id="repCards"></div>
+    <div class="panel"><h2>Результаты за сегодня</h2><div class="tblwrap"><table id="repResults"></table></div></div>
+    <div class="panel"><h2>По кампаниям</h2><div class="tblwrap"><table id="repCamps"></table></div></div>
+    <div class="panel"><h2>По номерам (Caller ID)</h2><div class="tblwrap"><table id="repNumbers"></table></div></div>
+    <div class="panel"><h2>Последние 7 дней</h2><div class="tblwrap"><table id="repTrend"></table></div></div>
+  </section>
+
   <!-- КАМПАНИИ -->
   <section id="campaigns" class="section">
     <div class="panel"><div class="toolbar"><h2 style="margin:0;flex:1">Кампании обзвона</h2>
@@ -112,6 +122,7 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
       <select id="contactGroup" class="select" onchange="loadContacts()"><option value="">Все группы</option></select>
       <input id="contactSearch" class="input" placeholder="Поиск (имя/телефон)" oninput="loadContacts()" style="width:170px">
       <button class="btn" onclick="editContact()">Добавить</button>
+      <button class="btn d" onclick="delSelected()">Удалить выбранные</button>
       <a class="btn l" href="#" id="exportLink" onclick="exportCsv(event)">Экспорт CSV</a>
       <button class="btn s" onclick="toggleImport()">Импорт</button>
     </div>
@@ -152,7 +163,8 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
         <option>done_ok</option><option>operator_ok</option><option>done_agent</option><option>qualified_no</option>
         <option>machine</option><option>busy</option><option>no_answer</option><option>failed</option>
         <option>no_operator</option><option>exhausted</option><option>blocked</option></select>
-      <input id="jLimit" class="input" type="number" value="200" style="width:80px" onchange="loadJournal()"></div>
+      <input id="jLimit" class="input" type="number" value="200" style="width:80px" onchange="loadJournal()">
+      <button class="btn l" onclick="exportCalls()">Экспорт CSV</button></div>
       <div class="tblwrap"><table id="journalTable"></table></div></div>
   </section>
 
@@ -233,12 +245,13 @@ async function api(path, opts={}){
 // ---------- навигация ----------
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 function openTab(t){document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$('#'+t.replace('dash','dash'))?.classList.remove('active');
-  const map={dash:'dash',campaigns:'campaigns',contacts:'contacts',numbers:'numbers',acd:'acd',journal:'journal',blacklist:'blacklist',templates:'templates',settings:'settings'};
+  const map={dash:'dash',reports:'reports',campaigns:'campaigns',contacts:'contacts',numbers:'numbers',acd:'acd',journal:'journal',blacklist:'blacklist',templates:'templates',settings:'settings'};
   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$(map[t]).classList.add('active');
   document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===t));
   refresh(t);}
 async function refresh(tab){
   if(tab==='dash')return loadDash();
+  if(tab==='reports')return loadReports();
   if(tab==='campaigns')return loadCamps();
   if(tab==='contacts')return loadContacts();
   if(tab==='numbers')return loadNumbers();
@@ -336,17 +349,19 @@ async function complaint(phone){
   alert('Жалоба зафиксирована: контакт в чёрный список, номер — под наблюдением');await loadContacts();
 }
 function selectedIds(){return [...document.querySelectorAll('.ck:checked')].map(x=>parseInt(x.dataset.id))}
+async function delSelected(){const ids=selectedIds();if(!ids.length)return alert('Выберите контакты');if(confirm('Удалить выбранных ('+ids.length+')?')){await api('/contacts/delete',{body:{ids}});await loadContacts()}}
 // ---------- кампании ----------
 async function loadCamps(){
   const j=await api('/campaigns');state.campaigns=j.campaigns;
-  $('campsTable').innerHTML='<tr><th>ID</th><th>Название</th><th>Сценарий</th><th>Статус</th><th>Действия</th></tr>'+
+  $('campsTable').innerHTML='<tr><th>ID</th><th>Название</th><th>Сценарий</th><th>Статус</th><th>В очереди</th><th>Успешно/звонков</th><th>Действия</th></tr>'+
    j.campaigns.map(c=>`<tr><td>${c.id}</td><td><a href="#" class="ok" onclick="showCamp(${c.id});return false"><b>${esc(c.name)}</b></a></td>
     <td>${esc(c.flow)}${c.template_name?' · '+esc(c.template_name):''}</td>
     <td>${badgeTxt(c.status,c.status==='running'?'В работе':c.status==='paused'?'Пауза':'Остановлена')}</td>
+    <td>${c.items_queued||0}</td><td>${c.calls_ok||0}/${c.calls||0}</td>
     <td><button class="btn g" onclick="campAction(${c.id},'start')">▶</button>
     <button class="btn s" onclick="campAction(${c.id},'pause')">⏸</button>
     <button class="btn d" onclick="campAction(${c.id},'stop')">⏹</button>
-    <button class="btn l" onclick="showCamp(${c.id})">Детали</button></td></tr>`).join('')||'<tr><td colspan="5" class="small">Пусто</td></tr>';
+    <button class="btn l" onclick="showCamp(${c.id})">Детали</button></td></tr>`).join('')||'<tr><td colspan="7" class="small">Пусто</td></tr>';
 }
 async function campAction(id,act){await api(`/campaigns/${id}/${act}`,{body:{}});await loadCamps();showCamp(id)}
 function editCampaign(c){
@@ -496,6 +511,33 @@ async function loadJournal(){
     <td><b>${esc(x.contact_phone)}</b></td><td>${esc(x.caller_id)}</td><td>#${x.campaign_id||''}</td>
     <td>${badge(x.result||x.status)}</td><td class="small">${esc(x.detail)} ${shortAgent(x.agent_result)}</td></tr>`).join('')||'<tr><td colspan="8" class="small">Пусто</td></tr>';
 }
+async function exportCalls(){
+  const r=await fetch('/api/v2/export/calls.csv',{headers:{'X-Ats-Token':state.token}});
+  if(!r.ok)return alert('Экспорт журнала — только для администратора');
+  const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='calls.csv';a.click();
+}
+const REP_LABEL={done_ok:'Сообщение доставлено',operator_ok:'Оператор',done_agent:'ИИ-агент (кв.)',qualified_no:'Агент (не кв.)',
+ machine:'Автоответчик',busy:'Занято',no_answer:'Нет ответа',failed:'Сбой',blocked:'Блок',no_operator:'Нет оператора',
+ timeout:'Таймаут',exhausted:'Исчерпано',done:'Завершён',blocked_no_consent:'Нет согласия',blacklisted:'Чёрный список'};
+async function loadReports(){
+  const j=await api('/reports');const t=j.today||{};
+  $('repCards').innerHTML=`<div class="metric"><b>${t.n||0}</b><span>звонков сегодня</span></div>
+   <div class="metric"><b class="ok">${t.ok||0}</b><span>успешных</span></div>
+   <div class="metric"><b>${t.ok_rate||0}%</b><span>успех</span></div>
+   <div class="metric"><b>${t.avg_dur||0} с</b><span>ср. длительность</span></div>`;
+  $('repResults').innerHTML='<tr><th>Результат</th><th>Кол-во</th></tr>'+
+   (j.by_result||[]).map(r=>`<tr><td>${badgeTxt(r.result,REP_LABEL[r.result]||r.result)}</td><td>${r.c}</td></tr>`).join('')
+   ||'<tr><td colspan="2" class="small">Пока нет звонков</td></tr>';
+  $('repCamps').innerHTML='<tr><th>Кампания</th><th>Звонков</th><th>Успешно</th><th>Плохих</th><th>Длит., с</th></tr>'+
+   (j.by_campaign||[]).map(r=>`<tr><td>#${r.campaign_id} ${esc(r.name)}</td><td>${r.n}</td><td class="ok">${r.ok||0}</td><td>${r.bad||0}</td><td>${r.dur||0}</td></tr>`).join('')
+   ||'<tr><td colspan="5" class="small">Пусто</td></tr>';
+  $('repNumbers').innerHTML='<tr><th>Номер</th><th>Звонков</th><th>Успешно</th></tr>'+
+   (j.by_number||[]).map(r=>`<tr><td><b>${esc(r.caller_id)}</b></td><td>${r.n}</td><td class="ok">${r.ok||0}</td></tr>`).join('')
+   ||'<tr><td colspan="3" class="small">Пусто</td></tr>';
+  $('repTrend').innerHTML='<tr><th>Дата</th><th>Звонков</th><th>Успешно</th><th>Успех %</th></tr>'+
+   (j.trend||[]).map(r=>`<tr><td>${esc(r.date)}</td><td>${r.n}</td><td class="ok">${r.ok}</td><td>${r.n?Math.round(100*r.ok/r.n):0}%</td></tr>`).join('');
+}
+
 // ---------- чёрный список ----------
 async function loadBlacklist(){
   const j=await api('/blacklist');

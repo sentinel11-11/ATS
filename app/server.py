@@ -83,8 +83,9 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 payload, status = {"ok": False, "error": "not_found"}, 404
             if isinstance(payload, bytes):
+                fname = u.path.rstrip("/").split("/")[-1] or "download.csv"
                 return self._send_bytes(payload, "text/csv; charset=utf-8", status,
-                                        {"Content-Disposition": "attachment; filename=contacts.csv"})
+                                        {"Content-Disposition": "attachment; filename=" + fname})
             return self._send_json(payload, status)
         if u.path in ("/", "/index.html"):
             self._static("index.html")
@@ -126,7 +127,9 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             payload, status = {"ok": False, "error": "not_found"}, 404
         if isinstance(payload, bytes):
-            return self._send_bytes(payload, "text/csv; charset=utf-8", status)
+            fname = u.path.rstrip("/").split("/")[-1] or "download.csv"
+            return self._send_bytes(payload, "text/csv; charset=utf-8", status,
+                                    {"Content-Disposition": "attachment; filename=" + fname})
         self._send_json(payload, status)
 
 

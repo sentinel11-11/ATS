@@ -174,10 +174,18 @@ class TestAcdWatchdog(unittest.TestCase):
     """Оператор не принял звонок за acd_wait_timeout_sec -> no_operator + задача в CRM."""
     @classmethod
     def setUpClass(cls):
+        # изоляция: собственная свежая БД (общий data_dir модулей даёт помехи)
+        import pathlib as _pl
+        cls._fresh = _pl.Path(tempfile.mkdtemp(prefix="ats_acd_"))
+        old_conn = db._conn
+        try:
+            if old_conn is not None:
+                old_conn.close()
+        except Exception:
+            pass
+        db._conn = None
+        config.DB_PATH = cls._fresh / "acd.db"
         db.init_db()
-        # изоляция от других тестов: останавливаем чужие running-кампании
-        db.q("UPDATE campaigns SET status='stopped', updated=? WHERE status IN ('running','paused')",
-             (config.now_iso(),))
         s = db.get_settings()
         s["acd_wait_timeout_sec"] = 1
         db.save_settings(s)

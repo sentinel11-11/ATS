@@ -4,6 +4,8 @@ import csv
 import io
 import json
 import re
+import threading
+import time
 import uuid
 from datetime import datetime
 from urllib.parse import urlparse
@@ -14,6 +16,36 @@ from . import config, db, events, numbers as numbers_mod, security
 ENGINE = None  # устанавливается при старте (см. run.py)
 
 OK = {"ok": True}
+
+# Защита входа от перебора: MAX_FAILS неудачных попыток -> блокировка LOCK_SECONDS
+MAX_FAILS = 5
+LOCK_SECONDS = 300
+WINDOW_SECONDS = 600
+_LOGIN_ATTEMPTS = {}   # login -> [timestamps]
+_LOGIN_LOCK = threading.RLock()
+
+
+def _login_allowed(login):
+    now = time.time()
+    with _LOGIN_LOCK:
+        arr = [t for t in _LOGIN_ATTEMPTS.get(login, []) if now - t < WINDOW_SECONDS]
+        if len(arr) >= MAX_FAILS:
+            retry = max(0, int(arr[0] + LOCK_SECONDS - now))
+            return False, retry
+        return True, 0
+
+
+def _login_fail(login):
+    now = time.time()
+    with _LOGIN_LOCK:
+        arr = _LOGIN_ATTEMPTS.setdefault(login, [])
+        arr.append(now)
+        _LOGIN_ATTEMPTS[login] = [t for t in arr if now - t < WINDOW_SECONDS]
+
+
+def _login_ok(login):
+    with _LOGIN_LOCK:
+        _LOGIN_ATTEMPTS.pop(login, None)
 
 
 def json_bytes(value):
@@ -50,10 +82,16 @@ def route(method, path, body, headers):
     if p == ["auth", "login"]:
         login = str(body.get("login", ""))
         password = str(body.get("password", ""))
+        allowed, retry_after = _login_allowed(login)
+        if not allowed:
+            return {"ok": False, "error": "too_many_attempts",
+                    "retry_after_sec": retry_after}, 429
         user = db.fetch1("SELECT * FROM users WHERE login=?", (login,))
         if user and security.hash_password(password, user["salt"]) == user["password_hash"]:
+            _login_ok(login)
             tok = security.create_token(user["login"], user["role"])
             return {"ok": True, "token": tok, "role": user["role"]}, 200
+        _login_fail(login)
         return {"ok": False, "error": "bad_login"}, 403
     if p == ["auth", "logout"]:
         security.drop_token(headers.get("X-Ats-Token", ""))
@@ -90,20 +128,37 @@ def route(method, path, body, headers):
     # ---------- общедоступные чтения (обе роли) ----------
     if p == ["dashboard"]:
         return ENGINE.dashboard(), 200
+    if p == ["reports"]:
+        return _reports(), 200
     if p == ["contacts"]:
         return {"contacts": db.fetch("SELECT * FROM contacts ORDER BY id DESC LIMIT 5000")}, 200
     if p == ["numbers"]:
         return {"numbers": numbers_mod.pool_state()}, 200
     if p == ["campaigns"]:
         camps = db.fetch("SELECT * FROM campaigns ORDER BY id DESC")
-        for c in camps:
-            try:
+        try:
+            for c in camps:
                 c["schedule"] = json.loads(c.get("schedule") or "{}")
-            except Exception:
-                c["schedule"] = {}
+        except Exception:
+            pass
         tmpl = {t["id"]: t["name"] for t in db.fetch("SELECT id,name FROM templates")}
+        cnt = db.fetch("SELECT campaign_id, status, COUNT(*) c FROM campaign_items GROUP BY campaign_id, status")
+        calls = db.fetch("SELECT campaign_id, COUNT(*) c, SUM(CASE WHEN result IN ('done_ok','operator_ok','done_agent') THEN 1 ELSE 0 END) ok FROM calls GROUP BY campaign_id")
+        by_c = {}
+        for r in cnt:
+            by_c.setdefault(r["campaign_id"], {})[r["status"]] = r["c"]
+        calls_c = {}
+        for r in calls:
+            calls_c[r["campaign_id"]] = {"calls": r["c"], "ok": r["ok"] or 0}
         for c in camps:
             c["template_name"] = tmpl.get(c["template_id"], "")
+            st = by_c.get(c["id"], {})
+            c["items_total"] = sum(st.values())
+            c["items_queued"] = st.get("queued", 0)
+            c["items_done"] = sum(st.get(k, 0) for k in ("done_ok", "done_agent", "operator_ok", "exhausted", "no_operator", "blocked_no_consent", "blacklisted"))
+            cc = calls_c.get(c["id"], {})
+            c["calls"] = cc.get("calls", 0)
+            c["calls_ok"] = cc.get("ok", 0)
         return {"campaigns": camps}, 200
     if p and p[0] == "campaigns" and len(p) == 2 and p[1].isdigit():
         cid = int(p[1])
@@ -174,6 +229,10 @@ def route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _export_contacts()
+    if p == ["export", "calls.csv"]:
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _export_calls()
 
     if sess["role"] != "admin":
         # разрешённые операторские действия
@@ -555,3 +614,61 @@ def _call_complete(body):
     op_id = int(body.get("operator_id", 0))
     ok, err = ENGINE.complete_operator_call(call_id, op_id or None)
     return (OK, 200) if ok else ({"ok": False, "error": err}, 400)
+# ---------------- отчёты и экспорт журнала ----------------
+def _reports() -> dict:
+    from datetime import date, timedelta
+    today = date.today().isoformat()
+    OK_RES = ("done_ok", "operator_ok", "done_agent")
+    pl = ",".join("?" * len(OK_RES))
+    totals = db.fetch(
+        "SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok,"
+        " COALESCE(SUM(duration_sec),0) dur FROM calls WHERE started_at>=?".format(pl),
+        [*OK_RES, today])
+    n = (totals[0]["n"] or 0) if totals else 0
+    ok = (totals[0]["ok"] or 0) if totals else 0
+    dur = (totals[0]["dur"] or 0) if totals else 0
+    by_result = db.fetch(
+        "SELECT result, COUNT(*) c FROM calls WHERE started_at>=? GROUP BY result ORDER BY c DESC",
+        (today,))
+    by_campaign = db.fetch(
+        "SELECT c.campaign_id, COALESCE(camp.name,'(удалена)') name, COUNT(*) n,"
+        " SUM(CASE WHEN c.result IN ({}) THEN 1 ELSE 0 END) ok,"
+        " SUM(CASE WHEN c.result IN ('busy','no_answer','machine','failed','blocked') THEN 1 ELSE 0 END) bad,"
+        " COALESCE(SUM(c.duration_sec),0) dur"
+        " FROM calls c LEFT JOIN campaigns camp ON camp.id=c.campaign_id"
+        " GROUP BY c.campaign_id ORDER BY n DESC LIMIT 25".format(pl), list(OK_RES))
+    by_number = db.fetch(
+        "SELECT c.caller_id, c.number_id, COUNT(*) n,"
+        " SUM(CASE WHEN c.result IN ({}) THEN 1 ELSE 0 END) ok"
+        " FROM calls c GROUP BY c.caller_id ORDER BY n DESC LIMIT 25".format(pl), list(OK_RES))
+    trend = []
+    today_d = date.today()
+    for i in range(6, -1, -1):
+        day = today_d - timedelta(days=i)
+        ds = day.isoformat()
+        r = db.fetch("SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok"
+                     " FROM calls WHERE started_at>=? AND started_at<?".format(pl),
+                     [*OK_RES, ds + " 00:00:00", (day + timedelta(days=1)).isoformat() + " 00:00:00"])
+        trend.append({"date": ds, "n": (r[0]["n"] or 0) if r else 0, "ok": (r[0]["ok"] or 0) if r else 0})
+    return {
+        "today": {"n": n, "ok": ok, "ok_rate": round(100.0 * ok / n, 1) if n else 0.0,
+                  "avg_dur": round(dur / n, 1) if n else 0.0},
+        "by_result": [{"result": r["result"], "c": r["c"]} for r in by_result],
+        "by_campaign": by_campaign,
+        "by_number": by_number,
+        "trend": trend,
+    }
+
+
+def _export_calls():
+    rows = db.fetch("SELECT * FROM calls ORDER BY id DESC LIMIT 5000")
+    out = io.StringIO()
+    w = csv.writer(out, delimiter=";")
+    w.writerow(["id", "started_at", "ended_at", "name", "phone", "caller_id", "campaign_id",
+                "direction", "result", "detail", "duration_sec", "recording"])
+    for x in rows:
+        w.writerow([x["id"], x["started_at"], x["ended_at"], x["contact_name"], x["contact_phone"],
+                    x["caller_id"], x["campaign_id"], x["direction"], x["result"], x["detail"],
+                    x["duration_sec"], x["recording"]])
+    raw = ("\ufeff" + out.getvalue()).encode("utf-8")
+    return raw, 200
