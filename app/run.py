@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Точка входа ATS v2:
-    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami] [--init-only]
+    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami] [--admin-password ..] [--init-only]
 """
 import argparse
 import sys
@@ -41,10 +41,17 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--provider", default=None, choices=["sim", "uis", "ami"])
     ap.add_argument("--init-only", action="store_true")
+    ap.add_argument("--admin-password", default=None,
+                    help="Сменить пароль администратора (admin) и запустить сервер; с --init-only — только сменить")
     args = ap.parse_args(argv)
 
     db.init_db()
     _backup_db()
+    if args.admin_password:
+        if db.set_admin_password(args.admin_password):
+            print("[ATS v2] Пароль администратора (admin) обновлён.")
+        else:
+            print("[ATS v2] Пользователь admin не найден — пароль не изменён.")
     st = db.get_settings()
     if args.provider:
         st["provider"] = args.provider

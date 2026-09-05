@@ -320,6 +320,18 @@ def gen_admin_pwd():
     return gen_admin_password()
 
 
+def set_admin_password(password: str) -> bool:
+    """Сброс/смена пароля администратора (login 'admin'). True, если обновлено."""
+    from .security import hash_password
+    user = fetch1("SELECT id FROM users WHERE login='admin'")
+    if not user:
+        return False
+    salt = config_secure_salt()
+    q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
+      (salt, hash_password(password, salt), user["id"]))
+    return True
+
+
 def config_secure_salt():
     from .security import new_salt
     return new_salt()
