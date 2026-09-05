@@ -618,7 +618,7 @@ def _acd_accept(body):
     ok, err = ENGINE.accept_acd(acd_id, op["id"])
     if not ok:
         return {"ok": False, "error": err}, 400
-    return {"ok": True, "operator": op["name"]}, 200
+    return {"ok": True, "operator": op["name"], "operator_id": op["id"]}, 200
 
 
 def _call_complete(body):
