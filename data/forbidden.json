@@ -1,0 +1,6 @@
+[
+  {"id":1,"word":"угроза","risk":"high","action":"call_operator"},
+  {"id":2,"word":"экстренно","risk":"high","action":"call_operator"},
+  {"id":3,"word":"нарушение","risk":"medium","action":"notify_operator"},
+  {"id":4,"word":"оскорбление","risk":"medium","action":"notify_operator"}
+]
