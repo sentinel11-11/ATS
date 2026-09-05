@@ -29,3 +29,11 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+
+# ATS v2 — runtime данные (создаются при первом запуске)
+data_v2/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+initial_credentials.txt
