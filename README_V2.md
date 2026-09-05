@@ -91,6 +91,9 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 | GET/POST `/api/v2/settings`; GET/POST `/api/v2/settings/raw` (админ) | Настройки; конфигурация uis/ami/llm/crm/bitrix24 |
 | POST `/api/v2/sim/script` | Задание исхода симуляции для номера |
 | POST `/api/v2/webhooks/uis` | Вебхук UIS (статусы звонков), опц. секрет `uis.webhook_secret` (заголовок `X-UIS-Secret`) |
+| POST `/api/v2/calls/recording` | Загрузить запись разговора и привязать к звонку (admin; JSON: call_id, filename, data_b64) |
+| GET `/api/v2/calls/{id}/recording` | Скачать/слушать запись (auth: заголовок или ?token=) |
+| POST `/api/v2/demo/seed` | Демо-данные: контакты + «Демо-кампания (ИИ-агент)» (admin) |
 | GET `/api/v2/events?token=...` | SSE: события call/item/acd/campaign/agent |
 
 ## 5. Статусы звонка/элемента

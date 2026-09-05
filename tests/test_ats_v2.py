@@ -375,5 +375,97 @@ class TestReportsEndpoint(unittest.TestCase):
         self.assertEqual(code, 403)
 
 
+
+class TestMiscEndpoints(unittest.TestCase):
+    """Демо-сид, умные интервалы (retry_map), загрузка/отдача записи разговора."""
+    @classmethod
+    def setUpClass(cls):
+        from app.server import create_server
+        db.init_db()
+        cls.engine = Engine(auto_start=False)
+        api.ENGINE = cls.engine
+        cls.httpd = create_server("127.0.0.1", 0)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        time.sleep(0.2)
+        cls.base = "http://127.0.0.1:{}".format(cls.port)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.engine.stop()
+        cls.httpd.shutdown()
+
+    def call(self, method, path, body=None, token=""):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("X-Ats-Token", token)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read().decode())
+            except Exception:
+                return e.code, {}
+
+    def _token(self):
+        s, j = self.call("POST", "/api/v2/auth/login", {"login": "admin", "password": "TestAdmin123!"})
+        return j["token"]
+
+    def test_demo_seed(self):
+        tok = self._token()
+        code, j = self.call("POST", "/api/v2/demo/seed", {}, token=tok)
+        self.assertEqual(code, 200)
+        self.assertGreaterEqual(j["contacts_added"], 0)
+        self.assertTrue(j["campaign_id"])
+        self.assertGreaterEqual(j["items"], 0)
+        # повторный вызов не должен падать (дубли пропускаются)
+        code2, j2 = self.call("POST", "/api/v2/demo/seed", {}, token=tok)
+        self.assertEqual(code2, 200)
+
+    def test_campaign_retry_map(self):
+        tok = self._token()
+        code, j = self.call("POST", "/api/v2/campaigns/save",
+                            {"name": "С картой", "template_id": 1, "flow": "message",
+                             "retry_map": {"busy": 7, "no_answer": 25},
+                             "schedule": {"start": "00:00", "end": "23:59", "days": [0, 1, 2, 3, 4, 5, 6]}},
+                            token=tok)
+        self.assertEqual(code, 200)
+        code, detail = self.call("GET", "/api/v2/campaigns/{}".format(j["id"]), token=tok)
+        self.assertEqual(detail["campaign"]["retry_map"], {"busy": 7, "no_answer": 25})
+        # движок: интервал повтора busy из карты
+        item = {"campaign_id": j["id"], "attempts": 1}
+        camp = db.fetch1("SELECT * FROM campaigns WHERE id=?", (j["id"],))
+        from app.engine import Engine as _E
+        delay = _E._retry_delay(None, {"campaign_id": j["id"], "attempts": 1}, camp, "busy")
+        self.assertEqual(delay, 7)
+
+    def test_recording_upload_and_get(self):
+        import base64
+        tok = self._token()
+        call_id = db.insert("calls", {"campaign_id": 0, "item_id": 0, "contact_id": 0,
+                                      "contact_name": "Р", "contact_phone": "79001110000",
+                                      "caller_id": "79000000001", "number_id": 0, "provider": "sim",
+                                      "direction": "out", "status": "done", "result": "done_ok",
+                                      "detail": "", "agent_result": "", "recording": "",
+                                      "started_at": config.now_iso(), "answered_at": "",
+                                      "ended_at": config.now_iso(), "duration_sec": 3})
+        code, j = self.call("POST", "/api/v2/calls/recording",
+                            {"call_id": call_id, "filename": "rec.mp3",
+                             "data_b64": base64.b64encode(b"\x00fakeaudio\x00").decode()},
+                            token=tok)
+        self.assertEqual(code, 200)
+        # GET файла (auth через заголовок)
+        req = urllib.request.Request(self.base + "/api/v2/calls/{}/recording".format(call_id),
+                                     headers={"X-Ats-Token": tok})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn("audio/", r.headers["Content-Type"])
+        row = db.fetch1("SELECT recording FROM calls WHERE id=?", (call_id,))
+        self.assertTrue(row["recording"].startswith("call_{}_".format(call_id)))
+
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS campaigns(
   max_channels INTEGER NOT NULL DEFAULT 0,-- 0 = из настроек
   retry_max INTEGER NOT NULL DEFAULT -1,  -- -1 = из настроек
   retry_delay_min INTEGER NOT NULL DEFAULT -1,
+  retry_map TEXT NOT NULL DEFAULT '{}',  -- {"busy":10,"no_answer":30,...} мин по причинам
   connect_on_qualify INTEGER NOT NULL DEFAULT 1,
   created TEXT,
   updated TEXT
@@ -232,12 +233,21 @@ def init_db():
         c = connect()
         c.executescript(SCHEMA)
         c.commit()
+        _migrate(c)
     if not fetch1("SELECT id FROM settings WHERE id=1"):
         save_settings(dict(config.DEFAULT_SETTINGS))
     _seed_templates()
     _seed_numbers()
     _seed_users()
     _import_legacy()
+
+
+def _migrate(c):
+    """Лёгкие миграции для уже созданных БД (новые колонки и т.п.)."""
+    cols = [r[1] for r in c.execute("PRAGMA table_info(campaigns)").fetchall()]
+    if "retry_map" not in cols:
+        c.execute("ALTER TABLE campaigns ADD COLUMN retry_map TEXT NOT NULL DEFAULT '{}'")
+        c.commit()
 
 
 def _seed_templates():

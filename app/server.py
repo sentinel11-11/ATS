@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from urllib.parse import parse_qs, urlparse
 
-from . import api, config, events
+from . import api, config, db, events
 from .api import json_bytes
 
 STATIC_DIR = config.APP / "ui"
@@ -76,6 +76,11 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- GET ----------
     def do_GET(self):
         u = urlparse(self.path)
+        # запись разговора: файл + content-type по расширению (auth: заголовок или ?token=)
+        import re as _re
+        mrec = _re.match(r"^/api/v2/calls/(\d+)/recording$", u.path)
+        if mrec:
+            return self._recording(int(mrec.group(1)), parse_qs(u.query))
         if u.path == "/api/v2/events":
             return self._sse()
         if u.path.startswith("/api/"):
@@ -94,6 +99,24 @@ class Handler(BaseHTTPRequestHandler):
             self._static(u.path[len("/ui/"):])
             return
         self._send_json({"ok": False, "error": "not_found"}, 404)
+
+    def _recording(self, call_id, query):
+        qtoken = (query.get("token") or [""])[0]
+        if not auth_ok(self.headers, qtoken):
+            return self._send_json({"ok": False, "error": "auth_required"}, 401)
+        import os
+        call = db.fetch1("SELECT recording FROM calls WHERE id=?", (call_id,))
+        if not call or not call["recording"]:
+            return self._send_json({"ok": False, "error": "no_recording"}, 404)
+        fname = os.path.basename(str(call["recording"]))
+        path = (config.REC_DIR / fname).resolve()
+        if not str(path).startswith(str(config.REC_DIR.resolve())) or not path.exists():
+            return self._send_json({"ok": False, "error": "no_file"}, 404)
+        ext = os.path.splitext(fname)[1].lower()
+        ctype = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg",
+                 ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac"}.get(ext, "application/octet-stream")
+        data = path.read_bytes()
+        self._send_bytes(data, ctype, 200, {"Content-Disposition": 'inline; filename="' + fname + '"'})
 
     # ---------- SSE ----------
     def _sse(self):

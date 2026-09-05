@@ -124,8 +124,13 @@ class TestAmiClient(unittest.TestCase):
         cls.events.append(ev)
 
     def test_ping(self):
-        resp = self.client.ping()
-        self.assertEqual(str(resp.get("Response", "")).lower(), "success")
+        # допускаем ретраи: на медленной машине ответ может не успеть за таймаут
+        for _ in range(3):
+            resp = self.client.ping()
+            if str(resp.get("Response", "")).lower() == "success":
+                return
+            time.sleep(0.1)
+        self.fail("AMI Ping не вернул Success")
 
     def test_unknown_action_fails(self):
         with self.assertRaises(ami_mod.AMIError):

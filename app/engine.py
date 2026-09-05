@@ -256,7 +256,7 @@ class Engine:
             db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
                  (result, detail, ended, item["id"]))
         elif retryable and attempts < retry_max:
-            delay = self._retry_delay(item, campaign)
+            delay = self._retry_delay(item, campaign, result)
             nxt = (datetime.datetime.now() + datetime.timedelta(minutes=delay)).strftime("%Y-%m-%d %H:%M:%S")
             db.q("UPDATE campaign_items SET status='queued', last_result=?, next_attempt_at=? WHERE id=?",
                  (detail, nxt, item["id"]))
@@ -272,12 +272,23 @@ class Engine:
         if ok or (not retryable) or attempts >= retry_max:
             self._push_crm(call, result)
 
-    def _retry_delay(self, item, campaign):
+    def _retry_delay(self, item, campaign, result=""):
+        """Интервал повтора: приоритет у retry_map кампании по причине ({"busy":10,...}),
+        иначе базовый retry_delay_min с эскалацией от числа попыток."""
+        # 1) точная настройка по причине (кампания)
+        if campaign:
+            try:
+                rm = json.loads(campaign.get("retry_map") or "{}")
+            except Exception:
+                rm = {}
+            if result in rm and rm.get(result):
+                return max(1, min(int(rm[result]), 24 * 60))
+        # 2) базовый интервал с эскалацией
         base = int((campaign or {}).get("retry_delay_min", self.settings.get("retry_delay_min", 15)))
         if base < 0:
             base = int(self.settings.get("retry_delay_min", 15))
         attempts = int(item.get("attempts") or 0)
-        return min(base * (attempts + 1), 24 * 60)
+        return min(max(1, base) * (attempts + 1), 24 * 60)
 
     # ---------- распределение звонков ----------
     def active_channels(self):

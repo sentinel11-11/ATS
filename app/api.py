@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """HTTP API v2 ATS (замена открытых эндпоинтов server.py). Авторизация: X-ATS-Token."""
+import base64
 import csv
 import io
 import json
@@ -139,6 +140,7 @@ def route(method, path, body, headers):
         try:
             for c in camps:
                 c["schedule"] = json.loads(c.get("schedule") or "{}")
+                c["retry_map"] = json.loads(c.get("retry_map") or "{}")
         except Exception:
             pass
         tmpl = {t["id"]: t["name"] for t in db.fetch("SELECT id,name FROM templates")}
@@ -166,8 +168,9 @@ def route(method, path, body, headers):
         if camp:
             try:
                 camp["schedule"] = json.loads(camp.get("schedule") or "{}")
+                camp["retry_map"] = json.loads(camp.get("retry_map") or "{}")
             except Exception:
-                camp["schedule"] = {}
+                pass
         return {"campaign": camp, "items": db.fetch("SELECT * FROM campaign_items WHERE campaign_id=? ORDER BY id DESC LIMIT 2000", (cid,)),
                 "calls": db.fetch("SELECT * FROM calls WHERE campaign_id=? ORDER BY id DESC LIMIT 1000", (cid,))}, 200
     if p and p[0] == "campaigns" and len(p) == 3 and p[2] == "items" and p[1].isdigit():
@@ -310,6 +313,14 @@ def route(method, path, body, headers):
         return OK, 200
     if p == ["complaint"]:
         return _complaint(body)
+    if p == ["calls", "recording"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _recording_upload(body)
+    if p == ["demo", "seed"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _demo_seed()
     # настройки / пароль
     if p == ["settings", "save"]:
         return _settings_save(body, sess)
@@ -439,6 +450,7 @@ def _campaign_save(body):
             "retry_max": int(body.get("retry_max", -1) or -1),
             "retry_delay_min": int(body.get("retry_delay_min", -1) or -1),
             "connect_on_qualify": 1 if body.get("connect_on_qualify", True) else 0,
+            "retry_map": json.dumps(body.get("retry_map") or {}, ensure_ascii=False),
             "updated": now_iso()}
     if cid:
         db.update("campaigns", data, "id=?", (int(cid),))
@@ -672,3 +684,77 @@ def _export_calls():
                     x["duration_sec"], x["recording"]])
     raw = ("\ufeff" + out.getvalue()).encode("utf-8")
     return raw, 200
+
+
+# ---------------- записи разговоров ----------------
+AUDIO_EXT = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg",
+             ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".oga": "audio/ogg"}
+
+
+def _recording_upload(body):
+    """Загрузить файл записи разговора и привязать к звонку (admin). Тело JSON:
+    {call_id, filename, data_b64}. Файл сохраняется в data_v2/recordings/."""
+    import os
+    call_id = int(body.get("call_id", 0) or 0)
+    fname = str(body.get("filename", "")).replace("\\", "/").split("/")[-1][-80:]
+    ext = os.path.splitext(fname)[1].lower()
+    if not call_id:
+        return {"ok": False, "error": "call_id_required"}, 400
+    if ext not in AUDIO_EXT:
+        return {"ok": False, "error": "unsupported_audio"}, 400
+    call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+    if not call:
+        return {"ok": False, "error": "call_not_found"}, 404
+    try:
+        raw = base64.b64decode(body.get("data_b64", "") or "")
+    except Exception:
+        return {"ok": False, "error": "bad_base64"}, 400
+    if not raw or len(raw) > 50 * 1024 * 1024:
+        return {"ok": False, "error": "empty_or_too_large"}, 400
+    rec_dir = config.REC_DIR
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = "call_{}_{}".format(call_id, fname)
+    (rec_dir / safe_name).write_bytes(raw)
+    db.q("UPDATE calls SET recording=? WHERE id=?", (safe_name, call_id))
+    return {"ok": True, "recording": safe_name}, 200
+
+
+# ---------------- демо-данные ----------------
+def _demo_seed():
+    """Заполнить демо-базу: контакты (согласия) + кампания (agent). Для быстрого старта в sim."""
+    demo = [
+        ("Иван Петров", "79001112233", "клиенты", 1, "интересует предложение"),
+        ("Мария Смирнова", "79002223344", "клиенты", 1, ""),
+        ("Пётр Сидоров", "79003334455", "клиенты", 1, ""),
+        ("Ольга Кузнецова", "79004445566", "клиенты", 0, "нет согласия — пропустим"),
+        ("Николай Волков", "79005556677", "лиды", 1, ""),
+        ("Анна Соколова", "79006667788", "лиды", 1, "звонить после 14:00"),
+    ]
+    added = 0
+    phones = {c["phone"] for c in db.fetch("SELECT phone FROM contacts")}
+    for name, phone, grp, consent, note in demo:
+        if phone in phones:
+            continue
+        db.insert("contacts", {"name": name, "phone": phone, "grp": grp, "note": note,
+                               "consent": consent, "consent_source": "demo", "blacklisted": 0,
+                               "complaints": 0, "created": now_iso(), "updated": now_iso()})
+        phones.add(phone)
+        added += 1
+    cid = db.insert("campaigns", {"name": "Демо-кампания (ИИ-агент)", "template_id": 2, "flow": "agent",
+                                  "status": "stopped",
+                                  "schedule": json.dumps({"start": "08:00", "end": "20:00",
+                                                          "days": [0, 1, 2, 3, 4, 5, 6]}),
+                                  "max_channels": 2, "retry_max": 1, "retry_delay_min": 10,
+                                  "retry_map": json.dumps({"busy": 5, "no_answer": 20, "machine": 30}),
+                                  "connect_on_qualify": 1,
+                                  "created": now_iso(), "updated": now_iso()})
+    cons = db.fetch("SELECT * FROM contacts WHERE consent=1 AND grp IN ('клиенты','лиды') ORDER BY id")
+    count = 0
+    for c in cons:
+        db.insert("campaign_items", {"campaign_id": cid, "contact_id": c["id"],
+                                     "contact_name": c.get("name", ""), "contact_phone": c.get("phone", ""),
+                                     "status": "queued", "attempts": 0, "next_attempt_at": "",
+                                     "last_result": "", "created": now_iso(), "updated": now_iso(),
+                                     "completed_at": ""})
+        count += 1
+    return {"ok": True, "contacts_added": added, "campaign_id": cid, "items": count}, 200

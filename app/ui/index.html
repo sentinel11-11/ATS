@@ -95,6 +95,8 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
         <option value="no_answer">нет ответа</option><option value="blocked">блок (антиспам)</option></select>
       <input id="simAnswer" class="input" placeholder="Ответ абонента (1/2)" style="width:90px" value="1">
       <button class="btn" onclick="saveSim()">Задать</button><span class="small">управляет исходом следующего звонка на этот номер</span></div>
+      <div class="toolbar" style="margin-top:8px"><button class="btn g" onclick="seedDemo()">Загрузить демо-данные</button>
+      <span class="small">добавит контакты и «Демо-кампанию (ИИ-агент)» — запустите её и посмотрите цикл звонка</span></div>
     </div>
   </section>
 
@@ -303,6 +305,11 @@ async function saveSim(){
   await api('/sim/script',{body:{phone:$('simPhone').value.trim(),outcome:$('simOutcome').value,answer:$('simAnswer').value.trim()}});
   alert('Сценарий симуляции задан');
 }
+async function seedDemo(){
+  const j=await api('/demo/seed',{body:{}});
+  if(j.ok){alert('Демо-данные: +'+j.contacts_added+' контактов, кампания #'+j.campaign_id+' ('+j.items+' в очереди)');loadDash();loadCamps();}
+  else alert('Ошибка: '+j.error);
+}
 // ---------- контакты ----------
 async function loadContacts(){
   const j=await api('/contacts');
@@ -379,19 +386,22 @@ function editCampaign(c){
      <label>Конец окна<input id="kWe" type="time" class="input" value="${esc((c.schedule&&c.schedule.end)||'20:00')}"></label>
      <label>Попыток на контакт<input id="kRetry" type="number" class="input" value="${c.retry_max>=0?c.retry_max:''}" placeholder="по умолчанию"></label>
      <label>Макс. параллельно<input id="kCh" type="number" class="input" value="${c.max_channels||''}" placeholder="по умолчанию"></label>
-     <label style="grid-column:1/-1" class="switch"><input id="kConnect" type="checkbox" ${c.connect_on_qualify===0?'':'checked'}> квалифицированных — на оператора</label></div>
+     <label style="grid-column:1/-1" class="switch"><input id="kConnect" type="checkbox" ${c.connect_on_qualify===0?'':'checked'}> квалифицированных — на оператора</label>
+     <label style="grid-column:1/-1">Интервалы повторов по причинам, мин (JSON, необязательно)<input id="kRetryMap" class="input" style="font-family:monospace;font-size:12px" value="${esc(c.retry_map?JSON.stringify(c.retry_map):'{\"busy\": 5, \"no_answer\": 20, \"machine\": 30}')}"></label></div>
      <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="saveCampaign(${c.id||0})">Сохранить</button>
      <button class="btn s" onclick="closeModal()">Отмена</button></div>`);
   });
 }
 async function saveCampaign(id){
   const sc={start:$('kWs').value||'08:00',end:$('kWe').value||'20:00',days:[0,1,2,3,4,5,6]};
+  let rm={};try{rm=JSON.parse($('kRetryMap').value||'{}')}catch(e){return alert('Интервалы повторов: невалидный JSON — '+e.message)}
   const body={id:id,name:$('kName').value,flow:$('kFlow').value,template_id:parseInt($('kTemplate').value),
     schedule:sc,retry_max:parseInt($('kRetry').value||-1),max_channels:parseInt($('kCh').value||0),
-    connect_on_qualify:$('kConnect').checked};
+    retry_map:rm,connect_on_qualify:$('kConnect').checked};
   const j=await api('/campaigns/save',{body});if(j.ok){closeModal();await loadCamps();showCamp(j.id||id)}else alert('Ошибка');
 }
 async function showCamp(id){
+  window._camp=id;
   const j=await api(`/campaigns/${id}`);const c=j.campaign||{};const items=j.items||[];const calls=j.calls||[];
   const stMap={};items.forEach(i=>stMap[i.status]=(stMap[i.status]||0)+1);
   $('campDetail').innerHTML=`<div class="panel"><div class="toolbar"><h2 style="margin:0">Кампания #${c.id}: ${esc(c.name||'')}</h2>
@@ -409,10 +419,12 @@ async function showCamp(id){
     </table></div>
     <h3 style="font-size:14px">Звонки кампании (${calls.length})</h3>
     <div class="tblwrap" style="max-height:300px"><table>
-     <tr><th>#</th><th>Время</th><th>Контакт</th><th>С номера</th><th>Результат</th><th>Детали агента</th></tr>
+     <tr><th>#</th><th>Время</th><th>Контакт</th><th>С номера</th><th>Результат</th><th>Детали агента</th><th>Запись</th></tr>
      ${calls.slice().reverse().slice(0,100).map(x=>`<tr><td>${x.id}</td><td>${esc(x.started_at)}</td>
        <td>${esc(x.contact_name)}</td><td>${esc(x.caller_id)}</td><td>${badge(x.result||x.status)}</td>
-       <td class="small">${esc(shortAgent(x.agent_result))}</td></tr>`).join('')||'<tr><td colspan="6" class="small">Пока нет звонков — запустите кампанию</td></tr>'}
+       <td class="small">${esc(shortAgent(x.agent_result))}</td>
+       <td>${x.recording?`<a class="ok" href="/api/v2/calls/${x.id}/recording?token=${encodeURIComponent(state.token)}" target="_blank">🎧 слушать</a>`:''}
+           <button class="btn s" onclick="upRecording(${x.id})" title="Загрузить запись (админ)">🎙</button></td></tr>`).join('')||'<tr><td colspan="7" class="small">Пока нет звонков — запустите кампанию</td></tr>'}
     </table></div></div>`;
   $('campDetail').scrollIntoView({behavior:'smooth'});
 }
@@ -510,6 +522,16 @@ async function loadJournal(){
    (j.calls||[]).map(x=>`<tr><td>${x.id}</td><td>${esc(x.started_at)}</td><td>${esc(x.contact_name)}</td>
     <td><b>${esc(x.contact_phone)}</b></td><td>${esc(x.caller_id)}</td><td>#${x.campaign_id||''}</td>
     <td>${badge(x.result||x.status)}</td><td class="small">${esc(x.detail)} ${shortAgent(x.agent_result)}</td></tr>`).join('')||'<tr><td colspan="8" class="small">Пусто</td></tr>';
+}
+async function upRecording(callId){
+  const inp=document.createElement('input');inp.type='file';inp.accept='audio/*';
+  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    const b64=await new Promise(res=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.readAsDataURL(f)});
+    const j=await api('/calls/recording',{body:{call_id:callId,filename:f.name,data_b64:b64}});
+    alert(j.ok?'Запись сохранена: '+j.recording:'Ошибка: '+(j.error||'?'));
+    if(j.ok&&window._camp)showCamp(window._camp);
+  };
+  inp.click();
 }
 async function exportCalls(){
   const r=await fetch('/api/v2/export/calls.csv',{headers:{'X-Ats-Token':state.token}});
