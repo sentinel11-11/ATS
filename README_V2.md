@@ -57,16 +57,19 @@ app/
   db.py         SQLite: схема, миграции, сиды, импорт legacy data/*.json, settings
   security.py   пароли (PBKDF2), токены, роли
   events.py     шина событий + SSE
-  telephony.py  TelephonyProvider: SimProvider (работает) + каркасы UIS/AMI
+  telephony.py  TelephonyProvider: SimProvider (работает), UIS (Call API HTTP+вебхуки),
+                AsteriskAmiProvider (AMI-клиент) — реализация транспорта
+  asterisk.py   AMI-клиент Asterisk (протокол Manager API: кодек, action, события)
   numbers.py    пул номеров: лимиты, остывание, карантин
   agent.py      ИИ-агент L1 (сценарии JSON) + L2-каркас (LLM OpenAI-совместимый)
   crm.py        CrmDriver: csv (работает) + bitrix24 (каркас)
   engine.py     движок: события провайдера, автодозвон, watchdog, ACD, агент
-  api.py        REST API v2 (роуты + бизнес-обработчики)
+  api.py        REST API v2 (роуты + бизнес-обработчики + вебхук UIS)
   server.py     HTTP-сервер: статика app/ui, API, SSE
   run.py        CLI: python -m app.run
   ui/index.html одностраничный UI (vanilla JS)
-tests/          unittest-набор (12 тестов: безопасность, БД, пул, E2E движка, HTTP API)
+tests/          unittest-набор (22 теста: безопасность, БД, пул, E2E движка, HTTP API,
+                протокол AMI, вебхуки UIS, ACD-watchdog)
 data_v2/        runtime (БД, логи, записи, CRM-выгрузка) — создаётся автоматически
 data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип, не используется v2)
 ```
@@ -87,6 +90,7 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 | GET/POST `/api/v2/blacklist`, `/blacklist/add`, `/blacklist/delete`, `/complaint` | «Не звонить», жалобы |
 | GET/POST `/api/v2/settings`; GET/POST `/api/v2/settings/raw` (админ) | Настройки; конфигурация uis/ami/llm/crm/bitrix24 |
 | POST `/api/v2/sim/script` | Задание исхода симуляции для номера |
+| POST `/api/v2/webhooks/uis` | Вебхук UIS (статусы звонков), опц. секрет `uis.webhook_secret` (заголовок `X-UIS-Secret`) |
 | GET `/api/v2/events?token=...` | SSE: события call/item/acd/campaign/agent |
 
 ## 5. Статусы звонка/элемента
@@ -111,7 +115,7 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
    ```
    или напрямую: `POST /api/v2/settings/raw` с `{"uis": {...}}`.
 3. Перезапустите: `python3 -m app.run` (провайдер выбирается на старте).
-4. Реализация транспорта — в `app/telephony.py` (классы `UISCallApiProvider`, `AsteriskAmiProvider`, помечены TODO(T13)/(T14)). Интерфейс и цикл движка уже готовы: адаптер должен лишь вызывать `self.emit({...})` с событиями `ring / answered(human) / status / done` — ядро, агент и ACD не меняются.
+4. Транспорт уже написан в общем виде: `UISCallApiProvider.dial` (POST Call API) + вебхук `/api/v2/webhooks/uis`; `AsteriskAmiProvider` на базе `AMIClient` (Originate + карта событий + `connect_operator`). Проверьте/уточните схемы запросов и событий по документации UIS и на живом стенде Asterisk (пометки T13/T14). Ядро, агент и ACD от транспорта не зависят.
 5. Номера в пуле: для реального провайдера создайте номера с `provider = uis/ami` (номер = ваш Caller ID, E.164).
 
 ## 7. Что осталось «вне кода» (внешние зависимости из дорожной карты)

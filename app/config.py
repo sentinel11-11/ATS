@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = {
     "retry_delay_min": 15,
     "line_cooldown_sec": 5,
     "watchdog_timeout_min": 20,
+    "acd_wait_timeout_sec": 60,
     "window_start": "08:00",
     "window_end": "20:00",
     "window_days": [0, 1, 2, 3, 4, 5, 6],

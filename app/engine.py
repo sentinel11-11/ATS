@@ -209,15 +209,28 @@ class Engine:
     def _on_dropped(self, call, item):
         # Канал закрылся, пока мы ждали оператора (нет принятия в срок) или истёк таймаут провайдера
         if call["status"] == "wait_operator":
-            db.q("UPDATE calls SET status='done', ended_at=?, result='no_operator', detail='Оператор не ответил' WHERE id=?",
-                 (now_iso(), call["id"]))
-            if item:
-                db.q("UPDATE campaign_items SET status='no_operator', completed_at=? WHERE id=?", (now_iso(), item["id"]))
-            db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?", (now_iso(), call["id"]))
-            self.crm.create_task("Перезвонить клиенту", "Клиент {} {} ждал оператора, звонок #{}".format(
-                call.get("contact_name", ""), call.get("contact_phone", ""), call["id"]))
+            self._no_operator_finish(call, item, reason="Оператор не ответил")
         else:
             self._finish_attempt(call, item, "timeout", "Канал закрыт по таймауту", retryable=True)
+
+    def _no_operator_finish(self, call, item, reason="Оператор не ответил"):
+        """Завершить звонок, ждавший оператора: статусы + задача «перезвонить» в CRM."""
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        if not call or call["status"] != "wait_operator":
+            return
+        ended = now_iso()
+        db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result='no_operator', detail=? WHERE id=?",
+             (ended, self._duration(call), reason[:200], call["id"]))
+        if item:
+            db.q("UPDATE campaign_items SET status='no_operator', completed_at=? WHERE id=?", (ended, item["id"]))
+        db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?", (ended, call["id"]))
+        try:
+            self.crm.create_task("Перезвонить клиенту", "Клиент {} {} ждал оператора, звонок #{} — {}".format(
+                call.get("contact_name", ""), call.get("contact_phone", ""), call["id"], reason))
+        except Exception as e:
+            print("[crm] create_task:", e)
+        self._push_crm(call, "no_operator")
+        events.publish("call", {"id": call["id"], "status": "no_operator"})
 
     def _push_crm(self, call, final_status):
         try:
@@ -365,6 +378,19 @@ class Engine:
                 self.provider.hangup(c["id"])
             except Exception:
                 pass
+        # ACD: оператор не принял звонок в срок -> no_operator + задача на перезвон
+        acd_timeout_sec = int(settings.get("acd_wait_timeout_sec", 60))
+        if acd_timeout_sec > 0:
+            waiting = db.fetch(
+                "SELECT * FROM calls WHERE ended_at='' AND status='wait_operator' AND started_at<=?",
+                (self._ago(acd_timeout_sec / 60.0),))
+            for c in waiting:
+                item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (c["item_id"],)) if c["item_id"] else None
+                self._no_operator_finish(c, item, reason="Оператор не принял звонок за {} с".format(acd_timeout_sec))
+                try:
+                    self.provider.hangup(c["id"])
+                except Exception:
+                    pass
 
     def _ago(self, minutes):
         return (datetime.datetime.now() - datetime.timedelta(minutes=int(minutes))).strftime("%Y-%m-%d %H:%M:%S")
@@ -399,6 +425,13 @@ class Engine:
         item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (acd["item_id"],)) if acd["item_id"] else None
         if item:
             db.q("UPDATE campaign_items SET status='operator_ok', completed_at=? WHERE id=?", (now_iso(), item["id"]))
+        # Если провайдер умеет реально соединять с оператором (Asterisk/AMI) — инициируем бридж
+        try:
+            connect = getattr(self.provider, "connect_operator", None)
+            if connect and op.get("ext"):
+                connect(acd["call_id"], op["ext"])
+        except Exception as e:
+            print("[acd] connect_operator:", e)
         events.publish("acd", {"id": acd_id, "status": "accepted", "operator": op["name"]})
         return True, "ok"
 

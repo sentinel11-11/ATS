@@ -58,6 +58,20 @@ def route(method, path, body, headers):
     if p == ["auth", "logout"]:
         security.drop_token(headers.get("X-Ats-Token", ""))
         return OK, 200
+    if p == ["webhooks", "uis"] and method == "POST":
+        s = db.get_settings()
+        secret = (s.get("uis") or {}).get("webhook_secret", "")
+        if secret and headers.get("X-UIS-Secret", "") != secret:
+            return {"ok": False, "error": "bad_secret"}, 403
+        from .telephony import map_uis_webhook
+        ev = map_uis_webhook(body)
+        if not ev:
+            return {"ok": False, "error": "unrecognized"}, 422
+        try:
+            ENGINE.handle_event(ev)
+            return OK, 200
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:200]}, 500
     if p == ["auth", "me"]:
         sess2, err2, code2 = need_auth(headers)
         if err2:
@@ -470,8 +484,9 @@ def _complaint(body):
 def _settings_save(body, sess=None):
     s = db.get_settings()
     for k in ("provider", "max_channels", "consent_required", "retry_max", "retry_delay_min",
-              "line_cooldown_sec", "watchdog_timeout_min", "window_start", "window_end",
-              "sim_answer", "auto_quarantine_on_complaints", "sim_outcome", "crm"):
+              "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",
+              "window_start", "window_end", "sim_answer", "auto_quarantine_on_complaints",
+              "sim_outcome", "crm"):
         if k in body:
             if k in ("consent_required",):
                 s[k] = bool(body[k])

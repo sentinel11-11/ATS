@@ -181,6 +181,7 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
         <label>Интервал повтора, мин<input id="sRetryDelay" type="number" class="input"></label>
         <label>Остывание номера после звонка, сек<input id="sCooldown" type="number" class="input"></label>
         <label>Watchdog «зависших» звонков, мин<input id="sWatchdog" type="number" class="input"></label>
+        <label>Таймаут ожидания оператора, сек<input id="sAcdT" type="number" class="input"></label>
         <label>Начало окна<input id="sWinStart" type="time" class="input"></label>
         <label>Конец окна<input id="sWinEnd" type="time" class="input"></label>
         <label>Дни<select id="sDays" multiple class="select" size="2"><option value="0">Пн</option><option value="1">Вт</option><option value="2">Ср</option><option value="3">Чт</option><option value="4">Пт</option><option value="5">Сб</option><option value="6">Вс</option></select></label>
@@ -550,7 +551,7 @@ async function saveSettings(){
   const j=await api('/settings/save',{body:{
     provider:$('sProvider').value,max_channels:parseInt($('sChannels').value||3),retry_max:parseInt($('sRetryMax').value||2),
     retry_delay_min:parseInt($('sRetryDelay').value||15),line_cooldown_sec:parseInt($('sCooldown').value||5),
-    watchdog_timeout_min:parseInt($('sWatchdog').value||20),window_start:$('sWinStart').value,window_end:$('sWinEnd').value,
+    watchdog_timeout_min:parseInt($('sWatchdog').value||20),acd_wait_timeout_sec:parseInt($('sAcdT').value||60),window_start:$('sWinStart').value,window_end:$('sWinEnd').value,
     window_days:days,consent_required:$('sConsent').checked,
     auto_quarantine_on_complaints:parseInt($('sQuar').value||3),sim_answer:$('sSimAns').value,
     crm:{driver:$('sCrm').value}}});
