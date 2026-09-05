@@ -5,56 +5,148 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ATS v2 — Центр обзвона</title>
 <style>
-:root{--bg:#08111f;--panel:#0d1b2d;--panel2:#11243b;--line:#203a59;--blue:#2f7df6;--blue2:#6aa6ff;
---white:#f6f9ff;--muted:#91a5bf;--green:#31d09b;--red:#ff6174;--yellow:#ffc857;--cyan:#4cc9f0}
+:root{
+  --bg:#08111f;--panel:#0e1d30;--panel2:#122640;--line:#22405f;--line2:#2c4d70;
+  --blue:#2f7df6;--blue2:#6aa6ff;--white:#f2f7ff;--muted:#8fa5c0;--dim:#6b81a0;
+  --green:#2fd39a;--red:#ff6476;--yellow:#ffc857;--cyan:#53c8ef;
+  --r:14px;--rs:10px;--sh:0 14px 40px rgba(0,0,0,.35);
+}
 *{box-sizing:border-box}
-body{margin:0;background:linear-gradient(135deg,#07101d 0%,#0b1627 55%,#101e31 100%);font-family:Inter,'Segoe UI',Arial,sans-serif;color:var(--white);min-height:100vh}
-.app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
-.side{background:rgba(7,16,29,.96);padding:22px 14px;border-right:1px solid #1b3150;position:sticky;top:0;height:100vh;overflow:auto}
-.brand{font-size:21px;font-weight:800;margin:4px 8px 22px}.brand span{color:var(--blue2)}
-.nav button{width:100%;border:0;background:transparent;color:#b8c7da;text-align:left;padding:11px 12px;border-radius:10px;font-size:14px;margin:2px 0;cursor:pointer}
-.nav button.active,.nav button:hover{background:#132943;color:#fff}
-.main{padding:22px;overflow:auto}
-.top{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:18px;flex-wrap:wrap}
-h1{margin:0;font-size:24px}.sub{color:#8fa3bd;margin:4px 0 0;font-size:13px}
+html,body{margin:0;padding:0}
+body{background:radial-gradient(1200px 600px at 80% -10%,#12233d 0%,#0a1524 55%,#070f1b 100%);
+  color:var(--white);font:14px/1.45 'Segoe UI',Inter,system-ui,-apple-system,Arial,sans-serif;
+  min-height:100vh;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+button{font:inherit}
+::selection{background:#2f7df644}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#223a56;border-radius:8px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- каркас ---------- */
+.app{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+.side{background:rgba(6,13,24,.9);border-right:1px solid var(--line);backdrop-filter:blur(6px);
+  position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:18px 12px;gap:4px;overflow:hidden}
+.brand{font-size:20px;font-weight:800;letter-spacing:.3px;padding:2px 10px 16px}
+.brand span{color:var(--blue2)}
+.nav{display:flex;flex-direction:column;gap:2px;overflow-y:auto;flex:1;padding-bottom:8px}
+.nav button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;border:0;background:transparent;
+  color:#b7c7da;text-align:left;padding:9px 12px;border-radius:10px;font-size:13.5px;cursor:pointer;transition:background .12s,color .12s}
+.nav button:hover{background:#132a44;color:#fff}
+.nav button.active{background:linear-gradient(90deg,#1b3b61,#16304f);color:#fff;box-shadow:inset 0 0 0 1px #24486f}
+.side .foot{padding:10px 10px 2px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+
+.main{min-width:0;overflow:auto}
+.content{max-width:1460px;margin:0 auto;padding:20px 24px 60px}
+.head{display:flex;justify-content:space-between;gap:14px;align-items:center;margin:0 0 18px;flex-wrap:wrap}
+.head h1{margin:0;font-size:23px;letter-spacing:.2px}
+.head .sub{color:var(--muted);margin-top:3px;font-size:12.5px}
 .loginbox{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.input,.select,.textarea{background:#0b1728;border:1px solid #28415f;color:#f7fbff;border-radius:9px;padding:8px 10px;outline:none;font-size:13px}
-.input:focus,.select:focus,.textarea:focus{border-color:#5b97ff}
-.textarea{min-height:90px;resize:vertical;width:100%;font-family:inherit}
-.btn{border:0;border-radius:9px;padding:8px 12px;font-weight:600;cursor:pointer;background:var(--blue);color:#fff;font-size:13px}
-.btn.s{background:#182d47}.btn.d{background:#802b39}.btn.l{background:#eef5ff;color:#15345a}
-.btn.g{background:#1c7c5c}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
-.metric{background:rgba(13,27,45,.96);border:1px solid #203b5c;padding:12px 14px;border-radius:14px}
-.metric b{font-size:24px}.metric span{display:block;color:#93a8c1;margin-top:3px;font-size:12px}
-.panel{background:rgba(12,27,46,.97);border:1px solid #203b5a;border-radius:14px;padding:16px;margin-bottom:14px}
-.panel h2{margin:0 0 12px;font-size:17px}
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th,td{padding:8px 9px;border-bottom:1px solid #1b3451;text-align:left}
-th{color:#93aaca;background:#10213a;position:sticky;top:0;font-weight:600}
-td{color:#e6eef9;vertical-align:top}
-.tblwrap{overflow:auto;border:1px solid #1d3858;border-radius:10px;max-height:64vh}
-.badge{padding:3px 8px;border-radius:999px;background:#183454;font-size:11px;white-space:nowrap}
-.badge.g{background:#123c30;color:#7ce7bd}.badge.r{background:#451b26;color:#ff9dac}
-.badge.y{background:#4a3a12;color:#ffd98a}.badge.b{background:#16355c;color:#8fc1ff}.badge.cy{background:#123f4d;color:#8ce1f5}
+.who{margin-top:auto;padding-top:10px;color:var(--dim);font-size:12px}
+
+/* ---------- элементы ---------- */
+.input,.select,.textarea{background:#0a1726;border:1px solid var(--line2);color:#f2f7ff;
+  border-radius:9px;padding:8px 10px;outline:none;font-size:13.5px;width:100%;min-width:0;transition:border-color .12s,box-shadow .12s}
+.input:focus,.select:focus,.textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px #2f7df633}
+.textarea{resize:vertical;min-height:90px;font-family:inherit;line-height:1.5}
+input[type=time].input,input[type=number].input{width:auto;min-width:110px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:9px;padding:8px 13px;font-weight:600;
+  font-size:13px;background:var(--blue);color:#fff;cursor:pointer;white-space:nowrap;transition:filter .12s,transform .05s}
+.btn:hover{filter:brightness(1.1)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.s{background:#1d3554}.btn.d{background:#8a2d3d}.btn.d:hover{background:#a03a4c}
+.btn.l{background:#eef5ff;color:#17406e}.btn.g{background:#17795a}.btn.x{background:transparent;color:#b7c7da;border:1px solid var(--line2)}
+.btn.sm{padding:4px 9px;font-size:12px;border-radius:7px}
+.hint{font-size:11.5px;color:var(--dim);line-height:1.4}
+.muted{color:var(--muted)} .dim{color:var(--dim)} .ok{color:var(--green)} .err{color:var(--red)}
+.nowrap{white-space:nowrap}
+
+/* ---------- карточки-метрики ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-bottom:16px}
+.metric{background:linear-gradient(160deg,rgba(17,32,52,.95),rgba(11,22,38,.9));border:1px solid var(--line);
+  border-radius:var(--r);padding:12px 14px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.metric b{font-size:24px;letter-spacing:.3px}
+.metric span{display:block;color:var(--muted);margin-top:3px;font-size:11.5px}
+
+/* ---------- панели ---------- */
+.panel{background:rgba(13,26,44,.9);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;margin-bottom:14px;box-shadow:0 4px 16px rgba(0,0,0,.14)}
+.panel h2{margin:0 0 12px;font-size:15.5px;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+.panel h2 .tick{flex:1}
+.panel h3.sub2{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.toolbar .grow{flex:1;min-width:0}
+.toolbar+.tblwrap,.panel>.tblwrap{margin-bottom:4px}
+.tblwrap{overflow:auto;border:1px solid var(--line);border-radius:10px;max-height:62vh;background:#0a1524}
+.tblwrap.thin{max-height:300px}
+table{width:100%;border-collapse:collapse;font-size:12.8px}
+th,td{padding:8px 10px;border-bottom:1px solid #1a3350;text-align:left;vertical-align:middle}
+th{color:#9db6d4;background:#0f2137;position:sticky;top:0;font-weight:600;z-index:1;white-space:nowrap}
+td{color:#e4edf8}
+tbody tr:hover td{background:#10233d}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table .btn-row{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+
+/* ---------- бейджи ---------- */
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#1a3554;color:#c9d9ec;font-size:11px;white-space:nowrap}
+.badge.g{background:#12392d;color:#86eec6}.badge.r{background:#46202b;color:#ffa3b1}
+.badge.y{background:#4a3a12;color:#ffe2a1}.badge.b{background:#1a3c66;color:#9dc9ff}.badge.cy{background:#103c4c;color:#9ae6ff}
+
+/* ---------- формы ---------- */
+.formgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}
+.fld{display:flex;flex-direction:column;gap:5px;min-width:0}
+.fld>span.lbl,.fld>label:first-child{font-size:12px;color:#a7bcd6;font-weight:500}
+.fld .ctl{width:100%}
+.fld .ctl.wauto{width:auto}
+.span2{grid-column:1/-1}
+.chkline{display:flex;align-items:center;gap:8px;font-size:13px;color:#dbe6f4;cursor:pointer;user-select:none;min-height:32px}
+.chkline input{accent-color:var(--blue);width:16px;height:16px;margin:0;flex:none}
+.dayschips{display:flex;gap:6px;flex-wrap:wrap;padding-top:2px}
+.daychip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);border-radius:8px;padding:4px 10px;cursor:pointer;font-size:12.5px;color:#c6d6e9;background:#0a1726;user-select:none}
+.daychip input{accent-color:var(--blue)}
+.daychip.on{border-color:var(--blue);background:#16355c}
+.form-actions{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+fieldset.grp{border:1px solid var(--line);border-radius:12px;margin:0 0 16px;padding:12px 14px;min-width:0}
+fieldset.grp legend{font-size:12.5px;font-weight:600;color:#9db6d4;padding:0 6px;letter-spacing:.2px}
+@media(max-width:760px){.formgrid{grid-template-columns:1fr}}
+
+/* ---------- модал ---------- */
+.modal{position:fixed;inset:0;background:rgba(3,8,15,.72);display:flex;align-items:flex-start;justify-content:center;padding:4vh 16px 20px;z-index:40;overflow:auto}
+.modalbox{width:min(720px,100%);background:#0e2037;border:1px solid #2b4c73;border-radius:16px;padding:18px 20px;box-shadow:var(--sh)}
+.modalbox h2{margin:0 0 14px;font-size:17px}
+.modal .form-actions{margin-top:16px}
+.picklist{max-height:42vh;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:8px;margin:10px 0;background:#0a1726}
+.picklist label{display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:8px;cursor:pointer;font-size:13px;color:#dbe6f4}
+.picklist label:hover{background:#102640}
+.picklist input{accent-color:var(--blue)}
+
+/* ---------- статусы/мелочи ---------- */
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#5b728f;margin-right:5px}
 .hidden{display:none!important}
-.section{display:none}.section.active{display:block}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;padding:18px;z-index:30}
-.modalbox{width:min(760px,100%);max-height:92vh;overflow:auto;background:#0d1d32;border:1px solid #2a4a70;border-radius:14px;padding:18px}
-.switch{display:flex;align-items:center;gap:8px;font-size:13px}
-.small{font-size:12px;color:#8ea4be}
-.ok{color:#31d09b}.err{color:#ff6174}
-@media(max-width:900px){.app{grid-template-columns:1fr}.side{position:relative;height:auto}.nav{display:flex;overflow:auto}.nav button{min-width:130px;white-space:nowrap}}
+.section{display:none}.section.active{display:block;animation:fadeIn .18s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+a{color:var(--blue2)}
+th .cnt{font-weight:400;color:var(--dim);font-size:11px}
+
+/* ---------- адаптив ---------- */
+@media(max-width:980px){
+  .app{grid-template-columns:1fr}
+  .side{position:sticky;top:0;height:auto;z-index:20;padding:10px}
+  .brand{padding:2px 8px 8px;font-size:18px}
+  .nav{flex-direction:row;overflow-x:auto;overflow-y:hidden;padding-bottom:4px}
+  .nav button{white-space:nowrap;min-width:max-content}
+  .side .foot,.who{display:none}
+}
+@media(max-width:560px){
+  .content{padding:14px 12px 48px}
+  .cards{grid-template-columns:repeat(2,1fr)}
+}
 </style>
 </head>
 <body>
 <div class="app">
 <aside class="side">
-  <div class="brand">ATS <span>v2</span></div>
+  <div class="brand">ATS&nbsp;<span>v2</span></div>
   <div class="nav" id="nav">
     <button class="active" data-tab="dash">Обзор</button>
     <button data-tab="reports">Отчёты</button>
@@ -67,18 +159,21 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
     <button data-tab="templates">Шаблоны</button>
     <button data-tab="settings">Настройки</button>
   </div>
-  <div class="small" style="margin-top:14px" id="who"></div>
+  <div class="who" id="who"></div>
 </aside>
+
 <main class="main">
-  <div class="top">
-    <div><h1>Центр исходящего обзвона</h1><div class="sub">Кампании · автодозвон · пул номеров · ИИ-агент · перевод на сотрудника</div></div>
+<div class="content">
+  <div class="head">
+    <div><h1>Центр исходящего обзвона</h1>
+      <div class="sub">Кампании · автодозвон · пул номеров · ИИ-агент · перевод на сотрудника</div></div>
     <div id="loginBox" class="loginbox">
       <input id="login" class="input" value="admin" style="width:110px">
-      <input id="password" type="password" class="input" value="" placeholder="Пароль" style="width:140px">
+      <input id="password" type="password" class="input" value="" placeholder="Пароль" style="width:150px">
       <button class="btn" onclick="doLogin()">Войти</button>
     </div>
     <div id="userBox" class="loginbox hidden">
-      <span class="small" id="roleLabel"></span>
+      <span class="muted" id="roleLabel"></span>
       <button class="btn s" onclick="logout()">Выйти</button>
     </div>
   </div>
@@ -87,449 +182,709 @@ label{display:block;font-size:12px;color:#b9c9dd;margin-bottom:6px}
   <section id="dash" class="section active">
     <div class="cards" id="dashCards"></div>
     <div class="panel"><h2>Пул номеров</h2><div class="tblwrap"><table id="dashNumbers"></table></div></div>
-    <div class="panel"><h2>Статус кампаний</h2><div class="tblwrap"><table id="dashCamps"></table></div></div>
-    <div class="panel hidden" id="simPanel"><h2>Лаборатория симуляции (провайдер sim)</h2>
-      <div class="toolbar"><input id="simPhone" class="input" placeholder="Телефон абонента">
-      <select id="simOutcome" class="select"><option value="answered_human">ответил человек</option>
-        <option value="answered_machine">автоответчик</option><option value="busy">занято</option>
-        <option value="no_answer">нет ответа</option><option value="blocked">блок (антиспам)</option></select>
-      <input id="simAnswer" class="input" placeholder="Ответ абонента (1/2)" style="width:90px" value="1">
-      <button class="btn" onclick="saveSim()">Задать</button><span class="small">управляет исходом следующего звонка на этот номер</span></div>
-      <div class="toolbar" style="margin-top:8px"><button class="btn g" onclick="seedDemo()">Загрузить демо-данные</button>
-      <span class="small">добавит контакты и «Демо-кампанию (ИИ-агент)» — запустите её и посмотрите цикл звонка</span></div>
+    <div class="panel"><h2>Кампании</h2><div class="tblwrap"><table id="dashCamps"></table></div></div>
+    <div class="panel hidden" id="simPanel">
+      <h2>Лаборатория симуляции <span class="badge cy">провайдер sim</span></h2>
+      <div class="toolbar">
+        <input id="simPhone" class="input" placeholder="Телефон абонента" style="width:190px">
+        <select id="simOutcome" class="select" style="width:auto">
+          <option value="answered_human">ответил человек</option>
+          <option value="answered_machine">автоответчик</option>
+          <option value="busy">занято</option>
+          <option value="no_answer">нет ответа</option>
+          <option value="blocked">блок (антиспам)</option>
+        </select>
+        <input id="simAnswer" class="input" placeholder="Ответ (1/2)" style="width:90px" value="1">
+        <button class="btn" onclick="saveSim()">Задать</button>
+        <span class="hint">исход следующего звонка на этот номер</span>
+      </div>
+      <div class="toolbar" style="margin-bottom:0">
+        <button class="btn g" onclick="seedDemo()">Загрузить демо-данные</button>
+        <span class="hint">добавит контакты и «Демо-кампанию (ИИ-агент)» — запустите и посмотрите цикл звонка</span>
+      </div>
     </div>
   </section>
 
   <!-- ОТЧЁТЫ -->
   <section id="reports" class="section">
     <div class="cards" id="repCards"></div>
-    <div class="panel"><h2>Результаты за сегодня</h2><div class="tblwrap"><table id="repResults"></table></div></div>
-    <div class="panel"><h2>По кампаниям</h2><div class="tblwrap"><table id="repCamps"></table></div></div>
-    <div class="panel"><h2>По номерам (Caller ID)</h2><div class="tblwrap"><table id="repNumbers"></table></div></div>
-    <div class="panel"><h2>Последние 7 дней</h2><div class="tblwrap"><table id="repTrend"></table></div></div>
+    <div class="panel"><h2>Результаты за сегодня</h2><div class="tblwrap thin"><table id="repResults"></table></div></div>
+    <div class="panel"><h2>По кампаниям</h2><div class="tblwrap thin"><table id="repCamps"></table></div></div>
+    <div class="panel"><h2>По номерам (Caller ID)</h2><div class="tblwrap thin"><table id="repNumbers"></table></div></div>
+    <div class="panel"><h2>Последние 7 дней</h2><div class="tblwrap thin"><table id="repTrend"></table></div></div>
   </section>
 
   <!-- КАМПАНИИ -->
   <section id="campaigns" class="section">
-    <div class="panel"><div class="toolbar"><h2 style="margin:0;flex:1">Кампании обзвона</h2>
-      <button class="btn" onclick="editCampaign()">+ Новая кампания</button></div>
-      <div class="tblwrap"><table id="campsTable"></table></div></div>
+    <div class="panel">
+      <div class="toolbar"><h2 style="margin:0" class="grow">Кампании обзвона</h2>
+        <button class="btn" onclick="editCampaign()">＋ Новая кампания</button></div>
+      <div class="tblwrap"><table id="campsTable"></table></div>
+    </div>
     <div id="campDetail"></div>
   </section>
 
   <!-- КОНТАКТЫ -->
   <section id="contacts" class="section">
-    <div class="panel"><div class="toolbar">
-      <h2 style="margin:0;flex:1">База контактов</h2>
-      <select id="contactGroup" class="select" onchange="loadContacts()"><option value="">Все группы</option></select>
-      <input id="contactSearch" class="input" placeholder="Поиск (имя/телефон)" oninput="loadContacts()" style="width:170px">
-      <button class="btn" onclick="editContact()">Добавить</button>
-      <button class="btn d" onclick="delSelected()">Удалить выбранные</button>
-      <a class="btn l" href="#" id="exportLink" onclick="exportCsv(event)">Экспорт CSV</a>
-      <button class="btn s" onclick="toggleImport()">Импорт</button>
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0" class="grow">База контактов</h2>
+        <select id="contactGroup" class="select" style="width:auto" onchange="renderContacts()">
+          <option value="">Все группы</option>
+        </select>
+        <input id="contactSearch" class="input" placeholder="Поиск (имя/телефон)" style="width:190px" oninput="renderContacts()">
+        <button class="btn" onclick="editContact()">Добавить</button>
+        <button class="btn d" onclick="delSelected()">Удалить выбранные</button>
+        <button class="btn l" onclick="exportCsv(event)">Экспорт CSV</button>
+        <button class="btn s" onclick="toggleImport()">Импорт</button>
+      </div>
+      <div id="importBox" class="hidden" style="margin-bottom:12px">
+        <textarea id="csvText" class="textarea" placeholder="Имя;Телефон;Группа;Примечание;1   (последнее поле 1 = есть согласие)"></textarea>
+        <div class="toolbar" style="margin:8px 0 0">
+          <button class="btn" onclick="importCsv()">Импортировать</button>
+          <span class="hint" id="importMsg"></span>
+        </div>
+      </div>
+      <div class="tblwrap"><table id="contactsTable"></table></div>
     </div>
-    <div id="importBox" class="hidden"><textarea id="csvText" class="textarea" placeholder="Имя;Телефон;Группа;Примечание;1  (1 = согласие)"></textarea>
-      <div class="toolbar"><button class="btn" onclick="importCsv()">Импортировать</button><span class="small" id="importMsg"></span></div></div>
-    <div class="tblwrap"><table id="contactsTable"></table></div></div>
   </section>
 
   <!-- НОМЕРА -->
   <section id="numbers" class="section">
-    <div class="panel"><h2>Пул номеров (Caller ID)</h2>
-      <div class="toolbar"><input id="nNumber" class="input" placeholder="Номер (E.164, напр. 79000000000)">
-        <input id="nLabel" class="input" placeholder="Метка" style="width:150px">
-        <input id="nLimit" class="input" type="number" value="100" style="width:80px" title="Суточный лимит звонков">
+    <div class="panel">
+      <h2>Пул номеров (Caller ID)</h2>
+      <div class="toolbar">
+        <input id="nNumber" class="input" placeholder="Номер (E.164, напр. 79000000000)" style="width:230px">
+        <input id="nLabel" class="input" placeholder="Метка" style="width:160px">
+        <input id="nLimit" class="input" type="number" value="100" style="width:110px" title="Суточный лимит звонков">
         <button class="btn" onclick="addNumber()">Добавить</button>
         <button class="btn s" onclick="resetPool()">Сбросить лимиты/карантин</button>
       </div>
       <div class="tblwrap"><table id="numbersTable"></table></div>
-      <p class="small">Лимит/день и «остывание» защищают номер от маркировки антиспамом. В карантин номер помещается при жалобах (авто-порог в настройках) или вручную.</p>
+      <p class="hint" style="margin:10px 0 0">Лимит/день и «остывание» защищают номер от маркировки антиспамом. В карантин номер попадает при жалобах (авто-порог — в настройках) или вручную.</p>
     </div>
   </section>
 
   <!-- ACD -->
   <section id="acd" class="section">
-    <div class="panel"><h2>Операторы</h2><div class="tblwrap"><table id="opTable"></table></div>
-      <div class="toolbar" style="margin-top:10px" id="myStatusBar"><span class="small">Мой статус:</span>
+    <div class="panel">
+      <h2>Операторы</h2>
+      <div class="tblwrap thin"><table id="opTable"></table></div>
+      <div class="toolbar" style="margin:12px 0 0" id="myStatusBar">
+        <span class="muted">Мой статус:</span>
         <button class="btn s" onclick="setMyStatus('free')">Свободен</button>
         <button class="btn" onclick="setMyStatus('break')">Перерыв</button>
-      </div></div>
-    <div class="panel"><h2>Очередь на оператора (ACD)</h2><div class="tblwrap"><table id="acdTable"></table></div>
-      <p class="small">Сюда попадают: квалифицированные ИИ-агентом контакты и звонки кампаний в режиме «сразу на оператора». Нажмите «Принять» — в симуляции звонок соединится; «Завершить» закроет разговор.</p></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Очередь на оператора (ACD)</h2>
+      <div class="tblwrap"><table id="acdTable"></table></div>
+      <p class="hint" style="margin:10px 0 0">Сюда попадают квалифицированные ИИ-агентом контакты и звонки кампаний в режиме «сразу на оператора». «Принять» — соединить, «Завершить разговор» — закрыть.</p>
+    </div>
   </section>
 
   <!-- ЖУРНАЛ -->
   <section id="journal" class="section">
-    <div class="panel"><div class="toolbar"><h2 style="margin:0;flex:1">Журнал звонков</h2>
-      <select id="jStatus" class="select" onchange="loadJournal()"><option value="">Все результаты</option>
-        <option>done_ok</option><option>operator_ok</option><option>done_agent</option><option>qualified_no</option>
-        <option>machine</option><option>busy</option><option>no_answer</option><option>failed</option>
-        <option>no_operator</option><option>exhausted</option><option>blocked</option></select>
-      <input id="jLimit" class="input" type="number" value="200" style="width:80px" onchange="loadJournal()">
-      <button class="btn l" onclick="exportCalls()">Экспорт CSV</button></div>
-      <div class="tblwrap"><table id="journalTable"></table></div></div>
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0" class="grow">Журнал звонков</h2>
+        <select id="jStatus" class="select" style="width:auto" onchange="loadJournal()">
+          <option value="">Все результаты</option>
+          <option>done_ok</option><option>operator_ok</option><option>done_agent</option>
+          <option>qualified_no</option><option>machine</option><option>busy</option>
+          <option>no_answer</option><option>failed</option><option>no_operator</option>
+          <option>exhausted</option><option>blocked</option>
+        </select>
+        <input id="jLimit" class="input" type="number" value="200" style="width:90px" title="Сколько показать" onchange="loadJournal()">
+        <button class="btn l" onclick="exportCalls()">Экспорт CSV</button>
+      </div>
+      <div class="tblwrap"><table id="journalTable"></table></div>
+    </div>
   </section>
 
   <!-- ЧЁРНЫЙ СПИСОК -->
   <section id="blacklist" class="section">
-    <div class="panel"><div class="toolbar"><h2 style="margin:0;flex:1">Чёрный список «не звонить»</h2>
-      <input id="blPhone" class="input" placeholder="Телефон"><input id="blReason" class="input" placeholder="Причина" style="width:160px">
-      <button class="btn" onclick="addBlacklist()">Добавить</button></div>
-      <div class="tblwrap"><table id="blTable"></table></div></div>
+    <div class="panel">
+      <div class="toolbar">
+        <h2 style="margin:0" class="grow">Чёрный список «не звонить»</h2>
+        <input id="blPhone" class="input" placeholder="Телефон" style="width:200px">
+        <input id="blReason" class="input" placeholder="Причина" style="width:180px">
+        <button class="btn" onclick="addBlacklist()">Добавить</button>
+      </div>
+      <div class="tblwrap"><table id="blTable"></table></div>
+    </div>
   </section>
 
   <!-- ШАБЛОНЫ -->
   <section id="templates" class="section">
-    <div class="panel"><div class="toolbar"><h2 style="margin:0;flex:1">Шаблоны и сценарии</h2>
-      <button class="btn" onclick="editTemplate()">+ Новый</button></div>
-      <div class="tblwrap"><table id="tplTable"></table></div></div>
+    <div class="panel">
+      <div class="toolbar"><h2 style="margin:0" class="grow">Шаблоны и сценарии</h2>
+        <button class="btn" onclick="editTemplate()">＋ Новый</button></div>
+      <div class="tblwrap"><table id="tplTable"></table></div>
+    </div>
   </section>
 
   <!-- НАСТРОЙКИ -->
   <section id="settings" class="section">
-    <div class="panel"><h2>Общие настройки</h2>
-      <div class="grid">
-        <label>Телефония-провайдер<select id="sProvider" class="select"><option value="sim">sim (симуляция)</option><option value="uis">UIS (МегаФон «Ювис»)</option><option value="ami">Asterisk AMI</option></select></label>
-        <label>Параллельных каналов<input id="sChannels" type="number" min="1" max="60" class="input"></label>
-        <label>Попыток на контакт (всего)<input id="sRetryMax" type="number" min="1" class="input"></label>
-        <label>Интервал повтора, мин<input id="sRetryDelay" type="number" class="input"></label>
-        <label>Остывание номера после звонка, сек<input id="sCooldown" type="number" class="input"></label>
-        <label>Watchdog «зависших» звонков, мин<input id="sWatchdog" type="number" class="input"></label>
-        <label>Таймаут ожидания оператора, сек<input id="sAcdT" type="number" class="input"></label>
-        <label>Начало окна<input id="sWinStart" type="time" class="input"></label>
-        <label>Конец окна<input id="sWinEnd" type="time" class="input"></label>
-        <label>Дни<select id="sDays" multiple class="select" size="2"><option value="0">Пн</option><option value="1">Вт</option><option value="2">Ср</option><option value="3">Чт</option><option value="4">Пт</option><option value="5">Сб</option><option value="6">Вс</option></select></label>
-        <label>CRM-драйвер<select id="sCrm" class="select"><option value="csv">csv (файловый)</option><option value="bitrix24">bitrix24 (вебхук)</option></select></label>
-        <label>Жалоб до автокарантина номера<input id="sQuar" type="number" class="input"></label>
-        <label>Ответ абонента в симуляции по умолчанию<input id="sSimAns" class="input"></label>
+    <div class="panel">
+      <h2>Общие настройки</h2>
+      <div class="formgrid">
+
+        <div class="fld">
+          <span class="lbl">Телефония-провайдер</span>
+          <select id="sProvider" class="select ctl">
+            <option value="sim">sim — симуляция (без оборудования)</option>
+            <option value="uis">UIS — МегаФон «Ювис» (Call API)</option>
+            <option value="ami">Asterisk AMI (SIP-транк)</option>
+          </select>
+          <span class="hint">меняется после перезапуска сервера</span>
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Параллельных каналов</span>
+          <input id="sChannels" type="number" min="1" max="60" class="input ctl">
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Попыток на контакт (всего)</span>
+          <input id="sRetryMax" type="number" min="1" class="input ctl">
+          <span class="hint">включая первый дозвон</span>
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Базовый интервал повтора, мин</span>
+          <input id="sRetryDelay" type="number" min="1" class="input ctl">
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Остывание номера после звонка, сек</span>
+          <input id="sCooldown" type="number" min="0" class="input ctl">
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Watchdog «зависших» звонков, мин</span>
+          <input id="sWatchdog" type="number" min="1" class="input ctl">
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Таймаут ожидания оператора, сек</span>
+          <input id="sAcdT" type="number" min="5" class="input ctl">
+          <span class="hint">если оператор не принял — no_operator + задача на перезвон</span>
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Жалоб до автокарантина номера</span>
+          <input id="sQuar" type="number" min="1" class="input ctl">
+        </div>
+
+        <div class="fld">
+          <span class="lbl">CRM-драйвер</span>
+          <select id="sCrm" class="select ctl">
+            <option value="csv">csv — файловая выгрузка</option>
+            <option value="bitrix24">bitrix24 — вебхук REST</option>
+          </select>
+        </div>
+
+        <div class="fld">
+          <span class="lbl">Ответ абонента в симуляции (по умолчанию)</span>
+          <input id="sSimAns" class="input ctl" placeholder="1">
+        </div>
+
+        <div class="fld span2">
+          <span class="lbl">Расписание звонков</span>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input id="sWinStart" type="time" class="input">
+            <span class="muted">—</span>
+            <input id="sWinEnd" type="time" class="input">
+          </div>
+        </div>
+
+        <div class="fld span2">
+          <span class="lbl">Дни недели</span>
+          <div class="dayschips" id="sDays"></div>
+        </div>
+
+        <div class="span2" style="display:flex;gap:18px;flex-wrap:wrap;padding-top:4px">
+          <label class="chkline"><input id="sConsent" type="checkbox"> Требовать согласие контакта на обзвон</label>
+        </div>
+
       </div>
-      <div class="toolbar" style="margin-top:12px">
-        <label class="switch"><input id="sConsent" type="checkbox"> Требовать согласие контакта</label>
-        <label class="switch"><input id="sAutoQuar" type="checkbox"> Автокарантин по жалобам</label>
+      <div class="form-actions">
+        <button class="btn" onclick="saveSettings()">Сохранить настройки</button>
+        <span class="hint" id="setMsg"></span>
       </div>
-      <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="saveSettings()">Сохранить</button><span class="small" id="setMsg"></span></div>
     </div>
-    <div class="panel"><h2>Провайдеры и интеграции (JSON, админ)</h2>
-      <p class="small">UIS (Call API/SIP), Asterisk AMI, LLM-агент, CRM, Bitrix24. Значения не отдаются операторам. После изменения — перезапуск: python -m app.run.</p>
-      <textarea id="sRaw" class="textarea" style="min-height:180px;font-family:monospace;font-size:12px"></textarea>
-      <div class="toolbar" style="margin-top:8px"><button class="btn" onclick="loadRawCfg()">Показать текущее</button>
-      <button class="btn" onclick="saveRawCfg()">Сохранить конфигурацию</button><span class="small" id="rawMsg"></span></div>
+
+    <div class="panel hidden" id="rawPanel">
+      <h2>Провайдеры и интеграции <span class="badge y">только админ</span></h2>
+      <p class="hint" style="margin:0 0 10px">UIS (Call API/SIP), Asterisk AMI, LLM-агент, CRM/Bitrix24. После изменения — перезапуск: python -m app.run.</p>
+      <textarea id="sRaw" class="textarea" style="min-height:200px;font-family:Consolas,Menlo,monospace;font-size:12px"></textarea>
+      <div class="toolbar" style="margin:10px 0 0">
+        <button class="btn s" onclick="loadRawCfg()">Показать текущее</button>
+        <button class="btn" onclick="saveRawCfg()">Сохранить конфигурацию</button>
+        <span class="hint" id="rawMsg"></span>
+      </div>
     </div>
-    <div class="panel"><h2>Смена пароля</h2>
-      <div class="toolbar"><input id="newPass" type="password" class="input" placeholder="Новый пароль">
-        <button class="btn" onclick="changePass()">Сменить</button></div></div>
+
+    <div class="panel hidden" id="passPanel">
+      <h2>Смена пароля</h2>
+      <div class="toolbar" style="margin:0">
+        <input id="newPass" type="password" class="input" placeholder="Новый пароль (мин. 6 символов)" style="width:240px">
+        <button class="btn" onclick="changePass()">Сменить</button>
+      </div>
+    </div>
   </section>
+</div>
 </main>
 </div>
+
 <div id="modal" class="modal hidden"><div class="modalbox" id="modalBox"></div></div>
 
 <script>
-let state={token:localStorage.getItem('ats_token')||'', role:'', me:'', settings:null, contacts:[], numbers:[], campaigns:[], templates:[], providersim:true};
+'use strict';
+let state={token:localStorage.getItem('ats_token')||'', role:'', settings:null, contacts:[], campaigns:[], numbers:[], templates:[], activeTab:'dash'};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DAYS=[['0','Пн'],['1','Вт'],['2','Ср'],['3','Чт'],['4','Пт'],['5','Сб'],['6','Вс']];
 const ST={done_ok:['g','Сообщение доставлено'],operator_ok:['g','Оператор'],done_agent:['cy','ИИ-агент (квалифицирован)'],
   qualified_no:['cy','ИИ-агент (не квалифицирован)'],machine:['y','Автоответчик'],busy:['y','Занято'],
   no_answer:['y','Нет ответа'],failed:['r','Сбой'],blocked:['r','Блок антиспама'],no_operator:['r','Оператор не ответил'],
   exhausted:['r','Попытки исчерпаны'],queued:['','В очереди'],dialing:['y','Дозвон'],agent:['cy','ИИ-агент'],
   wait_operator:['b','Ждёт оператора'],talk:['b','Разговор'],blocked_no_consent:['r','Нет согласия'],
-  blacklisted:['r','Чёрный список'],canceled:['','Отменено'],operator_ok2:['g','Оператор'],new:['','Новый']};
-function badge(st){const x=ST[st]||ST.new||['',''];return `<span class="badge ${x[0]}">${esc(st)}</span>`}
+  blacklisted:['r','Чёрный список'],canceled:['','Отменено'],new:['','Новый']};
+const REP_LABEL={done_ok:'Сообщение доставлено',operator_ok:'Оператор',done_agent:'ИИ-агент (кв.)',qualified_no:'Агент (не кв.)',
+  machine:'Автоответчик',busy:'Занято',no_answer:'Нет ответа',failed:'Сбой',blocked:'Блок',no_operator:'Нет оператора',
+  timeout:'Таймаут',exhausted:'Исчерпано',done:'Завершён',blocked_no_consent:'Нет согласия',blacklisted:'Чёрный список'};
+function badge(st){const x=ST[st]||['',''];return `<span class="badge ${x[0]}">${esc(st)}</span>`}
 function badgeTxt(st,txt){const x=ST[st]||['',''];return `<span class="badge ${x[0]}">${esc(txt||st)}</span>`}
 
+/* ---------- HTTP ---------- */
 async function api(path, opts={}){
   const method=opts.method||(opts.body!==undefined?'POST':'GET');
   const headers={'Content-Type':'application/json'};
   if(state.token)headers['X-Ats-Token']=state.token;
-  let r=await fetch('/api/v2'+path,{method,headers,body:opts.body!==undefined?JSON.stringify(opts.body):undefined});
-  if(r.status===401&&path!=='/auth/login'){logout(true);throw new Error('auth')}
-  return r.json();
+  let r;
+  try{
+    r=await fetch('/api/v2'+path,{method,headers,body:opts.body!==undefined?JSON.stringify(opts.body):undefined});
+  }catch(e){throw new Error('network');}
+  if(r.status===401&&path!=='/auth/login'){logout(true);throw new Error('auth');}
+  try{return await r.json();}catch(e){return {ok:false,error:'bad_response'};}
 }
-// ---------- навигация ----------
+async function safe(fn){try{return await fn();}catch(e){return null;}}
+function isActive(t){return state.activeTab===t;}
+
+/* ---------- навигация ---------- */
+const TAB2SEC={dash:'dash',reports:'reports',campaigns:'campaigns',contacts:'contacts',numbers:'numbers',
+  acd:'acd',journal:'journal',blacklist:'blacklist',templates:'templates',settings:'settings'};
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
-function openTab(t){document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$('#'+t.replace('dash','dash'))?.classList.remove('active');
-  const map={dash:'dash',reports:'reports',campaigns:'campaigns',contacts:'contacts',numbers:'numbers',acd:'acd',journal:'journal',blacklist:'blacklist',templates:'templates',settings:'settings'};
-  document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));$(map[t]).classList.add('active');
+function openTab(t){
+  state.activeTab=t;
+  document.querySelectorAll('.section').forEach(x=>x.classList.remove('active'));
+  const sec=$(TAB2SEC[t]); if(sec)sec.classList.add('active');
   document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.tab===t));
-  refresh(t);}
-async function refresh(tab){
-  if(tab==='dash')return loadDash();
-  if(tab==='reports')return loadReports();
-  if(tab==='campaigns')return loadCamps();
-  if(tab==='contacts')return loadContacts();
-  if(tab==='numbers')return loadNumbers();
-  if(tab==='acd')return loadAcd();
-  if(tab==='journal')return loadJournal();
-  if(tab==='blacklist')return loadBlacklist();
-  if(tab==='templates')return loadTemplates();
-  if(tab==='settings')return loadSettings();
+  safe(()=>refresh(t));
 }
-// ---------- авторизация ----------
+async function refresh(tab){
+  const F={dash:loadDash,reports:loadReports,campaigns:loadCamps,contacts:fetchContacts,numbers:loadNumbers,
+    acd:loadAcd,journal:loadJournal,blacklist:loadBlacklist,templates:loadTemplates,settings:loadSettings};
+  if(F[tab])return F[tab]();
+}
+/* дебаунс обновлений (SSE/события) — чтобы UI не «дёргался» при потоке звонков */
+const _deb={};
+function debRefresh(tab,ms=1200){
+  if(!isActive(tab))return;
+  clearTimeout(_deb[tab]);
+  _deb[tab]=setTimeout(()=>{delete _deb[tab];safe(()=>refresh(tab));},ms);
+}
+
+/* ---------- авторизация ---------- */
 async function doLogin(){
-  const j=await api('/auth/login',{body:{login:$('login').value,password:$('password').value}});
-  if(j.ok){state.token=j.token;state.role=j.role;localStorage.setItem('ats_token',j.token);afterAuth();connectSSE();}
-  else alert('Неверный логин или пароль');
+  const j=await safe(()=>api('/auth/login',{body:{login:$('login').value,password:$('password').value}}));
+  if(j&&j.ok){state.token=j.token;state.role=j.role;localStorage.setItem('ats_token',j.token);afterAuth();connectSSE();}
+  else alert('Неверный логин или пароль (или слишком много попыток — подождите)');
 }
 async function logout(silent){state.token='';state.role='';localStorage.removeItem('ats_token');if(!silent)location.reload();}
 function afterAuth(){
   $('loginBox').classList.add('hidden');$('userBox').classList.remove('hidden');
   $('roleLabel').textContent='Роль: '+(state.role==='admin'?'администратор':'оператор');
-  $('who').textContent=state.role==='admin'?'Вход: admin (админ)':'Вход: operator (оператор)';
-  loadDash();
+  $('who').textContent='Вход: '+(state.role==='admin'?'admin (админ)':'operator');
+  $('rawPanel').classList.toggle('hidden',state.role!=='admin');
+  $('passPanel').classList.toggle('hidden',state.role!=='admin');
+  safe(()=>loadDash());
 }
-// ---------- обзор ----------
+
+/* ---------- обзор ---------- */
 async function loadDash(){
   const j=await api('/dashboard');
-  state.providersim=(j.numbers||[]).every(n=>n.provider==='sim')||(j.numbers||[]).length===0;
-  const it=j.items||{};
-  const okT=j.ok_today||0, allT=j.calls_today||0;
-  $('dashCards').innerHTML=`<div class="metric"><b>${esc(j.campaigns_running)}</b><span>кампаний в работе</span></div>
-   <div class="metric"><b>${esc(j.active_channels)}</b><span>активных каналов</span></div>
-   <div class="metric"><b>${esc(allT)}</b><span>звонков сегодня</span></div>
-   <div class="metric"><b class="ok">${esc(okT)}</b><span>успешных сегодня</span></div>
-   <div class="metric"><b>${esc(it.queued||0)}</b><span>в очереди</span></div>
-   <div class="metric"><b>${esc(it.wait_operator||0)}</b><span>ждут оператора</span></div>
-   <div class="metric"><b>${esc(j.acd_queued||0)}</b><span>в ACD-очереди</span></div>`;
-  $('acdCount').textContent=j.acd_queued||0;$('acdCount').classList.toggle('hidden',!(j.acd_queued>0));
+  if(!j||j.error){return;}
+  state.providersim=((j.numbers||[]).length===0)||(j.numbers||[]).every(n=>n.provider==='sim');
+  const it=j.items||{},okT=j.ok_today||0,allT=j.calls_today||0;
+  $('dashCards').innerHTML=
+   `<div class="metric"><b>${esc(j.campaigns_running)}</b><span>кампаний в работе</span></div>
+    <div class="metric"><b>${esc(j.active_channels)}</b><span>активных каналов</span></div>
+    <div class="metric"><b>${esc(allT)}</b><span>звонков сегодня</span></div>
+    <div class="metric"><b class="ok">${esc(okT)}</b><span>успешных сегодня</span></div>
+    <div class="metric"><b>${esc(it.queued||0)}</b><span>в очереди</span></div>
+    <div class="metric"><b>${esc(it.wait_operator||0)}</b><span>ждут оператора</span></div>
+    <div class="metric"><b>${esc(j.acd_queued||0)}</b><span>в ACD-очереди</span></div>`;
+  $('acdCount').textContent=j.acd_queued||0;
+  $('acdCount').classList.toggle('hidden',!(j.acd_queued>0));
   $('dashNumbers').innerHTML='<tr><th>Номер</th><th>Метка</th><th>Сегодня/лимит</th><th>Статус</th></tr>'+
-    (j.numbers||[]).map(n=>`<tr><td><b>${esc(n.number)}</b></td><td>${esc(n.label)}</td>
-      <td>${n.daily_count}/${n.daily_limit||'∞'}</td><td>${n.quarantined?'<span class="badge r">карантин</span>':n.cooling?'<span class="badge y">остывает</span>':'<span class="badge g">активен</span>'}</td></tr>`).join('');
-  $('dashCamps').innerHTML='<tr><th>Кампания</th><th>Сценарий</th><th>Статус</th></tr>'+
-    (j.campaigns_running?await Promise.resolve(''):'');
+   (j.numbers||[]).map(n=>`<tr><td><b>${esc(n.number)}</b></td><td>${esc(n.label)}</td>
+     <td class="num">${n.daily_count}/${n.daily_limit||'∞'}</td>
+     <td>${n.quarantined?'<span class="badge r">карантин</span>':n.cooling?'<span class="badge y">остывает</span>':'<span class="badge g">активен</span>'}</td></tr>`).join('')
+   ||'<tr><td colspan="4" class="dim">Номеров пока нет</td></tr>';
   const camps=await api('/campaigns');
-  $('dashCamps').innerHTML='<tr><th>Кампания</th><th>Сценарий</th><th>Статус</th></tr>'+
-    camps.campaigns.slice(0,8).map(c=>`<tr><td>${esc(c.name)}</td><td>${esc(c.flow)}</td><td>${badgeTxt(c.status,c.status==='running'?'В работе':c.status==='paused'?'Пауза':'Остановлена')}</td></tr>`).join('')
-    || '<tr><td colspan="3" class="small">Кампаний нет — создайте в разделе «Кампании»</td></tr>';
-  $('simPanel').classList.toggle('hidden', !state.providersim);
+  if(camps&&camps.campaigns!==undefined)state.campaigns=camps.campaigns;
+  const rows=(state.campaigns||[]).slice(0,8);
+  $('dashCamps').innerHTML='<tr><th>Кампания</th><th>Сценарий</th><th>Очередь</th><th>Успешно/звонков</th><th>Статус</th></tr>'+
+   rows.map(c=>`<tr><td><a href="#" class="ok" onclick="openTab('campaigns');showCamp(${c.id});return false"><b>${esc(c.name)}</b></a></td>
+     <td>${esc(c.flow)}</td><td class="num">${c.items_queued||0}</td><td class="num">${c.calls_ok||0}/${c.calls||0}</td>
+     <td>${badgeTxt(c.status,c.status==='running'?'В работе':c.status==='paused'?'Пауза':'Остановлена')}</td></tr>`).join('')
+   ||'<tr><td colspan="5" class="dim">Кампаний нет — создайте в разделе «Кампании»</td></tr>';
+  $('simPanel').classList.toggle('hidden',!state.providersim);
 }
 async function saveSim(){
-  await api('/sim/script',{body:{phone:$('simPhone').value.trim(),outcome:$('simOutcome').value,answer:$('simAnswer').value.trim()}});
-  alert('Сценарий симуляции задан');
+  const j=await safe(()=>api('/sim/script',{body:{phone:$('simPhone').value.trim(),outcome:$('simOutcome').value,answer:$('simAnswer').value.trim()}}));
+  if(j&&j.ok)alert('Сценарий симуляции задан');else alert('Ошибка');
 }
 async function seedDemo(){
-  const j=await api('/demo/seed',{body:{}});
-  if(j.ok){alert('Демо-данные: +'+j.contacts_added+' контактов, кампания #'+j.campaign_id+' ('+j.items+' в очереди)');loadDash();loadCamps();}
-  else alert('Ошибка: '+j.error);
+  const j=await safe(()=>api('/demo/seed',{body:{}}));
+  if(j&&j.ok){alert('Демо-данные: +'+j.contacts_added+' контактов, кампания #'+j.campaign_id+' ('+j.items+' в очереди)');safe(()=>loadDash());safe(()=>loadCamps());}
+  else alert('Ошибка: '+((j&&j.error)||'?'));
 }
-// ---------- контакты ----------
-async function loadContacts(){
+
+/* ---------- контакты ---------- */
+async function fetchContacts(){
   const j=await api('/contacts');
+  if(!j||j.error)return;
   state.contacts=j.contacts;
-  const groups=[...new Set(j.contacts.map(c=>c.grp).filter(Boolean))];
-  $('contactGroup').innerHTML='<option value="">Все группы</option>'+groups.map(g=>`<option>${esc(g)}</option>`).join('');
-  const q=($('contactSearch').value||'').toLowerCase(), grp=$('contactGroup').value;
-  let rows=j.contacts.filter(c=>(!grp||c.grp===grp)&&(!q||(c.name+' '+c.phone).toLowerCase().includes(q)));
-  $('contactsTable').innerHTML='<tr><th></th><th>Имя</th><th>Телефон</th><th>Группа</th><th>Согласие</th><th>Статус</th><th>Действия</th></tr>'+
+  const groups=[...new Set(j.contacts.map(c=>c.grp).filter(Boolean))].sort();
+  const cur=$('contactGroup').value;
+  $('contactGroup').innerHTML='<option value="">Все группы</option>'+
+    groups.map(g=>`<option value="${esc(g)}" ${g===cur?'selected':''}>${esc(g)}</option>`).join('');
+  renderContacts();
+}
+function renderContacts(){
+  const q=($('contactSearch').value||'').toLowerCase().trim();
+  const grp=$('contactGroup').value;
+  const rows=(state.contacts||[]).filter(c=>(!grp||c.grp===grp)&&(!q||(c.name+' '+c.phone).toLowerCase().includes(q)));
+  $('contactsTable').innerHTML='<tr><th></th><th>Имя</th><th>Телефон</th><th>Группа</th><th>Согласие</th><th>Статус</th><th class="num">Действия</th></tr>'+
    rows.map(c=>`<tr><td><input type="checkbox" class="ck" data-id="${c.id}"></td><td>${esc(c.name)}</td>
-    <td><b>${esc(c.phone)}</b></td><td>${esc(c.grp)}</td>
+    <td><b class="nowrap">${esc(c.phone)}</b></td><td>${esc(c.grp)}</td>
     <td>${c.consent?'<span class="badge g">да</span>':'<span class="badge">нет</span>'}</td>
-    <td>${c.blacklisted?'<span class="badge r">ЧС</span>':''} ${c.complaints?`<span class="badge y">жалоб:${c.complaints}</span>`:''}</td>
-    <td><button class="btn l" onclick="editContact(${c.id})">Ред.</button>
-        <button class="btn d" onclick="delContact(${c.id})">Удалить</button>
-        <button class="btn s" onclick="complaint('${esc(c.phone)}')">Жалоба</button></td></tr>`).join('')||'<tr><td colspan="7" class="small">Пусто</td></tr>';
+    <td>${c.blacklisted?'<span class="badge r">ЧС</span>':''}${c.complaints?`<span class="badge y">жалоб:${c.complaints}</span>`:''}</td>
+    <td class="num"><span class="btn-row">
+      <button class="btn l sm" onclick="editContact(${c.id})">Ред.</button>
+      <button class="btn d sm" onclick="delContact(${c.id})">Удалить</button>
+      <button class="btn s sm" onclick="complaint('${esc(c.phone)}')">Жалоба</button>
+    </span></td></tr>`).join('')||`<tr><td colspan="7" class="dim">Контактов нет — добавьте вручную или импортируйте CSV</td></tr>`;
 }
 function toggleImport(){$('importBox').classList.toggle('hidden')}
 async function importCsv(){
-  const rows=[];$('csvText').value.split(/\r?\n/).forEach(l=>{const p=l.split(';');if(p[1])rows.push({name:p[0]||'',phone:p[1]||'',group:p[2]||'',note:p[3]||'',consent:['1','да','yes','true','+'].includes(String(p[4]||'').toLowerCase())})});
+  const rows=[];
+  $('csvText').value.split(/\r?\n/).forEach(l=>{
+    const p=l.split(';');
+    if(p[1])rows.push({name:p[0]||'',phone:p[1]||'',group:p[2]||'',note:p[3]||'',
+      consent:['1','да','yes','true','+'].includes(String(p[4]||'').toLowerCase())});
+  });
   if(!rows.length)return alert('Нет строк');
-  const j=await api('/contacts/import',{body:{rows}});
-  $('importMsg').textContent=`Добавлено: ${j.added}, обновлено: ${j.updated||0}`;await loadContacts();
+  const j=await safe(()=>api('/contacts/import',{body:{rows}}));
+  if(j&&j.ok){$('importMsg').textContent='Добавлено: '+j.added+', обновлено: '+(j.updated||0);await fetchContacts();}
+  else alert('Ошибка импорта');
 }
 function editContact(id){
   const c=state.contacts.find(x=>x.id===id)||{id:0,name:'',phone:'',grp:'',note:'',consent:true};
-  modal(`<h2 style="margin-top:0">${id?'Редактирование контакта':'Новый контакт'}</h2>
-   <div class="grid"><label>Имя<input id="cName" class="input" value="${esc(c.name)}"></label>
-   <label>Телефон<input id="cPhone" class="input" value="${esc(c.phone)}"></label>
-   <label>Группа<input id="cGrp" class="input" value="${esc(c.grp)}"></label>
-   <label>Согласие на обзвон<label class="switch" style="margin-top:8px"><input id="cConsent" type="checkbox" ${c.consent?'checked':''}> разрешено</label></label>
-   <label style="grid-column:1/-1">Примечание<textarea id="cNote" class="textarea">${esc(c.note)}</textarea></label></div>
-   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="saveContact(${id})">Сохранить</button>
-   <button class="btn s" onclick="closeModal()">Отмена</button></div>`);
+  modal(`<h2>${id?'Редактирование контакта':'Новый контакт'}</h2>
+    <div class="formgrid">
+      <div class="fld"><span class="lbl">Имя</span><input id="cName" class="input ctl" value="${esc(c.name)}"></div>
+      <div class="fld"><span class="lbl">Телефон</span><input id="cPhone" class="input ctl" value="${esc(c.phone)}" placeholder="+7..."></div>
+      <div class="fld"><span class="lbl">Группа</span><input id="cGrp" class="input ctl" value="${esc(c.grp)}"></div>
+      <div class="fld" style="justify-content:flex-end">
+        <label class="chkline" style="margin-bottom:8px"><input id="cConsent" type="checkbox" ${c.consent?'checked':''}> есть согласие на обзвон</label>
+      </div>
+      <div class="fld span2"><span class="lbl">Примечание</span>
+        <textarea id="cNote" class="textarea ctl">${esc(c.note)}</textarea></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="saveContact(${id})">Сохранить</button>
+      <button class="btn x" onclick="closeModal()">Отмена</button>
+    </div>`);
 }
 async function saveContact(id){
-  const j=await api('/contacts/save',{body:{id:id,name:$('cName').value,phone:$('cPhone').value,group:$('cGrp').value,note:$('cNote').value,consent:$('cConsent').checked}});
-  if(j.ok){closeModal();await loadContacts();}else alert(j.error||'Ошибка');
+  const j=await safe(()=>api('/contacts/save',{body:{id:id,name:$('cName').value,phone:$('cPhone').value,group:$('cGrp').value,note:$('cNote').value,consent:$('cConsent').checked}}));
+  if(j&&j.ok){closeModal();await fetchContacts();}else alert((j&&j.error)||'Ошибка');
 }
-async function delContact(id){if(confirm('Удалить контакт?')){await api('/contacts/delete',{body:{ids:[id]}});await loadContacts()}}
-async function exportCsv(ev){ev.preventDefault();const r=await fetch('/api/v2/export/contacts.csv',{headers:{'X-Ats-Token':state.token}});if(!r.ok)return alert('Нет доступа');const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='contacts.csv';a.click();}
+async function delContact(id){if(confirm('Удалить контакт?')){await api('/contacts/delete',{body:{ids:[id]}});await fetchContacts();}}
+async function exportCsv(ev){if(ev)ev.preventDefault();const r=await fetch('/api/v2/export/contacts.csv',{headers:{'X-Ats-Token':state.token}});
+  if(!r.ok)return alert('Экспорт — только для администратора');const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='contacts.csv';a.click();}
 async function complaint(phone){
-  await api('/complaint',{body:{phone,source:'operator'}});
-  alert('Жалоба зафиксирована: контакт в чёрный список, номер — под наблюдением');await loadContacts();
+  const j=await safe(()=>api('/complaint',{body:{phone,source:'operator'}}));
+  if(j&&j.ok){alert('Жалоба зафиксирована: контакт в чёрный список, номер — под наблюдением');await fetchContacts();}
 }
 function selectedIds(){return [...document.querySelectorAll('.ck:checked')].map(x=>parseInt(x.dataset.id))}
-async function delSelected(){const ids=selectedIds();if(!ids.length)return alert('Выберите контакты');if(confirm('Удалить выбранных ('+ids.length+')?')){await api('/contacts/delete',{body:{ids}});await loadContacts()}}
-// ---------- кампании ----------
-async function loadCamps(){
-  const j=await api('/campaigns');state.campaigns=j.campaigns;
-  $('campsTable').innerHTML='<tr><th>ID</th><th>Название</th><th>Сценарий</th><th>Статус</th><th>В очереди</th><th>Успешно/звонков</th><th>Действия</th></tr>'+
-   j.campaigns.map(c=>`<tr><td>${c.id}</td><td><a href="#" class="ok" onclick="showCamp(${c.id});return false"><b>${esc(c.name)}</b></a></td>
-    <td>${esc(c.flow)}${c.template_name?' · '+esc(c.template_name):''}</td>
-    <td>${badgeTxt(c.status,c.status==='running'?'В работе':c.status==='paused'?'Пауза':'Остановлена')}</td>
-    <td>${c.items_queued||0}</td><td>${c.calls_ok||0}/${c.calls||0}</td>
-    <td><button class="btn g" onclick="campAction(${c.id},'start')">▶</button>
-    <button class="btn s" onclick="campAction(${c.id},'pause')">⏸</button>
-    <button class="btn d" onclick="campAction(${c.id},'stop')">⏹</button>
-    <button class="btn l" onclick="showCamp(${c.id})">Детали</button></td></tr>`).join('')||'<tr><td colspan="7" class="small">Пусто</td></tr>';
+async function delSelected(){
+  const ids=selectedIds();if(!ids.length)return alert('Выберите контакты');
+  if(confirm('Удалить выбранных ('+ids.length+')?')){await api('/contacts/delete',{body:{ids}});await fetchContacts();}
 }
-async function campAction(id,act){await api(`/campaigns/${id}/${act}`,{body:{}});await loadCamps();showCamp(id)}
+
+/* ---------- кампании ---------- */
+async function loadCamps(){
+  const j=await api('/campaigns');
+  if(!j||j.error)return;
+  state.campaigns=j.campaigns;
+  $('campsTable').innerHTML='<tr><th>ID</th><th>Название</th><th>Сценарий</th><th>Статус</th><th class="num">В очереди</th><th class="num">Успешно/звонков</th><th class="num">Действия</th></tr>'+
+   j.campaigns.map(c=>`<tr><td class="dim">#${c.id}</td>
+    <td><a href="#" class="ok" onclick="showCamp(${c.id});return false"><b>${esc(c.name)}</b></a></td>
+    <td>${esc(c.flow)}${c.template_name?' <span class="dim">· '+esc(c.template_name)+'</span>':''}</td>
+    <td>${badgeTxt(c.status,c.status==='running'?'В работе':c.status==='paused'?'Пауза':'Остановлена')}</td>
+    <td class="num">${c.items_queued||0}</td><td class="num">${c.calls_ok||0}/${c.calls||0}</td>
+    <td class="num"><span class="btn-row">
+      <button class="btn g sm" onclick="campAction(${c.id},'start')" title="Запустить">▶</button>
+      <button class="btn s sm" onclick="campAction(${c.id},'pause')" title="Пауза">⏸</button>
+      <button class="btn d sm" onclick="campAction(${c.id},'stop')" title="Остановить">⏹</button>
+      <button class="btn l sm" onclick="showCamp(${c.id})">Детали</button>
+    </span></td></tr>`).join('')||'<tr><td colspan="7" class="dim">Кампаний нет — создайте первую</td></tr>';
+}
+async function campAction(id,act){
+  const j=await safe(()=>api(`/campaigns/${id}/${act}`,{body:{}}));
+  if(j&&j.ok){await loadCamps();if(state.activeTab==='campaigns')showCamp(id);}
+}
 function editCampaign(c){
-  c=c||{};const tpl=state.templates.length?state.templates:[];void tpl;
+  c=c||{};
   loadTemplates(true).then(()=>{
-    const tpls=state.templates;
-    modal(`<h2 style="margin-top:0">${c.id?'Редактирование':'Новая кампания'}</h2>
-     <div class="grid"><label>Название<input id="kName" class="input" value="${esc(c.name||'')}"></label>
-     <label>Сценарий<select id="kFlow" class="select">
-       <option value="message" ${c.flow==='message'?'selected':''}>Сообщение (озвучка)</option>
-       <option value="agent" ${!c.flow||c.flow==='agent'?'selected':''}>ИИ-агент (квалификация)</option>
-       <option value="operator" ${c.flow==='operator'?'selected':''}>Сразу на оператора</option></select></label>
-     <label>Шаблон/сценарий бота<select id="kTemplate" class="select">${tpls.map(t=>`<option value="${t.id}" ${t.id==c.template_id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label>
-     <label>Начало окна<input id="kWs" type="time" class="input" value="${esc((c.schedule&&c.schedule.start)||'08:00')}"></label>
-     <label>Конец окна<input id="kWe" type="time" class="input" value="${esc((c.schedule&&c.schedule.end)||'20:00')}"></label>
-     <label>Попыток на контакт<input id="kRetry" type="number" class="input" value="${c.retry_max>=0?c.retry_max:''}" placeholder="по умолчанию"></label>
-     <label>Макс. параллельно<input id="kCh" type="number" class="input" value="${c.max_channels||''}" placeholder="по умолчанию"></label>
-     <label style="grid-column:1/-1" class="switch"><input id="kConnect" type="checkbox" ${c.connect_on_qualify===0?'':'checked'}> квалифицированных — на оператора</label>
-     <label style="grid-column:1/-1">Интервалы повторов по причинам, мин (JSON, необязательно)<input id="kRetryMap" class="input" style="font-family:monospace;font-size:12px" value="${esc(c.retry_map?JSON.stringify(c.retry_map):'{\"busy\": 5, \"no_answer\": 20, \"machine\": 30}')}"></label></div>
-     <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="saveCampaign(${c.id||0})">Сохранить</button>
-     <button class="btn s" onclick="closeModal()">Отмена</button></div>`);
+    const tpls=state.templates||[];
+    modal(`<h2>${c.id?'Редактирование кампании':'Новая кампания'}</h2>
+      <div class="formgrid">
+        <div class="fld span2"><span class="lbl">Название</span><input id="kName" class="input ctl" value="${esc(c.name||'')}"></div>
+        <div class="fld"><span class="lbl">Сценарий</span>
+          <select id="kFlow" class="select ctl">
+            <option value="message" ${c.flow==='message'?'selected':''}>Сообщение (озвучка)</option>
+            <option value="agent" ${!c.flow||c.flow==='agent'?'selected':''}>ИИ-агент (квалификация)</option>
+            <option value="operator" ${c.flow==='operator'?'selected':''}>Сразу на оператора</option>
+          </select></div>
+        <div class="fld"><span class="lbl">Шаблон / сценарий бота</span>
+          <select id="kTemplate" class="select ctl">${tpls.map(t=>`<option value="${t.id}" ${t.id==c.template_id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
+        <div class="fld"><span class="lbl">Начало звонков</span><input id="kWs" type="time" class="input ctl" value="${esc((c.schedule&&c.schedule.start)||'08:00')}"></div>
+        <div class="fld"><span class="lbl">Конец звонков</span><input id="kWe" type="time" class="input ctl" value="${esc((c.schedule&&c.schedule.end)||'20:00')}"></div>
+        <div class="fld"><span class="lbl">Попыток на контакт</span><input id="kRetry" type="number" min="1" class="input ctl" value="${c.retry_max>=0?c.retry_max:''}" placeholder="по умолчанию"></div>
+        <div class="fld"><span class="lbl">Максимум параллельно</span><input id="kCh" type="number" min="1" class="input ctl" value="${c.max_channels||''}" placeholder="по умолчанию"></div>
+        <div class="fld span2"><span class="lbl">Интервалы повторов по причинам, мин (JSON, необязательно)</span>
+          <input id="kRetryMap" class="input ctl" style="font-family:Consolas,Menlo,monospace;font-size:12px"
+                 value="${esc(c.retry_map?JSON.stringify(c.retry_map):'{\\"busy\\": 5, \\"no_answer\\": 20, \\"machine\\": 30}')}">
+          <span class="hint">{"busy": 5, "no_answer": 20, "machine": 30} — пауза до повтора по причине</span></div>
+        <div class="span2"><label class="chkline"><input id="kConnect" type="checkbox" ${c.connect_on_qualify===0?'':'checked'}> квалифицированных ИИ-агентом — переводить на оператора</label></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="saveCampaign(${c.id||0})">Сохранить</button>
+        <button class="btn x" onclick="closeModal()">Отмена</button>
+      </div>`);
   });
 }
 async function saveCampaign(id){
   const sc={start:$('kWs').value||'08:00',end:$('kWe').value||'20:00',days:[0,1,2,3,4,5,6]};
-  let rm={};try{rm=JSON.parse($('kRetryMap').value||'{}')}catch(e){return alert('Интервалы повторов: невалидный JSON — '+e.message)}
+  let rm={};
+  try{rm=JSON.parse($('kRetryMap').value||'{}');}catch(e){return alert('Интервалы повторов: невалидный JSON — '+e.message);}
   const body={id:id,name:$('kName').value,flow:$('kFlow').value,template_id:parseInt($('kTemplate').value),
     schedule:sc,retry_max:parseInt($('kRetry').value||-1),max_channels:parseInt($('kCh').value||0),
     retry_map:rm,connect_on_qualify:$('kConnect').checked};
-  const j=await api('/campaigns/save',{body});if(j.ok){closeModal();await loadCamps();showCamp(j.id||id)}else alert('Ошибка');
+  const j=await safe(()=>api('/campaigns/save',{body}));
+  if(j&&j.ok){closeModal();await loadCamps();showCamp(j.id||id);}else alert('Ошибка сохранения');
 }
 async function showCamp(id){
-  window._camp=id;
-  const j=await api(`/campaigns/${id}`);const c=j.campaign||{};const items=j.items||[];const calls=j.calls||[];
+  const j=await api(`/campaigns/${id}`);
+  if(!j||!j.campaign)return;
+  const c=j.campaign||{},items=j.items||[],calls=j.calls||[];
   const stMap={};items.forEach(i=>stMap[i.status]=(stMap[i.status]||0)+1);
-  $('campDetail').innerHTML=`<div class="panel"><div class="toolbar"><h2 style="margin:0">Кампания #${c.id}: ${esc(c.name||'')}</h2>
-    <span class="badge ${c.status==='running'?'g':c.status==='paused'?'y':'r'}">${esc(c.status)}</span></div>
-    <p class="small">Сценарий: ${esc(c.flow)} · шаблон: ${esc(c.template_name||c.template_id)} · попыток/контакт: ${esc(c.retry_max>=0?c.retry_max:'умолч.')}
-     · по расписанию: ${esc((c.schedule&&c.schedule.start)||'-')}–${esc((c.schedule&&c.schedule.end)||'-')}
-     · статусы: ${Object.entries(stMap).map(([s,n])=>`${esc(s)} (${n})`).join(', ')||'—'}</p>
-    <div class="toolbar"><button class="btn s" onclick="addContactsToCamp(${id})">Добавить контакты</button>
-    <button class="btn d" onclick="clearCamp(${id})">Очистить список</button></div>
-    <h3 style="font-size:14px">Контакты кампании (${items.length})</h3>
-    <div class="tblwrap" style="max-height:300px"><table>
-     <tr><th>Контакт</th><th>Телефон</th><th>Попытки</th><th>Статус</th><th>Результат</th></tr>
-     ${items.slice().reverse().slice(0,300).map(i=>`<tr><td>${esc(i.contact_name)}</td><td>${esc(i.contact_phone)}</td>
-       <td>${i.attempts}</td><td>${badge(i.status)}</td><td class="small">${esc(i.last_result)}</td></tr>`).join('')||'<tr><td colspan="5" class="small">Пусто</td></tr>'}
-    </table></div>
-    <h3 style="font-size:14px">Звонки кампании (${calls.length})</h3>
-    <div class="tblwrap" style="max-height:300px"><table>
-     <tr><th>#</th><th>Время</th><th>Контакт</th><th>С номера</th><th>Результат</th><th>Детали агента</th><th>Запись</th></tr>
-     ${calls.slice().reverse().slice(0,100).map(x=>`<tr><td>${x.id}</td><td>${esc(x.started_at)}</td>
-       <td>${esc(x.contact_name)}</td><td>${esc(x.caller_id)}</td><td>${badge(x.result||x.status)}</td>
-       <td class="small">${esc(shortAgent(x.agent_result))}</td>
-       <td>${x.recording?`<a class="ok" href="/api/v2/calls/${x.id}/recording?token=${encodeURIComponent(state.token)}" target="_blank">🎧 слушать</a>`:''}
-           <button class="btn s" onclick="upRecording(${x.id})" title="Загрузить запись (админ)">🎙</button></td></tr>`).join('')||'<tr><td colspan="7" class="small">Пока нет звонков — запустите кампанию</td></tr>'}
-    </table></div></div>`;
-  $('campDetail').scrollIntoView({behavior:'smooth'});
+  const stLine=Object.entries(stMap).map(([s,n])=>`${esc(s)} <span class="dim">(${n})</span>`).join(' · ')||'—';
+  $('campDetail').innerHTML=`<div class="panel">
+    <div class="toolbar">
+      <h2 style="margin:0" class="grow">Кампания #${c.id}: ${esc(c.name||'')}</h2>
+      <button class="btn g sm" onclick="campAction(${c.id},'start')">▶ Запустить</button>
+      <button class="btn s sm" onclick="campAction(${c.id},'pause')">⏸ Пауза</button>
+      <button class="btn d sm" onclick="campAction(${c.id},'stop')">⏹ Остановить</button>
+    </div>
+    <div class="toolbar" style="margin-bottom:12px">
+      <span class="badge ${c.status==='running'?'g':c.status==='paused'?'y':'r'}">${esc(c.status)}</span>
+      <span class="hint">сценарий: ${esc(c.flow)} · шаблон: ${esc(c.template_name||c.template_id)} · попыток: ${esc(c.retry_max>=0?c.retry_max:'умолч.')}
+      · окно: ${esc((c.schedule&&c.schedule.start)||'-')}–${esc((c.schedule&&c.schedule.end)||'-')}</span>
+      <span class="grow"></span>
+      <button class="btn s sm" onclick="addContactsToCamp(${id})">＋ Добавить контакты</button>
+      <button class="btn d sm" onclick="clearCamp(${id})">Очистить список</button>
+    </div>
+    <p class="hint" style="margin:0 0 10px">Статусы: ${stLine}</p>
+    <h3 class="sub2">Контакты кампании <span class="dim">(${items.length})</span></h3>
+    <div class="tblwrap thin">
+      <table><tr><th>Контакт</th><th>Телефон</th><th class="num">Попытки</th><th>Статус</th><th>Результат</th></tr>
+      ${items.slice().reverse().slice(0,300).map(i=>`<tr><td>${esc(i.contact_name)}</td><td class="nowrap">${esc(i.contact_phone)}</td>
+        <td class="num">${i.attempts}</td><td>${badge(i.status)}</td><td class="dim">${esc(i.last_result)}</td></tr>`).join('')
+        ||'<tr><td colspan="5" class="dim">Список пуст — добавьте контакты</td></tr>'}
+      </table>
+    </div>
+    <h3 class="sub2" style="margin-top:14px">Звонки кампании <span class="dim">(${calls.length})</span></h3>
+    <div class="tblwrap thin">
+      <table><tr><th>#</th><th>Время</th><th>Контакт</th><th>С номера</th><th>Результат</th><th>Детали агента</th><th class="num">Запись</th></tr>
+      ${calls.slice().reverse().slice(0,100).map(x=>`<tr><td class="dim">${x.id}</td><td class="nowrap">${esc(x.started_at)}</td>
+        <td>${esc(x.contact_name)}</td><td class="nowrap">${esc(x.caller_id)}</td><td>${badge(x.result||x.status)}</td>
+        <td class="dim">${esc(shortAgent(x.agent_result))}</td>
+        <td class="num"><span class="btn-row">
+          ${x.recording?`<a class="btn l sm" href="/api/v2/calls/${x.id}/recording?token=${encodeURIComponent(state.token)}" target="_blank" title="Слушать">🎧</a>`:''}
+          <button class="btn s sm" onclick="upRecording(${x.id})" title="Загрузить запись (админ)">🎙</button>
+        </span></td></tr>`).join('')||'<tr><td colspan="7" class="dim">Пока нет звонков — запустите кампанию</td></tr>'}
+      </table>
+    </div>
+  </div>`;
+  $('campDetail').scrollIntoView({behavior:'smooth',block:'start'});
 }
-function shortAgent(s){if(!s)return '';try{const o=JSON.parse(s);return (o.qualified?'✓ ':'✗ ')+(o.summary||o.engine||'')}catch(e){return ''}}
+function shortAgent(s){if(!s)return '';try{const o=JSON.parse(s);return (o.qualified?'✓ ':'✗ ')+(o.summary||o.engine||'');}catch(e){return '';}}
 async function addContactsToCamp(id){
-  let cons=state.contacts||[];
-  if(!cons.length){cons=(await api('/contacts')).contacts||[];state.contacts=cons;}
-  const opts=cons.map(c=>`<label class="small"><input type="checkbox" class="ac" value="${c.id}" ${c.consent?'checked':''}> ${esc(c.name)} — ${esc(c.phone)} ${c.consent?'':'<span class="err">(нет согласия)</span>'}</label>`).join('')||'<span class="small">База пуста</span>';
-  modal(`<h2 style="margin-top:0">Добавить контакты в кампанию #${id}</h2>
-   <label class="switch"><input id="consentOnly" type="checkbox" checked> только с согласием</label>
-   <div style="max-height:40vh;overflow:auto;margin:8px 0">${opts}</div>
-   <div class="toolbar"><button class="btn" onclick="addSelContacts(${id})">Добавить выбранные</button>
-   <button class="btn" onclick="addAllContacts(${id})">Добавить всех (с согласием)</button>
-   <button class="btn s" onclick="closeModal()">Закрыть</button></div>`);
+  if(!(state.contacts&&state.contacts.length))await fetchContacts();
+  const cons=state.contacts||[];
+  const opts=cons.map(c=>`<label><input type="checkbox" class="ac" value="${c.id}" ${c.consent?'checked':''}>
+     <span>${esc(c.name)} — <b class="nowrap">${esc(c.phone)}</b></span>
+     ${c.consent?'':'<span class="badge y">нет согласия</span>'}</label>`).join('')||'<div class="dim">База пуста</div>';
+  modal(`<h2>Добавить контакты в кампанию #${id}</h2>
+    <label class="chkline"><input id="consentOnly" type="checkbox" checked> показывать/выбирать только с согласием</label>
+    <div class="picklist" id="pickList">${opts}</div>
+    <div class="toolbar" style="margin:0">
+      <button class="btn" onclick="addSelContacts(${id})">Добавить выбранные</button>
+      <button class="btn s" onclick="addAllContacts(${id})">Добавить всех с согласием</button>
+      <button class="btn x" onclick="closeModal()">Закрыть</button>
+    </div>`);
+  $('consentOnly').onchange=()=>{
+    const only=$('consentOnly').checked;
+    document.querySelectorAll('#pickList .ac').forEach(ch=>{
+      const row=ch.closest('label');
+      const noConsent=row.querySelector('.badge.y');
+      ch.checked=only?(!noConsent):ch.checked;
+      row.style.display=(only&&noConsent)?'none':'';
+    });
+  };
+  if($('consentOnly').checked){
+    document.querySelectorAll('#pickList label').forEach(row=>{
+      if(row.querySelector('.badge.y'))row.style.display='none';
+    });
+  }
 }
 async function addSelContacts(id){
-  const ids=[...document.querySelectorAll('.ac:checked')].map(x=>parseInt(x.value));
+  const ids=[...document.querySelectorAll('#pickList .ac:checked')].map(x=>parseInt(x.value));
   if(!ids.length)return alert('Ничего не выбрано');
-  const j=await api(`/campaigns/${id}/add-contacts`,{body:{contact_ids:ids}});
-  closeModal();await loadCamps();showCamp(id);alert('Добавлено: '+j.added);
+  const j=await safe(()=>api(`/campaigns/${id}/add-contacts`,{body:{contact_ids:ids}}));
+  if(j&&j.ok){closeModal();await loadCamps();showCamp(id);alert('Добавлено: '+j.added);}
 }
 async function addAllContacts(id){
-  const j=await api(`/campaigns/${id}/add-contacts`,{body:{consent_only:true}});
-  closeModal();await loadCamps();showCamp(id);alert('Добавлено: '+j.added);
+  const j=await safe(()=>api(`/campaigns/${id}/add-contacts`,{body:{consent_only:true}}));
+  if(j&&j.ok){closeModal();await loadCamps();showCamp(id);alert('Добавлено: '+j.added);}
 }
-async function clearCamp(id){if(confirm('Очистить список контактов кампании?')){await api(`/campaigns/${id}/clear`,{body:{}});showCamp(id)}}
-// ---------- номера ----------
+async function clearCamp(id){if(confirm('Очистить список контактов кампании?')){await api(`/campaigns/${id}/clear`,{body:{}});showCamp(id);}}
+
+/* ---------- номера ---------- */
 async function loadNumbers(){
-  const j=await api('/numbers');state.numbers=j.numbers;
-  $('numbersTable').innerHTML='<tr><th>ID</th><th>Номер</th><th>Метка</th><th>Тип</th><th>Провайдер</th><th>Сегодня/лимит</th><th>Статус</th><th>Действия</th></tr>'+
-   j.numbers.map(n=>`<tr><td>${n.id}</td><td><b>${esc(n.number)}</b></td><td>${esc(n.label)}</td>
+  const j=await api('/numbers');
+  if(!j||j.error)return;
+  state.numbers=j.numbers;
+  $('numbersTable').innerHTML='<tr><th>ID</th><th>Номер</th><th>Метка</th><th>Тип</th><th>Провайдер</th><th class="num">Сегодня/лимит</th><th>Статус</th><th class="num">Действия</th></tr>'+
+   j.numbers.map(n=>`<tr><td class="dim">${n.id}</td><td><b class="nowrap">${esc(n.number)}</b></td><td>${esc(n.label)}</td>
     <td>${esc(n.kind)}</td><td>${esc(n.provider)}</td>
-    <td>${n.daily_count}/${n.daily_limit}${n.cooling?' <span class="badge y">остывает до '+esc(n.cooldown_until||'')+'</span>':''}</td>
+    <td class="num">${n.daily_count}/${n.daily_limit}${n.cooling?`<span class="badge y">остывает до ${esc(n.cooldown_until||'')}</span>`:''}</td>
     <td>${n.active?'<span class="badge g">активен</span>':'<span class="badge">выключен</span>'}${n.quarantined?' <span class="badge r">карантин</span>':''}</td>
-    <td><button class="btn l" onclick="editNum(${n.id})">Ред.</button>
-    <button class="btn s" onclick="setQuar(${n.id},${n.quarantined?0:1})">${n.quarantined?'Снять карантин':'Карантин'}</button>
-    <button class="btn s" onclick="toggleNum(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button></td></tr>`).join('')||'<tr><td colspan="8" class="small">Нет номеров — добавьте первый</td></tr>';
+    <td class="num"><span class="btn-row">
+      <button class="btn l sm" onclick="editNum(${n.id})">Ред.</button>
+      <button class="btn s sm" onclick="setQuar(${n.id},${n.quarantined?0:1})">${n.quarantined?'Снять карантин':'Карантин'}</button>
+      <button class="btn s sm" onclick="toggleNum(${n.id},${n.active?0:1})">${n.active?'Выкл':'Вкл'}</button>
+    </span></td></tr>`).join('')||'<tr><td colspan="8" class="dim">Нет номеров — добавьте первый</td></tr>';
 }
 async function addNumber(){
-  const j=await api('/numbers/save',{body:{number:$('nNumber').value.trim(),label:$('nLabel').value.trim(),daily_limit:parseInt($('nLimit').value||100)}});
-  if(j.ok){$('nNumber').value='';$('nLabel').value='';await loadNumbers()}else alert(j.error||'Ошибка');
+  const j=await safe(()=>api('/numbers/save',{body:{number:$('nNumber').value.trim(),label:$('nLabel').value.trim(),daily_limit:parseInt($('nLimit').value||100)}}));
+  if(j&&j.ok){$('nNumber').value='';$('nLabel').value='';await loadNumbers();}else alert((j&&j.error)||'Ошибка');
 }
-async function editNum(id){
+function editNum(id){
   const n=state.numbers.find(x=>x.id===id)||{};
-  modal(`<h2 style="margin-top:0">Номер #${n.id}</h2>
-   <div class="grid"><label>Номер<input id="eNum" class="input" value="${esc(n.number)}"></label>
-   <label>Метка<input id="eLabel" class="input" value="${esc(n.label)}"></label>
-   <label>Суточный лимит<input id="eLimit" type="number" class="input" value="${n.daily_limit}"></label>
-   <label>Вес (приоритет)<input id="eWeight" type="number" class="input" value="${n.weight}"></label></div>
-   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="saveNum(${id})">Сохранить</button>
-   <button class="btn s" onclick="closeModal()">Отмена</button></div>`);
+  modal(`<h2>Номер #${n.id} — ${esc(n.number)}</h2>
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">Номер (E.164)</span><input id="eNum" class="input ctl" value="${esc(n.number)}"></div>
+      <div class="fld"><span class="lbl">Метка</span><input id="eLabel" class="input ctl" value="${esc(n.label)}"></div>
+      <div class="fld"><span class="lbl">Суточный лимит звонков</span><input id="eLimit" type="number" min="1" class="input ctl" value="${n.daily_limit}"></div>
+      <div class="fld"><span class="lbl">Вес (приоритет)</span><input id="eWeight" type="number" min="1" class="input ctl" value="${n.weight||1}"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="saveNum(${id})">Сохранить</button>
+      <button class="btn x" onclick="closeModal()">Отмена</button>
+    </div>`);
 }
 async function saveNum(id){
-  await api('/numbers/save',{body:{id,number:$('eNum').value.trim(),label:$('eLabel').value,daily_limit:parseInt($('eLimit').value),weight:parseInt($('eWeight').value||1)}});
-  closeModal();await loadNumbers();
+  const j=await safe(()=>api('/numbers/save',{body:{id,number:$('eNum').value.trim(),label:$('eLabel').value,daily_limit:parseInt($('eLimit').value),weight:parseInt($('eWeight').value||1)}}));
+  if(j&&j.ok){closeModal();await loadNumbers();}else alert('Ошибка');
 }
-async function setQuar(id,on){await api('/numbers/quarantine',{body:{id,on}});await loadNumbers()}
-async function toggleNum(id,active){await api('/numbers/save',{body:{id,active}});await loadNumbers()}
-async function resetPool(){await api('/numbers/reset',{body:{}});await loadNumbers()}
-// ---------- ACD ----------
+async function setQuar(id,on){await api('/numbers/quarantine',{body:{id,on}});await loadNumbers();}
+async function toggleNum(id,active){await api('/numbers/save',{body:{id,active}});await loadNumbers();}
+async function resetPool(){await api('/numbers/reset',{body:{}});await loadNumbers();}
+
+/* ---------- ACD ---------- */
 async function loadAcd(){
   const j=await api('/acd');
+  if(!j||j.error)return;
   $('opTable').innerHTML='<tr><th>Оператор</th><th>Внутр.</th><th>Статус</th><th>Обновлён</th></tr>'+
-   (j.operators||[]).map(o=>`<tr><td>${esc(o.name)}</td><td>${esc(o.ext)}</td><td>${badgeTxt(o.status,o.status==='free'?'свободен':o.status==='busy'?'в разговоре':o.status==='break'?'перерыв':'офлайн')}</td><td class="small">${esc(o.updated)}</td></tr>`).join('')||'<tr><td colspan="4">Нет операторов</td></tr>';
-  const myBusy=(j.operators||[]).find(o=>o.status==='busy');
-  window._busyOp=myBusy?myBusy.id:null;
-  $('acdTable').innerHTML='<tr><th>#</th><th>Контакт</th><th>Телефон</th><th>Кампания</th><th>Статус</th><th>Действия</th></tr>'+
-   (j.acd||[]).map(a=>`<tr><td>${a.id}</td><td>${esc(a.contact_name)}</td><td><b>${esc(a.contact_phone)}</b></td>
-    <td>#${a.campaign_id}</td><td>${badgeTxt(a.status,a.status==='queued'?'ожидает оператора':a.status)}</td>
-    <td><button class="btn g" onclick="acceptAcd(${a.id},${a.call_id})">Принять</button></td></tr>`).join('')||'<tr><td colspan="6" class="small">Очередь пуста</td></tr>';
+   (j.operators||[]).map(o=>`<tr><td>${esc(o.name)}</td><td>${esc(o.ext)}</td>
+     <td>${badgeTxt(o.status,o.status==='free'?'свободен':o.status==='busy'?'в разговоре':o.status==='break'?'перерыв':'офлайн')}</td>
+     <td class="dim nowrap">${esc(o.updated)}</td></tr>`).join('')||'<tr><td colspan="4" class="dim">Нет операторов</td></tr>';
+  window._busyOp=(j.operators||[]).find(o=>o.status==='busy')?.id||null;
+  $('acdTable').innerHTML='<tr><th>#</th><th>Контакт</th><th>Телефон</th><th>Кампания</th><th>Статус</th><th class="num">Действия</th></tr>'+
+   (j.acd||[]).map(a=>`<tr><td class="dim">${a.id}</td><td>${esc(a.contact_name)}</td>
+     <td class="nowrap"><b>${esc(a.contact_phone)}</b></td><td>#${a.campaign_id}</td>
+     <td>${badgeTxt(a.status,a.status==='queued'?'ожидает оператора':a.status)}</td>
+     <td class="num"><button class="btn g sm" onclick="acceptAcd(${a.id},${a.call_id})">Принять</button></td></tr>`).join('')
+   ||'<tr><td colspan="6" class="dim">Очередь пуста</td></tr>';
 }
 async function acceptAcd(id,callId){
-  const j=await api('/acd/accept',{body:{id}});
-  if(j.ok){window._curCall={call_id:callId};await loadAcd();window._curOp=window._busyOp;window._curAcd=id;showOperatorBar();}
-  else alert('Не удалось принять: '+j.error);
+  const j=await safe(()=>api('/acd/accept',{body:{id}}));
+  if(j&&j.ok){window._curCall={call_id:callId};await loadAcd();window._curOp=window._busyOp;showOperatorBar();}
+  else alert('Не удалось принять: '+((j&&j.error)||'?'));
 }
 function showOperatorBar(){
-  $('myStatusBar').innerHTML='<span class="small">Разговор активен:</span> <button class="btn d" onclick="finishCall()">Завершить разговор</button> <button class="btn s" onclick="setMyStatus(\'free\')">Освободиться</button>';
+  $('myStatusBar').innerHTML='<span class="muted">Разговор активен:</span> '+
+   '<button class="btn d" onclick="finishCall()">Завершить разговор</button> '+
+   '<button class="btn x" onclick="setMyStatus(\'free\')">Освободиться без завершения</button>';
 }
 async function finishCall(){
   if(!window._curCall)return;
   await api('/calls/complete',{body:{call_id:window._curCall.call_id,operator_id:window._curOp||0}});
-  window._curCall=null;window._curOp=null;await loadAcd();location.reload();
-}
-async function setMyStatus(s){
-  await api('/operators/status',{body:{status:s}});
-  if(s==='free'){$('myStatusBar').innerHTML='<span class="small">Мой статус:</span><button class="btn s" onclick="setMyStatus(\'free\')">Свободен</button><button class="btn" onclick="setMyStatus(\'break\')">Перерыв</button>'}
+  window._curCall=null;window._curOp=null;
+  $('myStatusBar').innerHTML='<span class="muted">Мой статус:</span>'+
+   '<button class="btn s" onclick="setMyStatus(\'free\')">Свободен</button>'+
+   '<button class="btn" onclick="setMyStatus(\'break\')">Перерыв</button>';
   await loadAcd();
 }
-// ---------- журнал ----------
+async function setMyStatus(s){
+  const j=await safe(()=>api('/operators/status',{body:{status:s}}));
+  if(j&&j.ok){
+    $('myStatusBar').innerHTML='<span class="muted">Мой статус:</span>'+
+     '<button class="btn s" onclick="setMyStatus(\'free\')">Свободен</button>'+
+     '<button class="btn" onclick="setMyStatus(\'break\')">Перерыв</button>';
+  }
+  await loadAcd();
+}
+
+/* ---------- журнал ---------- */
 async function loadJournal(){
   const st=$('jStatus').value,lim=parseInt($('jLimit').value||200);
   const j=await api('/calls',{body:{status:st||undefined,limit:lim}});
-  $('journalTable').innerHTML='<tr><th>#</th><th>Старт</th><th>Контакт</th><th>Телефон</th><th>С номера</th><th>Кампания</th><th>Результат</th><th>Детали/агент</th></tr>'+
-   (j.calls||[]).map(x=>`<tr><td>${x.id}</td><td>${esc(x.started_at)}</td><td>${esc(x.contact_name)}</td>
-    <td><b>${esc(x.contact_phone)}</b></td><td>${esc(x.caller_id)}</td><td>#${x.campaign_id||''}</td>
-    <td>${badge(x.result||x.status)}</td><td class="small">${esc(x.detail)} ${shortAgent(x.agent_result)}</td></tr>`).join('')||'<tr><td colspan="8" class="small">Пусто</td></tr>';
+  if(!j||j.error)return;
+  const rows=(j.calls||[]);
+  $('journalTable').innerHTML='<tr><th>#</th><th>Старт</th><th>Контакт</th><th>Телефон</th><th>С номера</th><th class="num">Кампания</th><th>Результат</th><th>Детали/агент</th></tr>'+
+   rows.map(x=>`<tr><td class="dim">${x.id}</td><td class="nowrap">${esc(x.started_at)}</td><td>${esc(x.contact_name)}</td>
+    <td class="nowrap"><b>${esc(x.contact_phone)}</b></td><td class="nowrap">${esc(x.caller_id)}</td><td class="num">#${x.campaign_id||''}</td>
+    <td>${badge(x.result||x.status)}</td><td class="dim">${esc(x.detail)} ${shortAgent(x.agent_result)}</td></tr>`).join('')
+   ||'<tr><td colspan="8" class="dim">Пусто</td></tr>';
 }
 async function upRecording(callId){
   const inp=document.createElement('input');inp.type='file';inp.accept='audio/*';
-  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
-    const b64=await new Promise(res=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.readAsDataURL(f)});
-    const j=await api('/calls/recording',{body:{call_id:callId,filename:f.name,data_b64:b64}});
-    alert(j.ok?'Запись сохранена: '+j.recording:'Ошибка: '+(j.error||'?'));
-    if(j.ok&&window._camp)showCamp(window._camp);
+  inp.onchange=async()=>{
+    const f=inp.files[0];if(!f)return;
+    const b64=await new Promise(res=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.readAsDataURL(f);});
+    const j=await safe(()=>api('/calls/recording',{body:{call_id:callId,filename:f.name,data_b64:b64}}));
+    if(j&&j.ok){alert('Запись сохранена: '+j.recording);safe(()=>showCamp(window._camp));}
+    else alert('Ошибка: '+((j&&j.error)||'?'));
   };
   inp.click();
 }
@@ -538,132 +893,202 @@ async function exportCalls(){
   if(!r.ok)return alert('Экспорт журнала — только для администратора');
   const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='calls.csv';a.click();
 }
-const REP_LABEL={done_ok:'Сообщение доставлено',operator_ok:'Оператор',done_agent:'ИИ-агент (кв.)',qualified_no:'Агент (не кв.)',
- machine:'Автоответчик',busy:'Занято',no_answer:'Нет ответа',failed:'Сбой',blocked:'Блок',no_operator:'Нет оператора',
- timeout:'Таймаут',exhausted:'Исчерпано',done:'Завершён',blocked_no_consent:'Нет согласия',blacklisted:'Чёрный список'};
+
+/* ---------- отчёты ---------- */
 async function loadReports(){
-  const j=await api('/reports');const t=j.today||{};
+  const j=await api('/reports');
+  if(!j||j.error)return;
+  const t=j.today||{};
   $('repCards').innerHTML=`<div class="metric"><b>${t.n||0}</b><span>звонков сегодня</span></div>
    <div class="metric"><b class="ok">${t.ok||0}</b><span>успешных</span></div>
    <div class="metric"><b>${t.ok_rate||0}%</b><span>успех</span></div>
    <div class="metric"><b>${t.avg_dur||0} с</b><span>ср. длительность</span></div>`;
-  $('repResults').innerHTML='<tr><th>Результат</th><th>Кол-во</th></tr>'+
-   (j.by_result||[]).map(r=>`<tr><td>${badgeTxt(r.result,REP_LABEL[r.result]||r.result)}</td><td>${r.c}</td></tr>`).join('')
-   ||'<tr><td colspan="2" class="small">Пока нет звонков</td></tr>';
-  $('repCamps').innerHTML='<tr><th>Кампания</th><th>Звонков</th><th>Успешно</th><th>Плохих</th><th>Длит., с</th></tr>'+
-   (j.by_campaign||[]).map(r=>`<tr><td>#${r.campaign_id} ${esc(r.name)}</td><td>${r.n}</td><td class="ok">${r.ok||0}</td><td>${r.bad||0}</td><td>${r.dur||0}</td></tr>`).join('')
-   ||'<tr><td colspan="5" class="small">Пусто</td></tr>';
-  $('repNumbers').innerHTML='<tr><th>Номер</th><th>Звонков</th><th>Успешно</th></tr>'+
-   (j.by_number||[]).map(r=>`<tr><td><b>${esc(r.caller_id)}</b></td><td>${r.n}</td><td class="ok">${r.ok||0}</td></tr>`).join('')
-   ||'<tr><td colspan="3" class="small">Пусто</td></tr>';
-  $('repTrend').innerHTML='<tr><th>Дата</th><th>Звонков</th><th>Успешно</th><th>Успех %</th></tr>'+
-   (j.trend||[]).map(r=>`<tr><td>${esc(r.date)}</td><td>${r.n}</td><td class="ok">${r.ok}</td><td>${r.n?Math.round(100*r.ok/r.n):0}%</td></tr>`).join('');
+  $('repResults').innerHTML='<tr><th>Результат</th><th class="num">Кол-во</th></tr>'+
+   (j.by_result||[]).map(r=>`<tr><td>${badgeTxt(r.result,REP_LABEL[r.result]||r.result)}</td><td class="num">${r.c}</td></tr>`).join('')
+   ||'<tr><td colspan="2" class="dim">Пока нет звонков</td></tr>';
+  $('repCamps').innerHTML='<tr><th>Кампания</th><th class="num">Звонков</th><th class="num">Успешно</th><th class="num">Плохих</th><th class="num">Длит., с</th></tr>'+
+   (j.by_campaign||[]).map(r=>`<tr><td>#${r.campaign_id} ${esc(r.name)}</td><td class="num">${r.n}</td><td class="num ok">${r.ok||0}</td><td class="num">${r.bad||0}</td><td class="num">${r.dur||0}</td></tr>`).join('')
+   ||'<tr><td colspan="5" class="dim">Пусто</td></tr>';
+  $('repNumbers').innerHTML='<tr><th>Номер</th><th class="num">Звонков</th><th class="num">Успешно</th></tr>'+
+   (j.by_number||[]).map(r=>`<tr><td class="nowrap"><b>${esc(r.caller_id)}</b></td><td class="num">${r.n}</td><td class="num ok">${r.ok||0}</td></tr>`).join('')
+   ||'<tr><td colspan="3" class="dim">Пусто</td></tr>';
+  $('repTrend').innerHTML='<tr><th>Дата</th><th class="num">Звонков</th><th class="num">Успешно</th><th class="num">Успех %</th></tr>'+
+   (j.trend||[]).map(r=>`<tr><td class="nowrap">${esc(r.date)}</td><td class="num">${r.n}</td><td class="num ok">${r.ok}</td><td class="num">${r.n?Math.round(100*r.ok/r.n):0}%</td></tr>`).join('');
 }
 
-// ---------- чёрный список ----------
+/* ---------- чёрный список ---------- */
 async function loadBlacklist(){
   const j=await api('/blacklist');
-  $('blTable').innerHTML='<tr><th>Телефон</th><th>Причина</th><th>Источник</th><th>Создан</th><th></th></tr>'+
-   (j.blacklist||[]).map(b=>`<tr><td><b>${esc(b.phone)}</b></td><td>${esc(b.reason)}</td><td>${esc(b.source)}</td><td class="small">${esc(b.created)}</td>
-    <td><button class="btn d" onclick="delBlack(${b.id})">Удалить</button></td></tr>`).join('')||'<tr><td colspan="5" class="small">Пусто</td></tr>';
+  if(!j||j.error)return;
+  $('blTable').innerHTML='<tr><th>Телефон</th><th>Причина</th><th>Источник</th><th>Создан</th><th class="num"></th></tr>'+
+   (j.blacklist||[]).map(b=>`<tr><td class="nowrap"><b>${esc(b.phone)}</b></td><td>${esc(b.reason)}</td><td>${esc(b.source)}</td>
+     <td class="dim nowrap">${esc(b.created)}</td><td class="num"><button class="btn d sm" onclick="delBlack(${b.id})">Удалить</button></td></tr>`).join('')
+   ||'<tr><td colspan="5" class="dim">Пусто</td></tr>';
 }
 async function addBlacklist(){
-  const j=await api('/blacklist/add',{body:{phone:$('blPhone').value.trim(),reason:$('blReason').value||'manual'}});
-  if(j.ok){$('blPhone').value='';$('blReason').value='';await loadBlacklist()}else alert(j.error);
+  const j=await safe(()=>api('/blacklist/add',{body:{phone:$('blPhone').value.trim(),reason:$('blReason').value||'manual'}}));
+  if(j&&j.ok){$('blPhone').value='';$('blReason').value='';await loadBlacklist();}else alert((j&&j.error)||'Ошибка');
 }
-async function delBlack(id){await api('/blacklist/delete',{body:{id}});await loadBlacklist()}
-// ---------- шаблоны ----------
+async function delBlack(id){await api('/blacklist/delete',{body:{id}});await loadBlacklist();}
+
+/* ---------- шаблоны ---------- */
 async function loadTemplates(silent){
-  const j=await api('/templates');state.templates=j.templates;
+  const j=await api('/templates');
+  if(!j||j.error)return;
+  state.templates=j.templates;
   if(silent)return;
-  $('tplTable').innerHTML='<tr><th>Название</th><th>Текст/сценарий</th><th>Вкл</th><th></th></tr>'+
-   j.templates.map(t=>`<tr><td><b>${esc(t.name)}</b></td><td class="small">${esc((t.text||'').slice(0,140))}</td>
+  $('tplTable').innerHTML='<tr><th>Название</th><th>Текст / сценарий</th><th>Вкл</th><th class="num">Действия</th></tr>'+
+   j.templates.map(t=>`<tr><td><b>${esc(t.name)}</b></td><td class="dim">${esc((t.text||'').slice(0,150))}</td>
     <td>${t.active?'<span class="badge g">да</span>':'<span class="badge">нет</span>'}</td>
-    <td><button class="btn l" onclick="editTemplate(${t.id})">Ред.</button>
-    <button class="btn d" onclick="delTemplate(${t.id})">Удалить</button></td></tr>`).join('')||'<tr><td colspan="4" class="small">Пусто</td></tr>';
+    <td class="num"><span class="btn-row">
+      <button class="btn l sm" onclick="editTemplate(${t.id})">Ред.</button>
+      <button class="btn d sm" onclick="delTemplate(${t.id})">Удалить</button>
+    </span></td></tr>`).join('')||'<tr><td colspan="4" class="dim">Пусто</td></tr>';
 }
 function editTemplate(id){
-  const t=state.templates.find(x=>x.id===id)||{id:0,name:'',text:'',active:true,scenario:'{}'};
-  let scStr=typeof t.scenario==='string'?t.scenario:JSON.stringify(t.scenario||{},null,1);
-  modal(`<h2 style="margin-top:0">${id?'Шаблон #'+id:'Новый шаблон'}</h2>
-   <div class="grid"><label style="grid-column:1/-1">Название<input id="tName" class="input" value="${esc(t.name)}"></label>
-   <label style="grid-column:1/-1">Текст (озвучка; {name},{phone},{group},{note})<textarea id="tText" class="textarea">${esc(t.text)}</textarea></label>
-   <label style="grid-column:1/-1" class="switch"><input id="tActive" type="checkbox" ${t.active?'checked':''}> активен</label>
-   <label style="grid-column:1/-1">Сценарий ИИ-агента (JSON: questions/choices, ответы 1/2)<textarea id="tSc" class="textarea" style="min-height:200px;font-family:monospace;font-size:12px">${esc(scStr)}</textarea></label></div>
-   <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="saveTemplate(${id||0})">Сохранить</button>
-   <button class="btn s" onclick="closeModal()">Отмена</button></div>`);
+  const t=state.templates.find(x=>x.id===id)||{id:0,name:'',text:'',active:true,scenario:{}};
+  const scStr=typeof t.scenario==='string'?t.scenario:JSON.stringify(t.scenario||{},null,1);
+  modal(`<h2>${id?'Шаблон #'+id:'Новый шаблон'}</h2>
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">Название</span><input id="tName" class="input ctl" value="${esc(t.name)}"></div>
+      <div class="fld span2"><span class="lbl">Текст озвучки — подстановки: {name} {phone} {group} {note}</span>
+        <textarea id="tText" class="textarea ctl">${esc(t.text)}</textarea></div>
+      <div class="span2"><label class="chkline"><input id="tActive" type="checkbox" ${t.active?'checked':''}> шаблон активен</label></div>
+      <div class="fld span2"><span class="lbl">Сценарий ИИ-агента (JSON: questions / choices, ответы 1/2)</span>
+        <textarea id="tSc" class="textarea ctl" style="min-height:220px;font-family:Consolas,Menlo,monospace;font-size:12px">${esc(scStr)}</textarea></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="saveTemplate(${id||0})">Сохранить</button>
+      <button class="btn x" onclick="closeModal()">Отмена</button>
+    </div>`);
 }
 async function saveTemplate(id){
-  let sc={};try{sc=JSON.parse($('tSc').value||'{}')}catch(e){return alert('Сценарий не JSON: '+e.message)}
-  const j=await api('/templates/save',{body:{id:id,name:$('tName').value,text:$('tText').value,scenario:sc,active:$('tActive').checked}});
-  if(j.ok){closeModal();await loadTemplates()}else alert('Ошибка');
+  let sc={};
+  try{sc=JSON.parse($('tSc').value||'{}');}catch(e){return alert('Сценарий не JSON: '+e.message);}
+  const j=await safe(()=>api('/templates/save',{body:{id:id,name:$('tName').value,text:$('tText').value,scenario:sc,active:$('tActive').checked}}));
+  if(j&&j.ok){closeModal();await loadTemplates();}else alert('Ошибка');
 }
-async function delTemplate(id){if(confirm('Удалить шаблон?')){await api('/templates/delete',{body:{id}});await loadTemplates()}}
-// ---------- настройки ----------
+async function delTemplate(id){if(confirm('Удалить шаблон?')){await api('/templates/delete',{body:{id}});await loadTemplates();}}
+
+/* ---------- настройки ---------- */
+function renderDayChips(days){
+  const sel=new Set((days||[0,1,2,3,4,5,6]).map(x=>String(x)));
+  $('sDays').innerHTML=DAYS.map(([v,l])=>`<label class="daychip ${sel.has(v)?'on':''}">
+     <input type="checkbox" value="${v}" ${sel.has(v)?'checked':''} onchange="dayChip(this)"> ${l}</label>`).join('');
+}
+function dayChip(ch){ch.closest('.daychip').classList.toggle('on',ch.checked);}
+function selectedDays(){return [...document.querySelectorAll('#sDays input:checked')].map(x=>parseInt(x.value));}
 async function loadSettings(){
-  const j=await api('/settings');const s=j.settings||{};
-  state.settings=s;
-  $('sProvider').value=s.provider||'sim';$('sChannels').value=s.max_channels; $('sRetryMax').value=s.retry_max;
-  $('sRetryDelay').value=s.retry_delay_min;$('sCooldown').value=s.line_cooldown_sec;$('sWatchdog').value=s.watchdog_timeout_min;
-  $('sWinStart').value=s.window_start;$('sWinEnd').value=s.window_end;
-  $('sCrm').value=(s.crm&&s.crm.driver)||'csv';$('sQuar').value=s.auto_quarantine_on_complaints;$('sSimAns').value=s.sim_answer;
+  const j=await api('/settings');
+  if(!j||!j.settings)return;
+  const s=j.settings;state.settings=s;
+  $('sProvider').value=s.provider||'sim';
+  $('sChannels').value=s.max_channels;
+  $('sRetryMax').value=s.retry_max;
+  $('sRetryDelay').value=s.retry_delay_min;
+  $('sCooldown').value=s.line_cooldown_sec;
+  $('sWatchdog').value=s.watchdog_timeout_min;
+  $('sAcdT').value=s.acd_wait_timeout_sec;
+  $('sWinStart').value=s.window_start;
+  $('sWinEnd').value=s.window_end;
+  renderDayChips(s.window_days);
+  $('sCrm').value=(s.crm&&s.crm.driver)||'csv';
+  $('sQuar').value=s.auto_quarantine_on_complaints;
+  $('sSimAns').value=s.sim_answer;
   $('sConsent').checked=!!s.consent_required;
-  const days=s.window_days||[];[...$('sDays').options].forEach(o=>o.selected=days.includes(parseInt(o.value)));
+  $('rawPanel').classList.toggle('hidden',state.role!=='admin');
+  $('passPanel').classList.toggle('hidden',state.role!=='admin');
 }
 async function saveSettings(){
-  const days=[...$('sDays').selectedOptions].map(o=>parseInt(o.value));
-  const j=await api('/settings/save',{body:{
-    provider:$('sProvider').value,max_channels:parseInt($('sChannels').value||3),retry_max:parseInt($('sRetryMax').value||2),
-    retry_delay_min:parseInt($('sRetryDelay').value||15),line_cooldown_sec:parseInt($('sCooldown').value||5),
-    watchdog_timeout_min:parseInt($('sWatchdog').value||20),acd_wait_timeout_sec:parseInt($('sAcdT').value||60),window_start:$('sWinStart').value,window_end:$('sWinEnd').value,
-    window_days:days,consent_required:$('sConsent').checked,
-    auto_quarantine_on_complaints:parseInt($('sQuar').value||3),sim_answer:$('sSimAns').value,
-    crm:{driver:$('sCrm').value}}});
-  $('setMsg').textContent='Сохранено. Для смены провайдера перезапустите сервер: python -m app.run';
-  if(j.ok)$('setMsg').classList.add('ok');else $('setMsg').classList.add('err');
-  await loadSettings();
+  const j=await safe(()=>api('/settings/save',{body:{
+    provider:$('sProvider').value,
+    max_channels:parseInt($('sChannels').value||3),
+    retry_max:parseInt($('sRetryMax').value||2),
+    retry_delay_min:parseInt($('sRetryDelay').value||15),
+    line_cooldown_sec:parseInt($('sCooldown').value||5),
+    watchdog_timeout_min:parseInt($('sWatchdog').value||20),
+    acd_wait_timeout_sec:parseInt($('sAcdT').value||60),
+    window_start:$('sWinStart').value,
+    window_end:$('sWinEnd').value,
+    window_days:selectedDays(),
+    consent_required:$('sConsent').checked,
+    auto_quarantine_on_complaints:parseInt($('sQuar').value||3),
+    sim_answer:$('sSimAns').value,
+    crm:{driver:$('sCrm').value}
+  }}));
+  const msg=$('setMsg');
+  if(j&&j.ok){msg.textContent='✓ Сохранено. Для смены провайдера перезапустите сервер.';msg.classList.add('ok');}
+  else{msg.textContent='Ошибка сохранения';msg.classList.remove('ok');}
+  setTimeout(()=>{msg.textContent='';},5000);
 }
 async function loadRawCfg(){
-  const j=await api('/settings/raw');
-  if(j.provider_config){$('sRaw').value=JSON.stringify(j.provider_config,null,1)}
+  const j=await safe(()=>api('/settings/raw'));
+  if(j&&j.provider_config)$('sRaw').value=JSON.stringify(j.provider_config,null,2);
   else alert('Только для администратора');
 }
 async function saveRawCfg(){
-  try{const cfg=JSON.parse($('sRaw').value||'{}');
-    const j=await api('/settings/raw',{body:{provider_config:cfg}});
-    $('rawMsg').textContent=j.ok?'Сохранено':'Ошибка';}catch(e){alert('JSON невалиден: '+e.message)}
+  try{
+    const cfg=JSON.parse($('sRaw').value||'{}');
+    const j=await safe(()=>api('/settings/raw',{body:{provider_config:cfg}}));
+    $('rawMsg').textContent=j&&j.ok?'✓ Сохранено':'Ошибка';
+  }catch(e){alert('JSON невалиден: '+e.message);}
 }
 async function changePass(){
-  const v=$('newPass').value;if(v.length<6)return alert('Минимум 6 символов');
-  const j=await api('/settings/save',{body:{new_password:v}});
-  alert(j.ok?'Пароль изменён':'Ошибка');$('newPass').value='';
+  const v=$('newPass').value;
+  if(v.length<6)return alert('Минимум 6 символов');
+  const j=await safe(()=>api('/settings/save',{body:{new_password:v}}));
+  alert(j&&j.ok?'Пароль изменён':'Ошибка');$('newPass').value='';
 }
-// ---------- модалки ----------
-function modal(html){$('modalBox').innerHTML=html;$('modal').classList.remove('hidden')}
-function closeModal(){$('modal').classList.add('hidden')}
-$('modal').onclick=e=>{if(e.target===$('modal'))closeModal()};
-// ---------- SSE ----------
+
+/* ---------- модалки ---------- */
+function modal(html){
+  $('modalBox').innerHTML=html;
+  $('modal').classList.remove('hidden');
+  $('modal').scrollTop=0;
+}
+function closeModal(){$('modal').classList.add('hidden');$('modalBox').innerHTML='';}
+$('modal').addEventListener('click',e=>{if(e.target===$('modal'))closeModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('modal').classList.contains('hidden'))closeModal();});
+
+/* ---------- SSE (с дебаунсом, чтобы не дёргать UI) ---------- */
+let _es=null;
 function connectSSE(){
   if(!state.token)return;
-  const es=new EventSource('/api/v2/events?token='+encodeURIComponent(state.token));
-  es.onmessage=e=>{try{const d=JSON.parse(e.data);if(['call','item','acd','campaign','agent'].includes(d.type)){
-    if($('dash').classList.contains('active'))loadDash();
-    if($('acd').classList.contains('active'))loadAcd();
-    if($('campaigns').classList.contains('active'))loadCamps();
-    if($('journal').classList.contains('active'))loadJournal();
-  }}catch(err){}};
-  es.onerror=()=>{es.close();setTimeout(()=>{if(state.token){try{connectSSE()}catch(e){}}},5000)};
+  if(_es)try{_es.close();}catch(e){}
+  _es=new EventSource('/api/v2/events?token='+encodeURIComponent(state.token));
+  _es.onmessage=e=>{
+    try{
+      const d=JSON.parse(e.data);
+      if(['call','item','campaign','acd','agent'].includes(d.type)){
+        if(isActive('dash'))debRefresh('dash');
+        if(isActive('acd'))debRefresh('acd');
+        if(isActive('campaigns'))debRefresh('campaigns');
+        if(isActive('journal'))debRefresh('journal');
+        if(d.type==='acd'&&isActive('acd'))debRefresh('acd',400);
+      }
+    }catch(err){}
+  };
+  _es.onerror=()=>{
+    try{_es.close();}catch(e){}
+    setTimeout(()=>{if(state.token)connectSSE();},4000);
+  };
 }
-// ---------- старт ----------
+
+/* ---------- старт ---------- */
 (async function init(){
   if(state.token){
-    try{const d=await api('/dashboard');state.role=(d&&d.role)||state.role;
-      const me=await api('/auth/me').catch(()=>({role:'admin'}));
-      state.role=me.role||state.role;afterAuth();connectSSE();
-    }catch(e){/* невалидный токен — остаёмся на логине */}
+    const ok=await safe(async()=>{
+      const me=await api('/auth/me');
+      if(me&&me.ok){state.role=me.role;afterAuth();connectSSE();return true;}
+      return false;
+    });
+    if(!ok){state.token='';localStorage.removeItem('ats_token');}
   }
-  if(state.token)loadDash();
-  setInterval(()=>{if(state.token&&document.visibilityState!=='hidden'){const t=document.querySelector('.section.active');if(t&&t.id==='dash')loadDash();}},6000);
+  // фоновое обновление дашборда (не чаще ~8 с и только если вкладка видна)
+  setInterval(()=>{
+    if(!state.token||document.visibilityState==='hidden')return;
+    if(isActive('dash'))debRefresh('dash',300);
+  },8000);
 })();
 </script>
 </body>
