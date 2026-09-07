@@ -237,7 +237,10 @@ def init_db():
     if not fetch1("SELECT id FROM settings WHERE id=1"):
         save_settings(dict(config.DEFAULT_SETTINGS))
     _seed_templates()
-    _seed_numbers()
+    # Номера-заглушки создаются только для разработки/тестов (ATS_DEV_SEED=1).
+    # Итоговый продукт стартует с чистым пулом: номера добавляет администратор.
+    if os.environ.get("ATS_DEV_SEED") == "1":
+        _seed_numbers()
     _seed_users()
     _import_legacy()
 
@@ -298,21 +301,14 @@ def _seed_users():
         generated = True
     salt = config_secure_salt()
     from .security import hash_password
-    import sqlite3 as _s
     try:
         insert("users", {"login": "admin", "role": "admin", "salt": salt,
                          "password_hash": hash_password(password, salt), "created": config.now_iso()})
     except Exception:
         pass
-    # Оператор-демо
-    salt2 = config_secure_salt()
-    insert("users", {"login": "operator", "role": "operator", "salt": salt2,
-                     "password_hash": hash_password("operator1234", salt2), "created": config.now_iso()})
-    insert("operators", {"user_id": 2, "name": "Оператор (демо)", "ext": "101", "status": "offline",
-                         "updated": config.now_iso()})
     note = ("Логин: admin  Пароль: {}  (роль admin)\n"
-            "Логин: operator  Пароль: operator1234  (роль operator)\n"
-            "СМЕНИТЕ ПАРОЛЬ АДМИНА в Настройках после первого входа.").format(password)
+            "СМЕНИТЕ ПАРОЛЬ АДМИНА в Настройках после первого входа.\n"
+            "Операторов добавляет администратор: Настройки → Пользователи и операторы.").format(password)
     (config.DATA_DIR / "initial_credentials.txt").write_text(note, encoding="utf-8")
     print("[ATS v2] Создан администратор. Учётные данные записаны в data_v2/initial_credentials.txt")
     if generated:
@@ -342,11 +338,20 @@ def config_secure_salt():
 
 
 def _import_legacy():
-    """Первичный импорт контактов и шаблонов из JSON старого прототипа (data/*.json)."""
+    """Первичный импорт контактов и шаблонов из JSON старого прототипа (data/*.json).
+
+    Срабатывает только при реальной миграции: в БД ещё нет контактов И в legacy-файле
+    есть контакты. Пустой legacy (data/ из репозитория) не «протекает» в чистый продукт.
+    """
     if fetch1("SELECT id FROM contacts LIMIT 1") or not config.LEGACY_DATA.exists():
         return
     try:
         raw = json.loads((config.LEGACY_DATA / "contacts.json").read_text(encoding="utf-8"))
+    except Exception:
+        raw = []
+    if not raw:
+        return
+    try:
         added = 0
         for c in raw:
             phone = "".join(ch for ch in str(c.get("phone", "")) if ch.isdigit() or ch == "+")
@@ -372,6 +377,63 @@ def _import_legacy():
         print("[ATS v2] Импортировано шаблонов из legacy:", len(raw))
     except Exception as e:
         print("[ATS v2] Импорт legacy шаблонов пропущен:", e)
+
+
+def clean_demo():
+    """Удалить демо-контент, созданный сидом «Загрузить демо-данные» (для итогового продукта).
+
+    Безопасно по маркерам: контакты consent_source='demo', кампания
+    «Демо-кампания…», оператор operator с именем «Оператор (демо)».
+    Обычные контакты/кампании/операторы не затрагиваются.
+    Возвращает dict со счётчиками удалённого (0 — если чистить нечего).
+    """
+    from .security import drop_sessions_for
+    res = {"contacts": 0, "campaigns": 0, "campaign_items": 0, "calls": 0,
+           "acd": 0, "blacklist": 0, "operators": 0}
+
+    demo_contacts = fetch("SELECT * FROM contacts WHERE consent_source='demo'")
+    demo_ids = [c["id"] for c in demo_contacts]
+    demo_phones = [c["phone"] for c in demo_contacts]
+
+    camp_rows = fetch("SELECT * FROM campaigns WHERE name LIKE 'Демо-кампания%'")
+    camp_ids = [c["id"] for c in camp_rows]
+
+    def _del(table, where, params):
+        before = fetch1("SELECT COUNT(*) c FROM {}".format(table))
+        q("DELETE FROM {} WHERE {}".format(table, where), params)
+        after = fetch1("SELECT COUNT(*) c FROM {}".format(table))
+        return (before["c"] if before else 0) - (after["c"] if after else 0)
+
+    if camp_ids:
+        qmarks = ",".join("?" * len(camp_ids))
+        res["campaign_items"] += _del("campaign_items", "campaign_id IN ({})".format(qmarks), camp_ids)
+        res["calls"] += _del("calls", "campaign_id IN ({})".format(qmarks), camp_ids)
+        res["acd"] += _del("acd", "campaign_id IN ({})".format(qmarks), camp_ids)
+    if demo_ids:
+        qmarks = ",".join("?" * len(demo_ids))
+        res["campaign_items"] += _del("campaign_items", "contact_id IN ({})".format(qmarks), demo_ids)
+        res["acd"] += _del("acd", "contact_id IN ({})".format(qmarks), demo_ids)
+    if demo_phones:
+        qmarks = ",".join("?" * len(demo_phones))
+        res["calls"] += _del("calls", "contact_phone IN ({})".format(qmarks), demo_phones)
+        res["acd"] += _del("acd", "contact_phone IN ({})".format(qmarks), demo_phones)
+        res["blacklist"] += _del("blacklist", "phone IN ({})".format(qmarks), demo_phones)
+    for cid in camp_ids:
+        q("DELETE FROM campaigns WHERE id=?", (cid,))
+    res["campaigns"] += len(camp_rows)
+    for cid in demo_ids:
+        q("DELETE FROM contacts WHERE id=?", (cid,))
+    res["contacts"] += len(demo_contacts)
+
+    # демо-оператор (создавался сидом первого запуска)
+    op = fetch1("SELECT u.id uid, o.id oid FROM users u JOIN operators o ON o.user_id=u.id"
+                " WHERE u.login='operator' AND o.name='Оператор (демо)'")
+    if op:
+        drop_sessions_for("operator")
+        q("DELETE FROM operators WHERE id=?", (op["oid"],))
+        q("DELETE FROM users WHERE id=?", (op["uid"],))
+        res["operators"] += 1
+    return res
 
 
 # ---- Настройки ----

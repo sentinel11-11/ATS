@@ -18,6 +18,8 @@ _TMP = tempfile.mkdtemp(prefix="ats_test_")
 os.environ["ATS_FAST"] = "1"
 os.environ["ATS_DATA_DIR"] = _TMP
 os.environ["ATS_ADMIN_PASSWORD"] = "TestAdmin123!"
+# Тестовый режим: первый запуск дополняет пул sim-номерами (в проде пул пуст)
+os.environ["ATS_DEV_SEED"] = "1"
 
 from app import api, config, db, numbers as numbers_mod, security  # noqa: E402
 from app.engine import Engine  # noqa: E402
@@ -48,6 +50,23 @@ def make_campaign(name="Тест", flow="agent", template_id=2, retry_max=0, con
         "created": config.now_iso(), "updated": config.now_iso()})
 
 
+def ensure_test_operator():
+    """Создаёт тестового оператора operator/operator1234 для проверки ролей.
+
+    В продукте при первом запуске оператор НЕ создаётся (только admin) —
+    операторов заводит администратор. Здесь он нужен для тестов ограничений ролей.
+    """
+    if db.fetch1("SELECT id FROM users WHERE login='operator'"):
+        return
+    salt = security.new_salt()
+    db.insert("users", {"login": "operator", "role": "operator", "salt": salt,
+                        "password_hash": security.hash_password("operator1234", salt),
+                        "active": 1, "created": config.now_iso()})
+    u = db.fetch1("SELECT id FROM users WHERE login='operator'")
+    db.insert("operators", {"user_id": u["id"], "name": "Тест-оператор", "ext": "101",
+                            "status": "offline", "updated": config.now_iso()})
+
+
 class TestSecurity(unittest.TestCase):
     def test_password_hash_roundtrip(self):
         salt = security.new_salt()
@@ -70,7 +89,13 @@ class TestDb(unittest.TestCase):
         db.init_db()
 
     def test_seeds(self):
-        self.assertGreaterEqual(len(db.fetch("SELECT id FROM users")), 2)
+        users = db.fetch("SELECT id, login, role FROM users")
+        self.assertGreaterEqual(len(users), 1)
+        # продукт стартует только с администратором; демо-оператор не сидится
+        admins = [u for u in users if u["role"] == "admin"]
+        self.assertTrue(admins, "должен быть администратор")
+        self.assertFalse(any(u["login"] == "operator" for u in users),
+                         "демо-оператор не должен создаваться при первом запуске")
         self.assertGreaterEqual(db.fetch("SELECT COUNT(*) c FROM numbers")[0]["c"], 1)
         self.assertGreaterEqual(db.fetch("SELECT COUNT(*) c FROM templates")[0]["c"], 1)
         self.assertIsNotNone(db.fetch1("SELECT data FROM settings WHERE id=1"))
@@ -219,6 +244,7 @@ class TestHttpApi(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         db.init_db()
+        ensure_test_operator()
         from app.server import create_server
         cls.engine = Engine()
         api.ENGINE = cls.engine
@@ -319,6 +345,7 @@ class TestReportsEndpoint(unittest.TestCase):
     def setUpClass(cls):
         from app.server import create_server
         db.init_db()
+        ensure_test_operator()
         cls.engine = Engine(auto_start=False)
         api.ENGINE = cls.engine
         cls.httpd = create_server("127.0.0.1", 0)
@@ -377,7 +404,7 @@ class TestReportsEndpoint(unittest.TestCase):
 
 
 class TestMiscEndpoints(unittest.TestCase):
-    """Демо-сид, умные интервалы (retry_map), загрузка/отдача записи разговора."""
+    """Очистка демо-данных, умные интервалы (retry_map), загрузка/отдача записи разговора."""
     @classmethod
     def setUpClass(cls):
         from app.server import create_server
@@ -415,16 +442,29 @@ class TestMiscEndpoints(unittest.TestCase):
         s, j = self.call("POST", "/api/v2/auth/login", {"login": "admin", "password": "TestAdmin123!"})
         return j["token"]
 
-    def test_demo_seed(self):
+    def test_demo_seed_route_removed(self):
+        """Для итогового продукта сид демо-данных убран: /demo/seed -> 404."""
         tok = self._token()
-        code, j = self.call("POST", "/api/v2/demo/seed", {}, token=tok)
-        self.assertEqual(code, 200)
-        self.assertGreaterEqual(j["contacts_added"], 0)
-        self.assertTrue(j["campaign_id"])
-        self.assertGreaterEqual(j["items"], 0)
-        # повторный вызов не должен падать (дубли пропускаются)
-        code2, j2 = self.call("POST", "/api/v2/demo/seed", {}, token=tok)
-        self.assertEqual(code2, 200)
+        code, _ = self.call("POST", "/api/v2/demo/seed", {}, token=tok)
+        self.assertEqual(code, 404)
+
+    def test_clean_demo_only_marked_rows(self):
+        """clean_demo() удаляет только демо-контент, обычные записи не трогает."""
+        keep = add_contact("Обычный клиент", "79991112233", consent=1)          # consent_source='test'
+        demo = add_contact("Демо-клиент", "79994445566", consent=1)
+        db.q("UPDATE contacts SET consent_source='demo' WHERE id=?", (demo,))
+        camp = make_campaign(name="Демо-кампания (ИИ-агент)")
+        db.insert("campaign_items", {"campaign_id": camp, "contact_id": demo,
+                                     "contact_name": "Демо-клиент", "contact_phone": "79994445566",
+                                     "status": "queued", "attempts": 0, "next_attempt_at": "",
+                                     "last_result": "", "created": config.now_iso(),
+                                     "updated": config.now_iso(), "completed_at": ""})
+        res = db.clean_demo()
+        self.assertGreaterEqual(res["contacts"], 1)
+        self.assertGreaterEqual(res["campaigns"], 1)
+        self.assertGreaterEqual(res["campaign_items"], 1)
+        self.assertIsNone(db.fetch1("SELECT id FROM contacts WHERE phone='79994445566'"))
+        self.assertIsNotNone(db.fetch1("SELECT id FROM contacts WHERE id=?", (keep,)))
 
     def test_campaign_retry_map(self):
         tok = self._token()

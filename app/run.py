@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Точка входа ATS v2:
-    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami] [--admin-password ..] [--init-only]
+    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami]
+                      [--admin-password ..] [--init-only] [--clean-demo]
 """
 import argparse
 import sys
@@ -43,10 +44,18 @@ def main(argv=None):
     ap.add_argument("--init-only", action="store_true")
     ap.add_argument("--admin-password", default=None,
                     help="Сменить пароль администратора (admin) и запустить сервер; с --init-only — только сменить")
+    ap.add_argument("--clean-demo", action="store_true",
+                    help="Удалить демо-данные (сид-контакты, «Демо-кампания», демо-оператора) и выйти")
     args = ap.parse_args(argv)
 
     db.init_db()
     _backup_db()
+    if args.clean_demo:
+        r = db.clean_demo()
+        parts = ["{}: {}".format(k, v) for k, v in r.items() if v]
+        print("[ATS v2] Демо-данные удалены." if not parts else
+              "[ATS v2] Демо-данные удалены: " + ", ".join(parts))
+        return 0
     if args.admin_password:
         if db.set_admin_password(args.admin_password):
             print("[ATS v2] Пароль администратора (admin) обновлён.")

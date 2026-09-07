@@ -341,10 +341,6 @@ def route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _recording_upload(body)
-    if p == ["demo", "seed"] and method == "POST":
-        if sess["role"] != "admin":
-            return {"ok": False, "error": "admin_required"}, 403
-        return _demo_seed()
     # настройки / пароль
     if p == ["settings", "save"]:
         return _settings_save(body, sess)
@@ -944,44 +940,3 @@ def _recording_upload(body):
     (rec_dir / safe_name).write_bytes(raw)
     db.q("UPDATE calls SET recording=? WHERE id=?", (safe_name, call_id))
     return {"ok": True, "recording": safe_name}, 200
-
-
-# ---------------- демо-данные ----------------
-def _demo_seed():
-    """Заполнить демо-базу: контакты (согласия) + кампания (agent). Для быстрого старта в sim."""
-    demo = [
-        ("Иван Петров", "79001112233", "клиенты", 1, "интересует предложение"),
-        ("Мария Смирнова", "79002223344", "клиенты", 1, ""),
-        ("Пётр Сидоров", "79003334455", "клиенты", 1, ""),
-        ("Ольга Кузнецова", "79004445566", "клиенты", 0, "нет согласия — пропустим"),
-        ("Николай Волков", "79005556677", "лиды", 1, ""),
-        ("Анна Соколова", "79006667788", "лиды", 1, "звонить после 14:00"),
-    ]
-    added = 0
-    phones = {c["phone"] for c in db.fetch("SELECT phone FROM contacts")}
-    for name, phone, grp, consent, note in demo:
-        if phone in phones:
-            continue
-        db.insert("contacts", {"name": name, "phone": phone, "grp": grp, "note": note,
-                               "consent": consent, "consent_source": "demo", "blacklisted": 0,
-                               "complaints": 0, "created": now_iso(), "updated": now_iso()})
-        phones.add(phone)
-        added += 1
-    cid = db.insert("campaigns", {"name": "Демо-кампания (ИИ-агент)", "template_id": 2, "flow": "agent",
-                                  "status": "stopped",
-                                  "schedule": json.dumps({"start": "08:00", "end": "20:00",
-                                                          "days": [0, 1, 2, 3, 4, 5, 6]}),
-                                  "max_channels": 2, "retry_max": 1, "retry_delay_min": 10,
-                                  "retry_map": json.dumps({"busy": 5, "no_answer": 20, "machine": 30}),
-                                  "connect_on_qualify": 1,
-                                  "created": now_iso(), "updated": now_iso()})
-    cons = db.fetch("SELECT * FROM contacts WHERE consent=1 AND grp IN ('клиенты','лиды') ORDER BY id")
-    count = 0
-    for c in cons:
-        db.insert("campaign_items", {"campaign_id": cid, "contact_id": c["id"],
-                                     "contact_name": c.get("name", ""), "contact_phone": c.get("phone", ""),
-                                     "status": "queued", "attempts": 0, "next_attempt_at": "",
-                                     "last_result": "", "created": now_iso(), "updated": now_iso(),
-                                     "completed_at": ""})
-        count += 1
-    return {"ok": True, "contacts_added": added, "campaign_id": cid, "items": count}, 200

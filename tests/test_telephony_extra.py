@@ -12,6 +12,8 @@ _TMP = tempfile.mkdtemp(prefix="ats_ami_")
 os.environ["ATS_FAST"] = "1"
 os.environ["ATS_DATA_DIR"] = _TMP
 os.environ["ATS_ADMIN_PASSWORD"] = "TestAdmin123!"
+# Тестовый режим: первый запуск дополняет пул sim-номерами (в проде пул пуст)
+os.environ["ATS_DEV_SEED"] = "1"
 
 from app import asterisk as ami_mod  # noqa: E402
 from app import config, db  # noqa: E402

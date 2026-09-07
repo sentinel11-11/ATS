@@ -414,7 +414,7 @@ body.is-admin .opOnly{display:none!important}
         <div style="min-width:0">
           <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>Пул номеров</h2><div class="poolgrid grid" id="poolDash"></div></div>
           <div class="panel hidden" id="simPanel">
-            <h2><span class="badge cy">демо-режим · sim</span></h2>
+            <h2><span class="badge cy">sim · тест без оборудования</span><span class="hint" style="font-weight:400">провайдер-симулятор: удобно для приёмки до подключения UIS/Asterisk</span></h2>
             <div class="toolbar" style="margin-bottom:8px">
               <input id="simPhone" class="input" placeholder="Телефон абонента" style="width:180px">
               <select id="simOutcome" class="select" style="width:auto">
@@ -427,11 +427,7 @@ body.is-admin .opOnly{display:none!important}
               <input id="simAnswer" class="input" placeholder="Ответ 1/2" style="width:84px" value="1">
               <button class="btn sm" onclick="saveSim()">Задать</button>
             </div>
-            <p class="hint" style="margin:0 0 10px">Исход следующего звонка на этот номер в симуляторе.</p>
-            <div class="toolbar" style="margin:0">
-              <button class="btn w sm admOnly" onclick="seedDemo()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Загрузить демо-данные</button>
-              <span class="hint">контакты + «Демо-кампания (ИИ-агент)» — запустите и увидите полный цикл звонка</span>
-            </div>
+            <p class="hint" style="margin:0">Исход следующего звонка на этот номер в симуляторе. В рабочем режиме (UIS/Asterisk) панель не показывается — номера и звонки идут через оператора связи.</p>
           </div>
         </div>
       </div>
@@ -934,7 +930,7 @@ async function loadDash(){
   $('actFeed').innerHTML=fr.length?fr.map(x=>`<div class="frow">${av(x.contact_name)}<div style="min-width:0"><div class="calln">${esc(x.contact_name||x.contact_phone)}</div>
     <div class="dim" style="font-size:11px">${esc(x.caller_id||'')}${x.campaign_id?' · кампания #'+x.campaign_id:''}</div></div>
     <span class="res">${badge(x.result||x.status)}</span><span class="tm">${dTxt(x.started_at)}</span></div>`).join('')
-    :empty('inbox','Звонков ещё не было','Запустите кампанию или настройте симулятор в демо-режиме');
+    :empty('inbox','Звонков ещё не было','Запустите кампанию — в режиме sim исход звонка задаётся на панели теста');
 }
 function statusPill(st){return st==='running'?'<span class="badge g"><span class="dot"></span>В работе</span>'
   :st==='paused'?'<span class="badge y">Пауза</span>':'<span class="badge">Остановлена</span>';}
@@ -956,12 +952,6 @@ async function saveSim(){
   const j=await safe(()=>api('/sim/script',{body:{phone:$('simPhone').value.trim(),outcome:$('simOutcome').value,answer:$('simAnswer').value.trim()}}));
   if(j&&j.ok)toast('Сценарий симуляции задан для '+$('simPhone').value.trim());
   else toast('Не удалось задать сценарий','err');
-}
-async function seedDemo(){
-  const j=await safe(()=>api('/demo/seed',{body:{}}));
-  if(j&&j.ok){toast('Демо-данные загружены: +'+j.contacts_added+' контактов, кампания #'+j.campaign_id+' ('+j.items+' в очереди)');
-    safe(()=>loadDash());safe(()=>loadCamps());}
-  else toast('Ошибка: '+((j&&j.error)||'?'),'err');
 }
 
 /* ================= контакты ================= */

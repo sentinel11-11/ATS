@@ -33,8 +33,9 @@ ATS_ADMIN_PASSWORD='MyPass123!' python3 -m app.run --host 0.0.0.0 --port 9124
 Windows: `run_ats2.bat` (или `py -3 -m app.run`).
 
 При первом запуске создаются `data_v2/ats.db` и учётные данные:
-`data_v2/initial_credentials.txt` (admin с сгенерированным паролем + operator/operator1234).
+`data_v2/initial_credentials.txt` (только admin с сгенерированным паролем).
 Если задан `ATS_ADMIN_PASSWORD`, пароль админа — этот. **Смените пароль в интерфейсе (Настройки → Смена пароля).**
+Операторов добавляет администратор: Настройки → Пользователи и операторы. Пул номеров стартует пустым — номера Caller ID добавляются в разделе «Пул номеров».
 
 Проверка: откройте `http://127.0.0.1:9124`, войдите. Далее:
 1. **Контакты** — добавьте или импортируйте CSV (`Имя;Телефон;Группа;Примечание;1`), убедитесь, что стоит «согласие».
@@ -81,7 +82,9 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 | Метод и путь | Назначение |
 |---|---|
 | GET `/api/v2/dashboard` | Сводка: кампании, каналы, звонки за сегодня, пул, операторы, ACD |
-| GET/POST `/api/v2/contacts`, `/contacts/delete`, `/contacts/import`, `GET /api/v2/export/contacts.csv` | База контактов |
+| GET `/api/v2/reports?from=YYYY-MM-DD&to=YYYY-MM-DD` (опц., до 366 дней) | Отчёт за период: метрики, разрезы, динамика по дням/неделям |
+| GET/POST `/api/v2/contacts`, `/contacts/delete`, `/contacts/import`, `/contacts/save`, `GET /api/v2/export/contacts.csv` | База контактов (импорт: added/updated/skipped + errors) |
+| GET `/api/v2/users`; POST `/users/save`, `/users/delete` (admin) | Пользователи и операторы (роль, доступ, пароль, внутр. номер) |
 | GET `/api/v2/numbers`; POST `/api/v2/numbers/save`, `/numbers/quarantine`, `/numbers/reset` | Пул номеров |
 | GET `/api/v2/campaigns`; POST `/campaigns/save`; POST `/campaigns/{id}/start|pause|stop|add-contacts|clear`; GET `/campaigns/{id}` | Кампании (детали: контакты + звонки) |
 | GET `/api/v2/calls` (фильтры status/campaign_id/limit) | Журнал звонков |
@@ -93,7 +96,6 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 | POST `/api/v2/webhooks/uis` | Вебхук UIS (статусы звонков), опц. секрет `uis.webhook_secret` (заголовок `X-UIS-Secret`) |
 | POST `/api/v2/calls/recording` | Загрузить запись разговора и привязать к звонку (admin; JSON: call_id, filename, data_b64) |
 | GET `/api/v2/calls/{id}/recording` | Скачать/слушать запись (auth: заголовок или ?token=) |
-| POST `/api/v2/demo/seed` | Демо-данные: контакты + «Демо-кампания (ИИ-агент)» (admin) |
 | GET `/api/v2/events?token=...` | SSE: события call/item/acd/campaign/agent |
 
 ## 5. Статусы звонка/элемента
