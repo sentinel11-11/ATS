@@ -91,6 +91,8 @@ kbd{background:#0e1c31;border:1px solid var(--line2);border-bottom-width:2px;bor
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:10px;border:1px solid var(--line);
   background:rgba(20,36,60,.6);color:#c4d4ea;cursor:pointer;transition:background .13s,border-color .13s}
 .iconbtn:hover{background:#1a3357;color:#fff;border-color:var(--line2)}
+.iconbtn.on{background:#16355c;color:#9dc9ff;border-color:rgba(61,134,255,.55)}
+.iconbtn.on:hover{color:#fff}
 .iconbtn .ic{width:16px;height:16px}
 .tbtn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 13px;border-radius:10px;border:1px solid var(--line);
   background:rgba(20,36,60,.6);color:#c4d4ea;font-size:13px;font-weight:500;cursor:pointer;transition:background .13s,border-color .13s}
@@ -259,6 +261,10 @@ td a.tlink:hover{text-decoration:underline}
 .form-actions{display:flex;gap:9px;align-items:center;margin-top:16px;flex-wrap:wrap}
 .pillmsg{font-size:12.5px;min-height:18px}
 .pillmsg.ok{color:var(--ok)} .pillmsg.err{color:var(--bad)}
+.errbox{margin:10px 0 0;border:1px solid rgba(255,100,118,.4);background:rgba(61,23,34,.5);border-radius:10px;
+  padding:9px 12px;font-size:12.5px;color:#ffd3d8;max-height:160px;overflow:auto}
+.errbox b{display:block;margin-bottom:5px;color:#ffa7b4}
+.errbox .dim{margin-top:4px;color:var(--dim)}
 
 /* ============ отчёты: бары/тренд ============ */
 .hbars{display:flex;flex-direction:column;gap:7px;padding:2px 0}
@@ -384,6 +390,7 @@ body.is-admin .opOnly{display:none!important}
     <button class="iconbtn" id="refreshBtn" title="Обновить (F5)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
     <button class="tbtn" id="palBtn" title="Быстрый переход (Ctrl+K)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Поиск<kbd>Ctrl K</kbd></button>
     <span class="rolechip"><svg class="ic" style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><b id="roleChipTxt">—</b></span>
+    <button class="iconbtn" id="notifBtn" title="Звук и уведомления о звонках"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></button>
     <button class="iconbtn" id="logoutBtn" title="Выйти"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
   </div>
 
@@ -432,10 +439,25 @@ body.is-admin .opOnly{display:none!important}
 
     <!-- ======= ОТЧЁТЫ ======= -->
     <section id="reports" class="section">
+      <div class="toolbar" style="margin-bottom:14px;gap:9px">
+        <div class="seg" id="repSeg">
+          <button data-days="0" class="on">Сегодня</button>
+          <button data-days="7">7 дней</button>
+          <button data-days="14">14 дней</button>
+          <button data-days="30">30 дней</button>
+        </div>
+        <span class="dim" style="font-size:12.5px">или даты:</span>
+        <input type="date" id="rFrom" class="input" style="width:158px" title="Начало периода">
+        <span class="muted">—</span>
+        <input type="date" id="rTo" class="input" style="width:158px" title="Конец периода">
+        <button class="btn ghost sm" onclick="applyRepDates()">Показать</button>
+        <span class="sp grow" style="flex:1"></span>
+        <span class="hint nowrap" id="repScope">за сегодня</span>
+      </div>
       <div class="cards" id="repCards"></div>
       <div class="grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px">
-        <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Динамика, последние 7 дней</h2><div id="repTrend"></div></div>
-        <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Результаты за сегодня</h2><div id="repResults"></div></div>
+        <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Динамика звонков</h2><div id="repTrend"></div></div>
+        <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>Результаты за период</h2><div id="repResults"></div></div>
         <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>По кампаниям</h2><div id="repCamps"></div></div>
         <div class="panel"><h2><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>По номерам (Caller ID)</h2><div id="repNumbers"></div></div>
       </div>
@@ -466,6 +488,7 @@ body.is-admin .opOnly{display:none!important}
         <div id="importBox" class="hidden" style="margin-bottom:12px">
           <textarea id="csvText" class="textarea" placeholder="Имя;Телефон;Группа;Примечание;1   (последнее поле 1 = есть согласие)"></textarea>
           <div class="toolbar" style="margin:8px 0 0"><button class="btn" onclick="importCsv()">Импортировать</button><span class="pillmsg" id="importMsg"></span></div>
+          <div id="importErr"></div>
         </div>
         <div class="tblwrap"><table id="contactsTable"></table></div>
       </div>
@@ -587,6 +610,15 @@ body.is-admin .opOnly{display:none!important}
         <div class="form-actions admOnly"><button class="btn" onclick="saveSettings()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Сохранить настройки</button><span class="pillmsg" id="setMsg"></span></div>
         <p class="hint opOnly" style="margin:2px 0 0">Изменение настроек доступно только администратору.</p>
       </div>
+      <div class="panel admOnly" id="usersPanel">
+        <div class="toolbar">
+          <h2 style="margin:0" class="grow"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Пользователи и операторы <span class="cnt" id="uCnt"></span></h2>
+          <button class="btn" onclick="editUser()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Добавить пользователя</button>
+        </div>
+        <div class="tblwrap"><table id="usersTable"></table></div>
+        <p class="hint" style="margin:10px 0 0">Логин и роль определяют, что видит человек в системе. «Оператор» принимает звонки из ACD-очереди и работает с базой; «администратор» управляет всем. Нельзя удалить или понизить самого себя и последнего администратора.</p>
+      </div>
+
       <div class="panel hidden" id="rawPanel">
         <h2>Провайдеры и интеграции <span class="badge y">только админ</span></h2>
         <p class="hint" style="margin:0 0 10px">UIS (Call API/SIP), Asterisk AMI, LLM-агент, CRM/Bitrix24. После изменения — перезапуск: python -m app.run.</p>
@@ -645,7 +677,7 @@ const NAV=[['dash','Обзор','dash'],['reports','Отчёты','reports'],['c
 const TITLE={dash:'Обзор',reports:'Отчёты',campaigns:'Кампании',contacts:'Контакты',numbers:'Пул номеров',
   acd:'Операторы и ACD',journal:'Журнал звонков',blacklist:'Чёрный список',templates:'Шаблоны',settings:'Настройки'};
 let state={token:localStorage.getItem('ats_token')||'',role:'',settings:null,contacts:[],campaigns:[],numbers:[],templates:[],
-  activeTab:'dash',jN:50,jAll:false,providersim:false,curCall:null};
+  activeTab:'dash',jN:50,jAll:false,providersim:false,curCall:null,repFrom:'',repTo:'',acdSeen:{}};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const nFmt=n=>((n===null||n===undefined)?0:n).toLocaleString('ru-RU');
@@ -710,6 +742,62 @@ function toast(txt,type){
   $('toasts').appendChild(el);
   setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),260);},3600);
 }
+/* ================= звук и уведомления о звонках ================= */
+let _actx=null;
+function notifOn(){return localStorage.getItem('ats_notif')==='1';}
+function setNotifUI(){
+  const b=$('notifBtn');
+  if(!b)return;
+  b.classList.toggle('on',notifOn());
+  b.title=notifOn()?'Звук и уведомления включены (щёлкните, чтобы выключить)':'Включить звук и уведомления о новых звонках';
+}
+function ensureAudio(){
+  if(!_actx){try{_actx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){_actx=null;}}
+  if(_actx&&_actx.state==='suspended'){try{_actx.resume();}catch(e){}}
+}
+function toggleNotif(){
+  const willOn=!notifOn();
+  const apply=()=>{localStorage.setItem('ats_notif',willOn?'1':'0');setNotifUI();toast(willOn?'Уведомления и звук включены':'Уведомления выключены','info');};
+  if(willOn&&('Notification' in window)&&Notification.permission==='default'){
+    Notification.requestPermission().then(p=>{
+      if(p==='granted')apply();
+      else{localStorage.setItem('ats_notif','0');setNotifUI();toast('Разрешение не выдано — включите уведомления для этого сайта в браузере','warn');}
+    });
+  }else apply();
+}
+function ringSound(){
+  if(!notifOn()||!_actx)return;
+  try{
+    if(_actx.state==='suspended')_actx.resume();
+    const t0=_actx.currentTime;
+    [880,1174.7].forEach((f,i)=>{
+      const o=_actx.createOscillator(),g=_actx.createGain();
+      o.type='sine';o.frequency.value=f;
+      g.gain.setValueAtTime(0.0001,t0+i*0.3);
+      g.gain.exponentialRampToValueAtTime(0.22,t0+i*0.3+0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001,t0+i*0.3+0.5);
+      o.connect(g);g.connect(_actx.destination);o.start(t0+i*0.3);o.stop(t0+i*0.3+0.55);
+    });
+  }catch(e){}
+}
+function notifyNewAcd(p){
+  if(!notifOn()||!p)return;
+  if(p.id){if(state.acdSeen[p.id])return;state.acdSeen[p.id]=1;
+    const ks=Object.keys(state.acdSeen);if(ks.length>250){ks.slice(0,100).forEach(k=>delete state.acdSeen[k]);}}
+  ringSound();
+  const nm=(p.name||'Абонент')+' · '+(p.phone||'');
+  toast('Новый звонок в очереди: '+nm,'info');
+  try{
+    if('Notification' in window&&Notification.permission==='granted'){
+      const n=new Notification('ATS v2 — новый звонок',{body:nm+' — ожидает оператора',tag:'acd'+p.id});
+      n.onclick=()=>{try{window.focus();}catch(e){}openTab('acd');n.close();};
+      setTimeout(()=>{try{n.close();}catch(e){}},20000);
+    }
+  }catch(e){}
+}
+document.addEventListener('pointerdown',()=>ensureAudio(),{capture:true});
+document.addEventListener('keydown',()=>ensureAudio());
+
 function ask(title,txt,okLabel,danger){
   return new Promise(res=>{
     modal(`<h2>${ico(danger?'alert':'info')}${esc(title)}</h2>
@@ -920,9 +1008,21 @@ async function importCsv(){
   });
   if(!rows.length)return toast('Нет строк для импорта','warn');
   const j=await safe(()=>api('/contacts/import',{body:{rows}}));
-  if(j&&j.ok){$('importMsg').textContent='✓ Добавлено: '+j.added+', обновлено: '+(j.updated||0);$('importMsg').classList.add('ok');
-    await fetchContacts();}
-  else {$('importMsg').textContent='Ошибка импорта';$('importMsg').classList.remove('ok');$('importMsg').classList.add('err');}
+  const errBox=$('importErr');
+  if(j&&j.ok){
+    let txt='✓ Добавлено: '+j.added+', обновлено: '+(j.updated||0);
+    if(j.skipped)txt+=', пропущено: '+j.skipped;
+    $('importMsg').textContent=txt;$('importMsg').classList.add('ok');$('importMsg').classList.remove('err');
+    const errs=j.errors||[];
+    if(errBox)errBox.innerHTML=errs.length
+      ?`<div class="errbox"><b>Не импортировано (${errs.length}):</b>${errs.map(e=>`<div>строка ${(e.row||0)+1} — ${esc(e.reason)}${e.phone?` (${esc(e.phone)})`:''}</div>`).join('')}${(j.skipped||0)>errs.length?'<div class="dim">… и другие</div>':''}</div>`
+      :'';
+    else if(errs.length)toast('Пропущено строк: '+errs.length+' — см. список ошибок ниже','warn');
+    await fetchContacts();
+  }else{
+    $('importMsg').textContent='Ошибка импорта';$('importMsg').classList.remove('ok');$('importMsg').classList.add('err');
+    if(errBox)errBox.innerHTML='';
+  }
 }
 function editContact(id){
   const c=state.contacts.find(x=>x.id===id)||{id:0,name:'',phone:'',grp:'',note:'',consent:true};
@@ -1328,12 +1428,43 @@ async function exportCalls(){
 }
 
 /* ================= отчёты ================= */
+function repToday(off){const d=new Date();d.setDate(d.getDate()-(off||0));
+  const p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate());}
+function repPreset(days){
+  if(days===0){state.repFrom='';state.repTo='';}
+  else{state.repFrom=repToday(days-1);state.repTo=repToday(0);}
+  document.querySelectorAll('#repSeg button').forEach(b=>b.classList.toggle('on',parseInt(b.dataset.days)===days));
+  safe(loadReports);
+}
+function applyRepDates(){
+  const f=$('rFrom').value,t=$('rTo').value;
+  if(!f||!t)return toast('Укажите обе даты периода','warn');
+  if(f>t)return toast('Дата «с» позже даты «по»','warn');
+  const diff=Math.round((new Date(t)-new Date(f))/86400000);
+  if(diff>366)return toast('Максимальный период — 366 дней','warn');
+  state.repFrom=f;state.repTo=t;
+  document.querySelectorAll('#repSeg button').forEach(b=>b.classList.remove('on'));
+  safe(loadReports);
+}
+function syncRepUI(){
+  $('rFrom').value=state.repFrom||'';
+  $('rTo').value=state.repTo||'';
+  if(!state.repFrom&&!state.repTo)document.querySelectorAll('#repSeg button').forEach(b=>b.classList.toggle('on',parseInt(b.dataset.days)===0));
+}
 async function loadReports(){
-  const j=await api('/reports');
-  if(!j||j.error)return;
+  syncRepUI();
+  let qs='';
+  if(state.repFrom&&state.repTo)qs='?from='+state.repFrom+'&to='+state.repTo;
+  const j=await api('/reports'+qs);
+  if(!j||j.error){if(j&&j.error==='bad_range')toast('Некорректный период отчёта','err');return;}
   const t=j.today||{};
+  const per=j.period||{};
+  const custom=!!per.custom;
+  const span=custom?'за '+((per.from||'').slice(8,10)+'.'+(per.from||'').slice(5,7))+' — '+((per.to||'').slice(8,10)+'.'+(per.to||'').slice(5,7))+' ':'';
+  $('repScope').textContent=per.label||(custom?'период':'за сегодня');
   $('repCards').innerHTML=
-   `<div class="metric acc"><span class="ico">${ico('phone')}</span><b>${nFmt(t.n||0)}</b><span class="l">звонков сегодня</span></div>
+   `<div class="metric acc"><span class="ico">${ico('phone')}</span><b>${nFmt(t.n||0)}</b><span class="l">звонков ${span||'сегодня'}</span></div>
     <div class="metric"><span class="ico" style="color:var(--ok);background:rgba(52,211,153,.13)">${ico('check')}</span><b class="okc">${nFmt(t.ok||0)}</b><span class="l">успешных</span></div>
     <div class="metric"><span class="ico">${ico('bolt')}</span><b>${t.ok_rate||0}%</b><span class="l">конверсия</span></div>
     <div class="metric"><span class="ico">${ico('clock')}</span><b>${t.avg_dur||0} с</b><span class="l">ср. длительность</span></div>`;
@@ -1352,13 +1483,16 @@ async function loadReports(){
    byN.map(r=>`<div class="hbar"><span class="hn">${esc(r.caller_id)}</span><span class="ht"><i style="width:${Math.round(100*r.n/Math.max(1,...byN.map(x=>x.n)))}%;background:#53c8ef"></i></span><span class="hv">${nFmt(r.n)}</span></div>
     <div class="dim" style="grid-column:2;font-size:11px;margin-top:-4px">успешных ${r.ok||0}</div>`).join('')+`</div>`
     :empty('reports','Пока нет звонков','Появятся после первых звонков');
-  const tr=(j.trend||[]).slice(-7);
+  const tr=(j.trend||[]);
+  const step=Math.max(1,Math.ceil(tr.length/24));
+  const many=tr.length>16;
   const trMax=Math.max(1,...tr.map(r=>r.n));
-  $('repTrend').innerHTML=tr.length?`<div class="trend">`+tr.map(r=>{
+  $('repTrend').innerHTML=tr.length?`<div class="trend">`+tr.map((r,i)=>{
     const h=Math.round(100*r.n/trMax);
-    return `<div class="tcol"><div class="tb" style="height:${Math.max(4,h)}%" title="${dTxt(r.date)} — звонков: ${r.n}, успех: ${r.ok}">
-      ${h>14?`<em>${r.n}</em>`:''}</div><div class="td">${(r.date||'').slice(8,10)+'.'+(r.date||'').slice(5,7)}</div></div>`;}).join('')+`</div>`
-    :empty('reports','Нет данных за 7 дней','Звонки появятся в динамике после запуска кампаний');
+    const lbl=(i%step===0||i===tr.length-1)?(r.label||(r.date||'').slice(8,10)+'.'+(r.date||'').slice(5,7)):'';
+    return `<div class="tcol"><div class="tb" style="height:${Math.max(4,h)}%" title="${esc(r.label||r.date)} — звонков: ${r.n}, успех: ${r.ok}">
+      ${h>16&&!many?`<em>${r.n}</em>`:''}</div><div class="td">${lbl?esc(lbl):''}</div></div>`;}).join('')+`</div>`
+    :empty('reports','Нет данных за период','Звонки появятся в динамике после запуска кампаний');
 }
 
 /* ================= чёрный список ================= */
@@ -1430,6 +1564,87 @@ async function delTemplate(id){
   if(j&&j.ok){toast('Шаблон удалён');await loadTemplates();}
 }
 
+/* ================= пользователи и операторы (админ) ================= */
+async function loadUsers(){
+  const j=await api('/users');
+  if(!j||!j.users)return;
+  state.users=j.users;
+  $('uCnt').textContent='· '+nFmt(j.users.length);
+  const me=state.login;
+  $('usersTable').innerHTML=`<tr><th>Пользователь</th><th>Роль</th><th class="num">Внутр.</th><th>На линии</th><th style="width:74px">Активен</th><th class="num">Действия</th></tr>`+
+   j.users.map(u=>{
+     const isMe=u.login===me;
+     const roleTxt=u.role==='admin'?'<span class="badge b">админ</span>':'<span class="badge cy">оператор</span>';
+     const st=(u.op_status==='free')?'<span class="badge g"><span class="dot"></span>свободен</span>'
+       :(u.op_status==='busy')?'<span class="badge r">в разговоре</span>'
+       :(u.op_status==='break')?'<span class="badge y">перерыв</span>'
+       :'<span class="badge">офлайн</span>';
+     const nm=u.op_name||u.login;
+     return `<tr data-uid="${u.id}"><td style="min-width:0"><span class="cell-av">${av(nm)}<span style="min-width:0">
+        <span class="nm">${esc(nm)}${isMe?' <span class="badge y" style="font-size:10px">вы</span>':''}</span>
+        <span class="ph">@${esc(u.login)}</span></span></span></td>
+      <td>${roleTxt}</td><td class="num">${esc(u.ext||'—')}</td><td>${st}</td>
+      <td><label class="sw" style="display:inline-flex" title="${isMe?'Это вы':(u.active?'Выключить доступ':'Включить доступ')}">
+        <input type="checkbox" data-uact="${u.id}" ${u.active?'checked':''} ${isMe?'disabled':''}><span class="trk"></span></label></td>
+      <td class="num"><span class="btn-row">
+        <button class="btn ghost sm" data-a="edituser" data-id="${u.id}">${ico('edit')}Ред.</button>
+        ${isMe?'':`<button class="btn d sm" data-a="deluser" data-id="${u.id}" title="Удалить">${ico('trash')}</button>`}
+      </span></td></tr>`;
+   }).join('')
+   ||`<tr><td colspan="6">${empty('users','Пользователей нет','Создайте первого оператора')}</td></tr>`;
+  wire($('usersTable'));
+  document.querySelectorAll('#usersTable input[data-uact]').forEach(ch=>{
+    ch.onchange=()=>togUser(parseInt(ch.dataset.uact),ch.checked?1:0);
+  });
+}
+function editUser(id){
+  const u=(state.users||[]).find(x=>x.id===id)||{id:0,login:'',role:'operator',active:1,ext:'',op_name:''};
+  const isMe=u.login===state.login;
+  modal(`<h2>${ico('users')}${id?'Пользователь @'+esc(u.login):'Новый пользователь'}</h2>
+    <div class="formgrid">
+      <div class="fld"><span class="lbl">Логин (для входа)</span><input id="uLogin" class="input ctl" value="${esc(u.login)}" placeholder="operator2" spellcheck="false"></div>
+      <div class="fld"><span class="lbl">Имя оператора</span><input id="uName" class="input ctl" value="${esc(u.op_name||'')}" placeholder="Иван Оператор"></div>
+      <div class="fld"><span class="lbl">Роль</span>
+        <select id="uRole" class="select ctl" ${isMe?'disabled':''}>
+          <option value="operator" ${u.role==='operator'?'selected':''}>оператор (принимает звонки)</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>администратор (всё)</option>
+        </select></div>
+      <div class="fld"><span class="lbl">Внутренний номер</span><input id="uExt" class="input ctl" value="${esc(u.ext||'')}" placeholder="101"></div>
+      <div class="fld span2"><span class="lbl">Пароль${id?' (пусто — оставить прежний)':' (мин. 6 символов)'}</span>
+        <input id="uPass" type="password" class="input ctl" placeholder="••••••" autocomplete="new-password"></div>
+      <div class="span2"><label class="sw"><input id="uActive" type="checkbox" ${u.active===0?'':'checked'} ${isMe?'disabled':''}><span class="trk"></span>доступ разрешён</label></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn" onclick="saveUser(${id||0})">${ico('check')}Сохранить</button>
+      <button class="btn x" onclick="closeModal()">Отмена</button>
+    </div>`);
+}
+async function saveUser(id){
+  const login=$('uLogin').value.trim().toLowerCase();
+  const name=$('uName').value.trim();
+  const ext=$('uExt').value.trim();
+  const role=$('uRole').value;
+  const pass=$('uPass').value;
+  if(!login)return toast('Укажите логин','warn');
+  if(pass&&pass.length<6)return toast('Пароль — минимум 6 символов','warn');
+  if(!id&&!pass)return toast('Новому пользователю нужен пароль','warn');
+  const j=await safe(()=>api('/users/save',{body:{id:id,login:login,name:name,ext:ext,role:role,password:pass,active:$('uActive').checked}}));
+  if(j&&j.ok){closeModal();toast('Пользователь сохранён');await loadUsers();}
+  else toast('Ошибка: '+((j&&j.error)||'?'),'err');
+}
+async function togUser(id,active){
+  const j=await safe(()=>api('/users/save',{body:{id:id,active:active===1}}));
+  if(j&&j.ok){toast(active?'Доступ включён':'Доступ отключён — пользователь выйдет из системы','info');await loadUsers();}
+  else toast('Ошибка: '+((j&&j.error)||'?'),'err');
+}
+async function delUser(id){
+  const u=(state.users||[]).find(x=>x.id===id)||{};
+  if(!(await ask('Удалить пользователя','Будет удалён пользователь @'+(u.login||'')+'. Оператор больше не сможет войти.','Удалить')))return;
+  const j=await safe(()=>api('/users/delete',{body:{id:id}}));
+  if(j&&j.ok){toast('Пользователь удалён');await loadUsers();}
+  else toast('Ошибка: '+((j&&j.error)||'?'),'err');
+}
+
 /* ================= настройки ================= */
 function renderDayChips(days){
   const sel=new Set((days||[0,1,2,3,4,5,6]).map(x=>String(x)));
@@ -1459,7 +1674,8 @@ async function loadSettings(){
   ['sProvider','sChannels','sRetryMax','sRetryDelay','sCooldown','sWatchdog','sAcdT','sQuar','sCrm','sSimAns','sWinStart','sWinEnd','sConsent'].forEach(i=>{const el=$(i);if(el)el.disabled=ro;});
   document.querySelectorAll('#sDays input').forEach(x=>{x.disabled=ro;});
   $('rawPanel').classList.toggle('hidden',!isAdmin());
-  $('passPanel').classList.toggle('hidden',!isAdmin());
+  $('passPanel').classList.remove('hidden');
+  if(isAdmin())safe(()=>loadUsers());
 }
 async function saveSettings(){
   const j=await safe(()=>api('/settings/save',{body:{
@@ -1566,6 +1782,8 @@ const Actions={
   delbl:el=>delBlack(parseInt(el.dataset.id)),
   editt:el=>editTemplate(parseInt(el.dataset.id)),
   delt:el=>delTemplate(parseInt(el.dataset.id)),
+  edituser:el=>editUser(parseInt(el.dataset.id)),
+  deluser:el=>delUser(parseInt(el.dataset.id)),
 };
 function wire(root){
   if(!root)return;
@@ -1616,7 +1834,10 @@ function connectSSE(){
       if(['call','item','campaign','acd','agent'].includes(t)){
         if(t==='call'&&isActive('journal'))debRefresh('journal',900);
         if(t==='item'&&isActive('campaigns'))debRefresh('campaigns',900);
-        if(t==='acd'&&isActive('acd'))debRefresh('acd',400);
+        if(t==='acd'){
+          if(d.status==='queued'&&d.id)notifyNewAcd(d);
+          if(isActive('acd'))debRefresh('acd',300);
+        }
         if(isActive('dash'))debRefresh('dash');
       }
     }catch(err){}
@@ -1639,6 +1860,9 @@ function bindUI(){
   $('logoutBtn').onclick=()=>{logout(false);};
   $('refreshBtn').onclick=()=>doRefresh();
   $('palBtn').onclick=()=>openPalette();
+  $('notifBtn').onclick=()=>toggleNotif();
+  $('repSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(b)repPreset(parseInt(b.dataset.days));});
+  ['rFrom','rTo'].forEach(id=>{$(id).addEventListener('change',()=>{if($('rFrom').value&&$('rTo').value)applyRepDates();});});
   $('palInput').addEventListener('input',()=>{palIdx=0;renderPal();});
   $('palInput').addEventListener('keydown',e=>{
     if(e.key==='ArrowDown'){e.preventDefault();palIdx=Math.min(palIdx+1,palItems.length-1);renderPal();}
@@ -1669,6 +1893,7 @@ function closeSide(){$('side').classList.remove('open');$('sideBack').classList.
 /* ================= старт ================= */
 async function init(){
   bindUI();
+  setNotifUI();
   if(state.token){
     const me=await safe(()=>api('/auth/me'));
     if(me&&me.ok){state.role=me.role;state.login=me.login;enterApp();return;}

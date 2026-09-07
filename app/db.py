@@ -248,6 +248,10 @@ def _migrate(c):
     if "retry_map" not in cols:
         c.execute("ALTER TABLE campaigns ADD COLUMN retry_map TEXT NOT NULL DEFAULT '{}'")
         c.commit()
+    ucols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+    if "active" not in ucols:
+        c.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        c.commit()
 
 
 def _seed_templates():

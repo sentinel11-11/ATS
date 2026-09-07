@@ -84,7 +84,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/v2/events":
             return self._sse()
         if u.path.startswith("/api/"):
-            payload, status = api.route("GET", u.path, {}, self.headers)
+            # self.path (с query) — API сам разбирает параметры (напр. /reports?from=..&to=..)
+            payload, status = api.route("GET", self.path, {}, self.headers)
             if payload is None:
                 payload, status = {"ok": False, "error": "not_found"}, 404
             if isinstance(payload, bytes):

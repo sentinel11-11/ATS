@@ -39,6 +39,21 @@ def drop_token(token: str):
         SESSIONS.pop(token, None)
 
 
+def drop_sessions_for(login: str):
+    """Завершить все активные сессии пользователя (смена/сброс пароля, деактивация)."""
+    with _lock():
+        for tok in [t for t, s in SESSIONS.items() if s.get("login") == login]:
+            SESSIONS.pop(tok, None)
+
+
+def refresh_session_role(token: str, role: str):
+    """Актуализировать роль в сессии (роль прочитана из БД)."""
+    with _lock():
+        s = SESSIONS.get(token)
+        if s:
+            s["role"] = role
+
+
 def get_session(token: str):
     with _lock():
         s = SESSIONS.get(token)

@@ -204,6 +204,7 @@ class Engine:
                                    "campaign_id": campaign["id"], "operator_id": 0, "status": "queued",
                                    "created": now_iso(), "updated": now_iso()})
         events.publish("acd", {"id": acd_id, "call_id": call["id"], "phone": contact.get("phone", ""),
+                               "name": contact.get("name", ""), "campaign_id": campaign["id"],
                                "status": "queued", "agent": bool(agent)})
 
     def _on_dropped(self, call, item):

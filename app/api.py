@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import agent as agent_mod
 from . import config, db, events, numbers as numbers_mod, security
@@ -62,6 +62,14 @@ def need_auth(headers, role=None):
     s = security.get_session(tok)
     if not s:
         return None, {"ok": False, "error": "auth_required"}, 401
+    # Пользователь мог быть деактивирован/удалён или ему сменили роль — сверяем с БД
+    user = db.fetch1("SELECT role, active FROM users WHERE login=?", (s["login"],))
+    if not user or user["active"] != 1:
+        security.drop_token(tok)
+        return None, {"ok": False, "error": "auth_required"}, 401
+    if user["role"] != s["role"]:
+        security.refresh_session_role(tok, user["role"])
+        s["role"] = user["role"]
     if role and s["role"] != role and s["role"] != "admin":
         return None, {"ok": False, "error": "admin_required"}, 403
     return s, None, None
@@ -87,7 +95,7 @@ def route(method, path, body, headers):
         if not allowed:
             return {"ok": False, "error": "too_many_attempts",
                     "retry_after_sec": retry_after}, 429
-        user = db.fetch1("SELECT * FROM users WHERE login=?", (login,))
+        user = db.fetch1("SELECT * FROM users WHERE login=? AND active=1", (login,))
         if user and security.hash_password(password, user["salt"]) == user["password_hash"]:
             _login_ok(login)
             tok = security.create_token(user["login"], user["role"])
@@ -130,7 +138,13 @@ def route(method, path, body, headers):
     if p == ["dashboard"]:
         return ENGINE.dashboard(), 200
     if p == ["reports"]:
-        return _reports(), 200
+        q = parse_qs(u.query)
+        d_from = (q.get("from") or [""])[0]
+        d_to = (q.get("to") or [""])[0]
+        res = _reports(d_from or None, d_to or None)
+        if res is None:
+            return {"ok": False, "error": "bad_range"}, 400
+        return res, 200
     if p == ["contacts"]:
         return {"contacts": db.fetch("SELECT * FROM contacts ORDER BY id DESC LIMIT 5000")}, 200
     if p == ["numbers"]:
@@ -245,13 +259,23 @@ def route(method, path, body, headers):
             return _acd_accept(body)
         if p == ["calls", "complete"] and method == "POST":
             return _call_complete(body)
-        if p == ["contacts"] and method == "POST":
+        if p in (["contacts"], ["contacts", "save"]) and method == "POST":
             return _contact_save(body)
+        # оператор может сменить собственный пароль (и только это)
+        if p == ["settings", "save"] and method == "POST" and set((body or {}).keys()) <= {"new_password"}:
+            return _settings_save(body, sess)
         return {"ok": False, "error": "admin_required"}, 403
 
     # ================= администратор =================
+    # пользователи и операторы
+    if p == ["users"] and method == "GET":
+        return {"users": _users_list()}, 200
+    if p == ["users", "save"] and method == "POST":
+        return _user_save(body, sess)
+    if p == ["users", "delete"] and method == "POST":
+        return _user_delete(body, sess)
     # контакты
-    if p == ["contacts"] and method == "POST":
+    if p in (["contacts"], ["contacts", "save"]) and method == "POST":
         return _contact_save(body)
     if p == ["contacts", "delete"]:
         ids = [str(x) for x in body.get("ids", [])]
@@ -361,11 +385,19 @@ def _clean_phone(v):
     return out
 
 
+def _phone_valid(phone):
+    """E.164-минимум: 10–15 цифр (без кода страны '8' подстановка не нужна)."""
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    return 10 <= len(digits) <= 15
+
+
 def _contact_save(body):
     item = dict(body)
     item["phone"] = _clean_phone(item.get("phone"))
     if not item.get("phone"):
         return {"ok": False, "error": "phone_required"}, 400
+    if not _phone_valid(item["phone"]):
+        return {"ok": False, "error": "bad_phone"}, 400
     cid = item.get("id")
     data = {"name": str(item.get("name", ""))[:200], "phone": item["phone"],
             "grp": str(item.get("group", item.get("grp", "")))[:200],
@@ -395,10 +427,28 @@ def _contacts_import(body):
     rows = body.get("rows", [])
     added = 0
     dup = 0
-    for r in rows:
+    skipped = 0
+    errors = []
+    seen = set()  # телефоны, уже встреченные в этом файле (для порядка обработки)
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            skipped += 1
+            errors.append({"row": i, "phone": "", "reason": "не строка"})
+            continue
         phone = _clean_phone(r.get("phone"))
         if not phone:
+            skipped += 1
+            errors.append({"row": i, "phone": "", "reason": "нет телефона"})
             continue
+        if not _phone_valid(phone):
+            skipped += 1
+            errors.append({"row": i, "phone": phone, "reason": "не похоже на телефон (10–15 цифр)"})
+            continue
+        if phone in seen:
+            skipped += 1
+            errors.append({"row": i, "phone": phone, "reason": "дубль в файле"})
+            continue
+        seen.add(phone)
         consent = 1 if _truthy(r.get("consent")) else 0
         existing = db.fetch1("SELECT id FROM contacts WHERE phone=?", (phone,))
         try:
@@ -415,14 +465,125 @@ def _contacts_import(body):
                                        "created": now_iso(), "updated": now_iso()})
                 added += 1
         except Exception:
-            continue
-    return {"ok": True, "added": added, "updated": dup}, 200
+            skipped += 1
+            errors.append({"row": i, "phone": phone, "reason": "ошибка БД (возможно дубль)"})
+    return {"ok": True, "added": added, "updated": dup, "skipped": skipped, "errors": errors[:50]}, 200
 
 
 def _truthy(v):
     if isinstance(v, bool):
         return v
     return str(v or "").strip().lower() in ("1", "да", "yes", "true", "+")
+
+
+# ---------------- пользователи и операторы (админ) ----------------
+def _users_list():
+    return db.fetch(
+        "SELECT u.id, u.login, u.role, u.active, u.created,"
+        " o.id AS op_id, o.name AS op_name, o.ext, o.status AS op_status"
+        " FROM users u LEFT JOIN operators o ON o.user_id=u.id ORDER BY u.id")
+
+
+def _count_admins():
+    return db.fetch1("SELECT COUNT(*) c FROM users WHERE role='admin' AND active=1")["c"]
+
+
+def _user_save(body, sess):
+    uid = int(body.get("id") or 0)
+    # Точечное обновление без смены логина/роли (переключатель «доступ»)
+    if uid and "login" not in body:
+        u = db.fetch1("SELECT * FROM users WHERE id=?", (uid,))
+        if not u:
+            return {"ok": False, "error": "user_not_found"}, 404
+        active = 1 if body.get("active", True) not in (0, "0", False) else 0
+        if active == 0:
+            me = db.fetch1("SELECT id FROM users WHERE login=?", (sess["login"],))
+            if me and me["id"] == uid:
+                return {"ok": False, "error": "cannot_disable_self"}, 400
+            if u["role"] == "admin" and _count_admins() <= 1:
+                return {"ok": False, "error": "last_admin"}, 400
+        db.q("UPDATE users SET active=? WHERE id=?", (active, uid))
+        if not active:
+            security.drop_sessions_for(u["login"])
+        return {"ok": True, "id": uid}, 200
+    login = str(body.get("login") or "").strip().lower()
+    role = str(body.get("role") or "operator")
+    name = str(body.get("name") or "").strip()[:200] or login
+    ext = str(body.get("ext") or "").strip()[:30]
+    password = str(body.get("password") or "")
+    active = 1 if body.get("active", True) not in (0, "0", False) else 0
+    if role not in ("admin", "operator"):
+        role = "operator"
+    if not re.fullmatch(r"[a-z0-9_.\-]{2,32}", login):
+        return {"ok": False, "error": "bad_login"}, 400
+    if password and len(password) < 6:
+        return {"ok": False, "error": "password_short"}, 400
+
+    me = db.fetch1("SELECT id, role FROM users WHERE login=?", (sess["login"],))
+    me_id = me["id"] if me else None
+
+    if uid:  # редактирование
+        u = db.fetch1("SELECT * FROM users WHERE id=?", (uid,))
+        if not u:
+            return {"ok": False, "error": "user_not_found"}, 404
+        if uid == me_id and (role != "admin" or active == 0):
+            return {"ok": False, "error": "cannot_disable_self"}, 400
+        other = db.fetch1("SELECT id FROM users WHERE login=? AND id<>?", (login, uid))
+        if other:
+            return {"ok": False, "error": "login_exists"}, 400
+        if u["role"] == "admin" and (role != "admin" or active == 0) and _count_admins() <= 1:
+            return {"ok": False, "error": "last_admin"}, 400
+        db.q("UPDATE users SET login=?, role=?, active=? WHERE id=?", (login, role, active, uid))
+        if password:
+            salt = security.new_salt()
+            db.q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
+                 (salt, security.hash_password(password, salt), uid))
+        # синхронизация записи оператора (для ACD/статусов)
+        if role == "operator":
+            op = db.fetch1("SELECT id FROM operators WHERE user_id=?", (uid,))
+            if op:
+                db.q("UPDATE operators SET name=?, ext=? WHERE id=?", (name, ext, op["id"]))
+            else:
+                db.insert("operators", {"user_id": uid, "name": name, "ext": ext,
+                                        "status": "offline", "updated": now_iso()})
+        else:
+            db.q("DELETE FROM operators WHERE user_id=?", (uid,))
+        # если сменили пароль — завершаем старые сессии (текущая админа не трогаем)
+        if password and uid != me_id:
+            security.drop_sessions_for(u["login"])
+            if u["login"] != login:
+                security.drop_sessions_for(login)
+        return {"ok": True, "id": uid}, 200
+
+    # создание
+    if db.fetch1("SELECT id FROM users WHERE login=?", (login,)):
+        return {"ok": False, "error": "login_exists"}, 400
+    if not password:
+        return {"ok": False, "error": "password_required"}, 400
+    salt = security.new_salt()
+    nid = db.insert("users", {"login": login, "role": role, "salt": salt,
+                              "password_hash": security.hash_password(password, salt),
+                              "active": active, "created": now_iso()})
+    if role == "operator":
+        db.insert("operators", {"user_id": nid, "name": name, "ext": ext,
+                                "status": "offline", "updated": now_iso()})
+    return {"ok": True, "id": nid}, 200
+
+
+def _user_delete(body, sess):
+    uid = int(body.get("id") or 0)
+    u = db.fetch1("SELECT * FROM users WHERE id=?", (uid,))
+    if not u:
+        return {"ok": False, "error": "user_not_found"}, 404
+    me = db.fetch1("SELECT id FROM users WHERE login=?", (sess["login"],))
+    if me and me["id"] == uid:
+        return {"ok": False, "error": "cannot_delete_self"}, 400
+    if u["role"] == "admin" and _count_admins() <= 1:
+        return {"ok": False, "error": "last_admin"}, 400
+    db.q("DELETE FROM operators WHERE user_id=?", (uid,))
+    db.q("DELETE FROM users WHERE id=?", (uid,))
+    security.drop_sessions_for(u["login"])
+    return OK, 200
 
 
 def _number_save(body):
@@ -571,6 +732,8 @@ def _settings_save(body, sess=None):
         s["window_days"] = [int(d) for d in body["window_days"]]
     # секции секретов не меняем через UI (кроме меток)
     if body.get("new_password"):
+        if len(str(body["new_password"])) < 6:
+            return {"ok": False, "error": "password_short"}, 400
         login = (sess or {}).get("login") or "admin"
         salt = security.new_salt()
         db.q("UPDATE users SET salt=?, password_hash=? WHERE login=?",
@@ -627,42 +790,106 @@ def _call_complete(body):
     ok, err = ENGINE.complete_operator_call(call_id, op_id or None)
     return (OK, 200) if ok else ({"ok": False, "error": err}, 400)
 # ---------------- отчёты и экспорт журнала ----------------
-def _reports() -> dict:
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _reports(d_from=None, d_to=None):
+    """Отчёт за период. Если d_from/d_to не заданы — данные за сегодня + тренд 7 дней.
+
+    d_from..d_to — 'YYYY-MM-DD', диапазон до 366 дней. Возвращает None при неверных датах.
+    """
     from datetime import date, timedelta
-    today = date.today().isoformat()
+    today_d = date.today()
+
+    def _d(x):
+        if not x:
+            return None
+        if not isinstance(x, str) or not _ISO_DAY.match(x):
+            return None
+        try:
+            return date.fromisoformat(x)
+        except Exception:
+            return None
+
+    a, b = _d(d_from), _d(d_to)
+    if (d_from and not a) or (d_to and not b):
+        return None
+    if a and b and a > b:
+        return None
+    if a and not b:
+        b = today_d
+    if (a or b) and b and (b - (a or b)).days > 366:
+        return None
+
+    custom = bool(a or b)
+    start = a or today_d
+    end = b or today_d
+    start_s = start.isoformat() + " 00:00:00"
+    end_s = (end + timedelta(days=1)).isoformat() + " 00:00:00"
+
     OK_RES = ("done_ok", "operator_ok", "done_agent")
+    BAD_RES = ("busy", "no_answer", "machine", "failed", "blocked")
     pl = ",".join("?" * len(OK_RES))
+    pb = ",".join("?" * len(BAD_RES))
+    where_period = "started_at>=? AND started_at<?"
+
     totals = db.fetch(
         "SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok,"
-        " COALESCE(SUM(duration_sec),0) dur FROM calls WHERE started_at>=?".format(pl),
-        [*OK_RES, today])
+        " COALESCE(SUM(duration_sec),0) dur FROM calls WHERE {}".format(pl, where_period),
+        [*OK_RES, start_s, end_s])
     n = (totals[0]["n"] or 0) if totals else 0
     ok = (totals[0]["ok"] or 0) if totals else 0
     dur = (totals[0]["dur"] or 0) if totals else 0
     by_result = db.fetch(
-        "SELECT result, COUNT(*) c FROM calls WHERE started_at>=? GROUP BY result ORDER BY c DESC",
-        (today,))
+        "SELECT result, COUNT(*) c FROM calls WHERE {} GROUP BY result ORDER BY c DESC".format(where_period),
+        (start_s, end_s))
     by_campaign = db.fetch(
         "SELECT c.campaign_id, COALESCE(camp.name,'(удалена)') name, COUNT(*) n,"
         " SUM(CASE WHEN c.result IN ({}) THEN 1 ELSE 0 END) ok,"
-        " SUM(CASE WHEN c.result IN ('busy','no_answer','machine','failed','blocked') THEN 1 ELSE 0 END) bad,"
+        " SUM(CASE WHEN c.result IN ({}) THEN 1 ELSE 0 END) bad,"
         " COALESCE(SUM(c.duration_sec),0) dur"
         " FROM calls c LEFT JOIN campaigns camp ON camp.id=c.campaign_id"
-        " GROUP BY c.campaign_id ORDER BY n DESC LIMIT 25".format(pl), list(OK_RES))
+        " WHERE {} GROUP BY c.campaign_id ORDER BY n DESC LIMIT 25".format(pl, pb, where_period),
+        [*OK_RES, *BAD_RES, start_s, end_s])
     by_number = db.fetch(
         "SELECT c.caller_id, c.number_id, COUNT(*) n,"
         " SUM(CASE WHEN c.result IN ({}) THEN 1 ELSE 0 END) ok"
-        " FROM calls c GROUP BY c.caller_id ORDER BY n DESC LIMIT 25".format(pl), list(OK_RES))
+        " FROM calls c WHERE {} GROUP BY c.caller_id ORDER BY n DESC LIMIT 25".format(pl, where_period),
+        [*OK_RES, start_s, end_s])
+
+    # Тренд: по дням (до 31 точки), дальше — по неделям
+    span_days = max(1, (end - start).days + 1)
     trend = []
-    today_d = date.today()
-    for i in range(6, -1, -1):
-        day = today_d - timedelta(days=i)
-        ds = day.isoformat()
-        r = db.fetch("SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok"
-                     " FROM calls WHERE started_at>=? AND started_at<?".format(pl),
-                     [*OK_RES, ds + " 00:00:00", (day + timedelta(days=1)).isoformat() + " 00:00:00"])
-        trend.append({"date": ds, "n": (r[0]["n"] or 0) if r else 0, "ok": (r[0]["ok"] or 0) if r else 0})
+    if custom and span_days > 31:
+        cur = start
+        while cur <= end:
+            wk_end = min(end, cur + timedelta(days=6))
+            r = db.fetch("SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok"
+                         " FROM calls WHERE started_at>=? AND started_at<?".format(pl),
+                         [*OK_RES, cur.isoformat() + " 00:00:00",
+                          (wk_end + timedelta(days=1)).isoformat() + " 00:00:00"])
+            trend.append({"date": cur.isoformat(), "label": "{}–{}".format(
+                cur.strftime("%d.%m"), wk_end.strftime("%d.%m")),
+                "n": (r[0]["n"] or 0) if r else 0, "ok": (r[0]["ok"] or 0) if r else 0})
+            cur = wk_end + timedelta(days=1)
+    else:
+        days = []
+        if custom:
+            days = [start + timedelta(days=i) for i in range(span_days)]
+        else:
+            days = [today_d - timedelta(days=i) for i in range(6, -1, -1)]
+        for day in days:
+            ds = day.isoformat()
+            r = db.fetch("SELECT COUNT(*) n, SUM(CASE WHEN result IN ({}) THEN 1 ELSE 0 END) ok"
+                         " FROM calls WHERE started_at>=? AND started_at<?".format(pl),
+                         [*OK_RES, ds + " 00:00:00", (day + timedelta(days=1)).isoformat() + " 00:00:00"])
+            trend.append({"date": ds, "label": day.strftime("%d.%m"), "n": (r[0]["n"] or 0) if r else 0,
+                          "ok": (r[0]["ok"] or 0) if r else 0})
+
     return {
+        "period": {"from": start.isoformat(), "to": end.isoformat(), "custom": custom,
+                   "label": "сегодня" if (not custom and start == end == today_d)
+                   else (start.isoformat() + " – " + end.isoformat())},
         "today": {"n": n, "ok": ok, "ok_rate": round(100.0 * ok / n, 1) if n else 0.0,
                   "avg_dur": round(dur / n, 1) if n else 0.0},
         "by_result": [{"result": r["result"], "c": r["c"]} for r in by_result],
