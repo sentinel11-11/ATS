@@ -1,0 +1,39 @@
+﻿# Виртуальное окружение
+venv/
+env/
+ENV/
+.venv/
+
+# Файлы Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+*.pyc
+
+# Файлы IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Системные файлы
+Thumbs.db
+.DS_Store
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.bak
+
+# ATS v2 — runtime данные (создаются при первом запуске)
+data_v2/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+initial_credentials.txt
