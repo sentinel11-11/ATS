@@ -83,7 +83,8 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 |---|---|
 | GET `/api/v2/dashboard` | Сводка: кампании, каналы, звонки за сегодня, пул, операторы, ACD |
 | GET `/api/v2/reports?from=YYYY-MM-DD&to=YYYY-MM-DD` (опц., до 366 дней) | Отчёт за период: метрики, разрезы, динамика по дням/неделям |
-| GET/POST `/api/v2/contacts`, `/contacts/delete`, `/contacts/import`, `/contacts/save`, `GET /api/v2/export/contacts.csv` | База контактов (импорт: added/updated/skipped + errors) |
+| GET/POST `/api/v2/contacts`, `/contacts/delete`, `/contacts/import`, `/contacts/import-file`, `/contacts/save`, `/contacts/history?id=`, `GET /api/v2/export/contacts.csv` | База контактов (файлы .xlsx/.csv, теги, привязка к базам, карточка номера; импорт: added/updated/skipped + errors) |
+| GET `/api/v2/databases`; POST `/databases/save`, `/databases/delete` (admin) | Базы данных для обзвона: списки из загрузок Excel/CSV со счётчиками и тегами |
 | GET `/api/v2/users`; POST `/users/save`, `/users/delete` (admin) | Пользователи и операторы (роль, доступ, пароль, внутр. номер) |
 | GET `/api/v2/numbers`; POST `/api/v2/numbers/save`, `/numbers/quarantine`, `/numbers/reset` | Пул номеров |
 | GET `/api/v2/campaigns`; POST `/campaigns/save`; POST `/campaigns/{id}/start|pause|stop|add-contacts|clear`; GET `/campaigns/{id}` | Кампании (детали: контакты + звонки) |

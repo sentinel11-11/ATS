@@ -12,7 +12,7 @@ from . import api, config, db, events
 from .api import json_bytes
 
 STATIC_DIR = config.APP / "ui"
-MAX_BODY = 10 * 1024 * 1024
+MAX_BODY = 64 * 1024 * 1024  # базы контактов в base64 (до ~48 МБ файлом) + записи разговоров
 
 
 def auth_ok(headers, query_token=""):

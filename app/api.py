@@ -146,7 +146,22 @@ def route(method, path, body, headers):
             return {"ok": False, "error": "bad_range"}, 400
         return res, 200
     if p == ["contacts"]:
-        return {"contacts": db.fetch("SELECT * FROM contacts ORDER BY id DESC LIMIT 5000")}, 200
+        rows = db.fetch("SELECT c.*, d.name AS db_name FROM contacts c "
+                        "LEFT JOIN databases d ON d.id=c.database_id "
+                        "ORDER BY c.id DESC LIMIT 5000")
+        return {"contacts": rows}, 200
+    if p == ["contacts", "history"]:
+        q = parse_qs(u.query)
+        try:
+            cid = int((q.get("id") or ["0"])[0])
+        except Exception:
+            cid = 0
+        res = _contact_history(cid)
+        if res is None:
+            return {"ok": False, "error": "not_found"}, 404
+        return res, 200
+    if p == ["databases"]:
+        return {"databases": db.list_databases()}, 200
     if p == ["numbers"]:
         return {"numbers": numbers_mod.pool_state()}, 200
     if p == ["campaigns"]:
@@ -284,6 +299,20 @@ def route(method, path, body, headers):
         return OK, 200
     if p == ["contacts", "import"]:
         return _contacts_import(body)
+    if p == ["contacts", "import-file"]:
+        return _contacts_import_file(body)
+    # базы данных (списки контактов для обзвона)
+    if p == ["databases", "save"]:
+        return _database_save(body)
+    if p == ["databases", "delete"]:
+        ids = body.get("ids", [])
+        with_contacts = bool(body.get("delete_contacts"))
+        for raw in ids:
+            try:
+                db.delete_database(int(raw), delete_contacts=with_contacts)
+            except Exception:
+                pass
+        return OK, 200
     # номера
     if p == ["numbers", "save"]:
         return _number_save(body)
@@ -364,9 +393,12 @@ def route(method, path, body, headers):
 def _export_contacts():
     out = io.StringIO()
     w = csv.writer(out, delimiter=";")
-    w.writerow(["id", "name", "phone", "group", "note", "consent", "blacklisted", "complaints"])
+    w.writerow(["id", "name", "phone", "group", "database", "tags", "note",
+                "consent", "blacklisted", "complaints"])
+    dbnames = {d["id"]: d["name"] for d in db.fetch("SELECT id, name FROM databases")}
     for x in db.fetch("SELECT * FROM contacts"):
-        w.writerow([x["id"], x["name"], x["phone"], x["grp"], x["note"],
+        w.writerow([x["id"], x["name"], x["phone"], x["grp"],
+                    dbnames.get(x.get("database_id") or 0, ""), x.get("tags", ""), x["note"],
                     "1" if x["consent"] else "0", "1" if x["blacklisted"] else "0", x["complaints"]])
     raw = ("\ufeff" + out.getvalue()).encode("utf-8")
     return raw, 200
@@ -395,11 +427,18 @@ def _contact_save(body):
     if not _phone_valid(item["phone"]):
         return {"ok": False, "error": "bad_phone"}, 400
     cid = item.get("id")
+    from . import importers as importers_mod
+    try:
+        database_id = int(item.get("database_id", 0) or 0)
+    except Exception:
+        database_id = 0
     data = {"name": str(item.get("name", ""))[:200], "phone": item["phone"],
             "grp": str(item.get("group", item.get("grp", "")))[:200],
             "note": str(item.get("note", ""))[:500],
             "consent": 1 if item.get("consent") else 0,
             "blacklisted": 1 if item.get("blacklisted") else 0,
+            "tags": importers_mod.clean_tags(item.get("tags", "")),
+            "database_id": database_id,
             "updated": now_iso()}
     if cid:
         try:
@@ -420,50 +459,113 @@ def _contact_save(body):
 
 
 def _contacts_import(body):
+    """Быстрый импорт готовых строк {phone,name,group,note,consent,tags} (вставка из UI)."""
+    from . import importers as importers_mod
     rows = body.get("rows", [])
-    added = 0
-    dup = 0
-    skipped = 0
-    errors = []
-    seen = set()  # телефоны, уже встреченные в этом файле (для порядка обработки)
+    records = []
     for i, r in enumerate(rows):
         if not isinstance(r, dict):
-            skipped += 1
-            errors.append({"row": i, "phone": "", "reason": "не строка"})
+            records.append({"row": i + 1, "phone": "", "consent": False})
             continue
-        phone = _clean_phone(r.get("phone"))
-        if not phone:
-            skipped += 1
-            errors.append({"row": i, "phone": "", "reason": "нет телефона"})
-            continue
-        if not _phone_valid(phone):
-            skipped += 1
-            errors.append({"row": i, "phone": phone, "reason": "не похоже на телефон (10–15 цифр)"})
-            continue
-        if phone in seen:
-            skipped += 1
-            errors.append({"row": i, "phone": phone, "reason": "дубль в файле"})
-            continue
-        seen.add(phone)
-        consent = 1 if _truthy(r.get("consent")) else 0
-        existing = db.fetch1("SELECT id FROM contacts WHERE phone=?", (phone,))
+        records.append({"row": i + 1, "phone": r.get("phone"), "name": r.get("name", ""),
+                        "group": r.get("group", r.get("grp", "")), "tags": r.get("tags", ""),
+                        "note": r.get("note", ""), "consent": r.get("consent")})
+    try:
+        database_id = int(body.get("database_id", 0) or 0)
+    except Exception:
+        database_id = 0
+    res = importers_mod.import_records(records, database_id=database_id)
+    return {"ok": True, "added": res["added"], "updated": res["updated"],
+            "skipped": res["skipped"], "errors": res["errors"][:50],
+            "errors_total": res["errors_total"]}, 200
+
+
+def _contacts_import_file(body):
+    """Загрузка базы файлом: {filename, content_b64, database_id?, database_name?,
+    notes?, consent_default?} — .xlsx/.csv."""
+    from . import importers as importers_mod
+    filename = str(body.get("filename", ""))
+    raw_b64 = body.get("content_b64", "")
+    if not filename or not raw_b64:
+        return {"ok": False, "error": "file_required"}, 400
+    try:
+        data = base64.b64decode(raw_b64)
+    except Exception:
+        return {"ok": False, "error": "bad_base64"}, 400
+    if len(data) > 48 * 1024 * 1024:
+        return {"ok": False, "error": "file_too_large"}, 400
+    database_id = 0
+    try:
+        database_id = int(body.get("database_id", 0) or 0)
+    except Exception:
+        database_id = 0
+    if database_id:
+        row = db.fetch1("SELECT id FROM databases WHERE id=?", (database_id,))
+        if not row:
+            return {"ok": False, "error": "database_not_found"}, 404
+    else:
+        name = str(body.get("database_name", "") or "").strip()[:200]
+        if not name:
+            # имя базы по умолчанию — из имени файла
+            name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:200] or "База"
+        database_id = db.insert("databases", {"name": name, "filename": filename[-300:],
+                                              "notes": str(body.get("notes", ""))[:500],
+                                              "created": now_iso(), "updated": now_iso()})
+    try:
+        res = importers_mod.import_file(filename, data, database_id=database_id,
+                                        consent_default=bool(body.get("consent_default", False)))
+    except ValueError as e:
+        return {"ok": False, "error": "parse_error", "detail": str(e)[:300]}, 400
+    except Exception as e:
+        return {"ok": False, "error": "import_failed", "detail": str(e)[:300]}, 500
+    res["ok"] = True
+    res["database_id"] = database_id
+    row = db.fetch1("SELECT * FROM databases WHERE id=?", (database_id,))
+    res["database"] = dict(row) if row else None
+    return res, 200
+
+
+def _database_save(body):
+    name = str(body.get("name", "") or "").strip()[:200]
+    if not name:
+        return {"ok": False, "error": "name_required"}, 400
+    did = body.get("id")
+    data = {"name": name, "filename": str(body.get("filename", ""))[:300],
+            "notes": str(body.get("notes", ""))[:500], "updated": now_iso()}
+    if did:
         try:
-            if existing:
-                db.q("UPDATE contacts SET name=?, grp=?, note=?, consent=?, updated=? WHERE id=?",
-                     (str(r.get("name", ""))[:200], str(r.get("group", r.get("grp", "")))[:200],
-                      str(r.get("note", ""))[:500], consent, now_iso(), existing["id"]))
-                dup += 1
-            else:
-                db.insert("contacts", {"name": str(r.get("name", ""))[:200], "phone": phone,
-                                       "grp": str(r.get("group", r.get("grp", "")))[:200],
-                                       "note": str(r.get("note", ""))[:500], "consent": consent,
-                                       "consent_source": "import", "blacklisted": 0, "complaints": 0,
-                                       "created": now_iso(), "updated": now_iso()})
-                added += 1
-        except Exception:
-            skipped += 1
-            errors.append({"row": i, "phone": phone, "reason": "ошибка БД (возможно дубль)"})
-    return {"ok": True, "added": added, "updated": dup, "skipped": skipped, "errors": errors[:50]}, 200
+            db.update("databases", data, "id=?", (int(did),))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}, 400
+        return {"ok": True, "id": int(did)}, 200
+    data["created"] = now_iso()
+    try:
+        new_id = db.insert("databases", data)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 400
+    return {"ok": True, "id": new_id}, 200
+
+
+def _contact_history(cid):
+    """Карточка номера: контакт + динамика (звонки и элементы кампаний)."""
+    c = db.fetch1("SELECT c.*, d.name AS db_name FROM contacts c "
+                  "LEFT JOIN databases d ON d.id=c.database_id WHERE c.id=?", (cid,))
+    if not c:
+        return None
+    calls = db.fetch("SELECT cl.*, camp.name AS camp_name FROM calls cl "
+                     "LEFT JOIN campaigns camp ON camp.id=cl.campaign_id "
+                     "WHERE cl.contact_id=? OR cl.contact_phone=? "
+                     "ORDER BY cl.id DESC LIMIT 200", (cid, c["phone"]))
+    items = db.fetch("SELECT ci.*, camp.name AS camp_name FROM campaign_items ci "
+                     "LEFT JOIN campaigns camp ON camp.id=ci.campaign_id "
+                     "WHERE ci.contact_id=? ORDER BY ci.id DESC LIMIT 200", (cid,))
+    done_calls = [x for x in calls if x.get("ended_at")]
+    last = done_calls[0] if done_calls else (calls[0] if calls else None)
+    return {"contact": c, "calls": calls, "items": items,
+            "stats": {"calls_total": len(calls),
+                      "calls_done": len(done_calls),
+                      "last_result": (last or {}).get("result", ""),
+                      "last_at": (last or {}).get("ended_at") or (last or {}).get("started_at", "")}}
 
 
 def _truthy(v):

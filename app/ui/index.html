@@ -141,6 +141,17 @@ select.select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xm
 .badge.g{background:#0f3528;color:#7fe7c0}.badge.r{background:#3d1722;color:#ffa7b4}
 .badge.y{background:#3a2d10;color:#ffdf9c}.badge.b{background:#153a6b;color:#a4cdff}.badge.cy{background:#0e3747;color:#9fe6ff}
 .badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+.tag{display:inline-flex;align-items:center;padding:1.5px 8px;margin:1px 2px 1px 0;border-radius:6px;background:#1b2f49;color:#9fc3e8;font-size:11px;font-weight:600;white-space:nowrap}
+.linklike{background:none;border:0;color:var(--acc);font:inherit;font-weight:700;cursor:pointer;padding:0;text-align:left}
+.linklike:hover{text-decoration:underline}
+.tl{position:relative;margin:6px 0 0;padding-left:18px}
+.tl:before{content:'';position:absolute;left:5px;top:6px;bottom:6px;width:2px;background:#22385a;border-radius:2px}
+.tl-item{position:relative;padding:7px 0 7px 6px;border-bottom:1px dashed #1d3353}
+.tl-item:last-child{border-bottom:0}
+.tl-item:before{content:'';position:absolute;left:-17px;top:12px;width:8px;height:8px;border-radius:50%;background:var(--acc)}
+.tl-item.ok:before{background:#2fbf71}.tl-item.warn:before{background:#e0a63c}.tl-item.err:before{background:#e05c6e}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:4px 10px;font-size:13px}
+.kv dt{color:var(--dim)}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
 
 /* ============ панели/карточки ============ */
 .panel{background:linear-gradient(180deg,var(--p1),var(--p2));border:1px solid var(--line);border-radius:var(--r);
@@ -474,11 +485,14 @@ body.is-admin .opOnly{display:none!important}
       <div class="panel">
         <div class="toolbar">
           <h2 style="margin:0" class="grow">База контактов <span class="cnt" id="cCnt2"></span></h2>
+          <select id="contactDb" class="select" style="width:auto;max-width:220px" onchange="renderContacts()"><option value="">Все базы</option></select>
           <select id="contactGroup" class="select" style="width:auto" onchange="renderContacts()"><option value="">Все группы</option></select>
           <div style="position:relative"><svg class="ic" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:#5f7798" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input id="contactSearch" class="input" placeholder="Поиск: имя, телефон…" style="width:210px;padding-left:30px" oninput="renderContacts()"></div>
+          <input id="contactSearch" class="input" placeholder="Поиск: имя, телефон, тег…" style="width:210px;padding-left:30px" oninput="renderContacts()"></div>
           <button class="btn" onclick="editContact()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Добавить</button>
-          <button class="btn ghost admOnly" onclick="toggleImport()">Импорт CSV</button>
+          <button class="btn admOnly" onclick="uploadDbModal()">Загрузить базу</button>
+          <button class="btn ghost admOnly" onclick="manageDbModal()">Базы…</button>
+          <button class="btn ghost admOnly" onclick="toggleImport()">Вставка CSV</button>
           <button class="btn ghost admOnly" onclick="exportCsv()">Экспорт</button>
         </div>
         <div id="importBox" class="hidden" style="margin-bottom:12px">
@@ -672,7 +686,7 @@ const NAV=[['dash','Обзор','dash'],['reports','Отчёты','reports'],['c
   ['journal','Журнал звонков','list'],['blacklist','Чёрный список','shield'],['templates','Шаблоны','file'],['settings','Настройки','gear']];
 const TITLE={dash:'Обзор',reports:'Отчёты',campaigns:'Кампании',contacts:'Контакты',numbers:'Пул номеров',
   acd:'Операторы и ACD',journal:'Журнал звонков',blacklist:'Чёрный список',templates:'Шаблоны',settings:'Настройки'};
-let state={token:localStorage.getItem('ats_token')||'',role:'',settings:null,contacts:[],campaigns:[],numbers:[],templates:[],
+let state={token:localStorage.getItem('ats_token')||'',role:'',settings:null,contacts:[],campaigns:[],numbers:[],templates:[],databases:[],
   activeTab:'dash',jN:50,jAll:false,providersim:false,curCall:null,repFrom:'',repTo:'',acdSeen:{}};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -959,24 +973,48 @@ async function fetchContacts(){
   const j=await api('/contacts');
   if(!j||j.error)return;
   state.contacts=j.contacts;
-  const groups=[...new Set(j.contacts.map(c=>c.grp).filter(Boolean))].sort();
-  const cur=$('contactGroup').value;
-  $('contactGroup').innerHTML='<option value="">Все группы</option>'+groups.map(g=>`<option value="${esc(g)}" ${g===cur?'selected':''}>${esc(g)}</option>`).join('');
+  await safe(fetchDatabases);
+  fillContactFilters();
   $('cCnt2').textContent='· '+nFmt(j.contacts.length);
   renderContacts();
+}
+async function fetchDatabases(){
+  const j=await api('/databases');
+  if(j&&!j.error)state.databases=j.databases||[];
+}
+function fillContactFilters(){
+  const groups=[...new Set((state.contacts||[]).map(c=>c.grp).filter(Boolean))].sort();
+  const cur=$('contactGroup').value;
+  $('contactGroup').innerHTML='<option value="">Все группы</option>'+groups.map(g=>`<option value="${esc(g)}" ${g===cur?'selected':''}>${esc(g)}</option>`).join('');
+  const dbs=state.databases||[];
+  const curD=$('contactDb').value;
+  $('contactDb').innerHTML='<option value="">Все базы</option>'
+    +dbs.map(d=>`<option value="${d.id}" ${String(d.id)===curD?'selected':''}>${esc(d.name)} (${nFmt(d.contacts_count||0)})</option>`).join('')
+    +`<option value="0" ${curD==='0'?'selected':''}>— без базы —</option>`;
 }
 function filteredContacts(){
   const q=($('contactSearch').value||'').toLowerCase().trim();
   const grp=$('contactGroup').value;
-  return (state.contacts||[]).filter(c=>(!grp||c.grp===grp)&&(!q||(c.name+' '+c.phone+' '+(c.note||'')).toLowerCase().includes(q)));
+  const dbf=$('contactDb').value;
+  return (state.contacts||[]).filter(c=>{
+    if(grp&&c.grp!==grp)return false;
+    if(dbf!==''&&String(c.database_id||0)!==dbf)return false;
+    if(q&&(c.name+' '+c.phone+' '+(c.note||'')+' '+(c.tags||'')).toLowerCase().indexOf(q)<0)return false;
+    return true;
+  });
+}
+function tagChips(tags){
+  return String(tags||'').split(',').map(t=>t.trim()).filter(Boolean)
+    .map(t=>`<span class="tag">${esc(t)}</span>`).join('');
 }
 function renderContacts(){
   const rows=filteredContacts();
-  $('contactsTable').innerHTML='<tr><th style="width:34px"><input type="checkbox" class="ck" id="ckAll" title="Выбрать всё"></th><th>Контакт</th><th>Телефон</th><th>Группа</th><th>Согласие</th><th>Статус</th><th class="num">Действия</th></tr>'+
+  $('contactsTable').innerHTML='<tr><th style="width:34px"><input type="checkbox" class="ck" id="ckAll" title="Выбрать всё"></th><th>Контакт</th><th>Телефон</th><th>База</th><th>Теги</th><th>Согласие</th><th>Статус</th><th class="num">Действия</th></tr>'+
    rows.map(c=>`<tr data-cid="${c.id}"><td><input type="checkbox" class="ck" data-id="${c.id}"></td>
-    <td style="min-width:0"><span class="cell-av">${av(c.name)}<span style="min-width:0"><span class="nm">${esc(c.name)}</span>${c.note?`<span class="ph">${esc(String(c.note).slice(0,40))}</span>`:''}</span></span></td>
+    <td style="min-width:0"><span class="cell-av">${av(c.name)}<span style="min-width:0"><button class="linklike" data-a="cardc" data-id="${c.id}" title="Открыть карточку номера">${esc(c.name||'(без имени)')}</button>${c.note?`<span class="ph">${esc(String(c.note).slice(0,40))}</span>`:''}</span></span></td>
     <td class="nowrap"><b>${esc(c.phone)}</b></td>
-    <td>${esc(c.grp||'')}</td>
+    <td>${esc(c.db_name||'')}</td>
+    <td style="max-width:180px">${tagChips(c.tags)}</td>
     <td>${c.consent?'<span class="badge g">есть</span>':'<span class="badge">нет</span>'}</td>
     <td>${c.blacklisted?'<span class="badge r">ЧС</span>':''}${c.complaints?`<span class="badge y">жалоб: ${c.complaints}</span>`:''}</td>
     <td class="num"><span class="btn-row">
@@ -984,7 +1022,7 @@ function renderContacts(){
       ${isAdmin()?`<button class="btn ghost sm" data-a="compl" data-phone="${esc(c.phone)}" title="Зафиксировать жалобу">Жалоба</button>
       <button class="btn d sm" data-a="delc" data-id="${c.id}" title="Удалить">${ico('trash')}</button>`:''}
     </span></td></tr>`).join('')
-   ||`<tr><td colspan="7">${empty('users',rows.length?'Ничего не найдено':'Контактов пока нет','Добавьте вручную или импортируйте CSV (для администратора)')}</td></tr>`;
+   ||`<tr><td colspan="8">${empty('users',rows.length?'Ничего не найдено':'Контактов пока нет','Добавьте вручную или загрузите базу Excel/CSV (для администратора)')}</td></tr>`;
   wire($('contactsTable'));
   syncBulk();
 }
@@ -1014,22 +1052,140 @@ async function importCsv(){
     if(errBox)errBox.innerHTML='';
   }
 }
+function dbOptions(sel){
+  const dbs=state.databases||[];
+  return '<option value="0">— без базы —</option>'+dbs.map(d=>`<option value="${d.id}" ${String(d.id)===String(sel||0)?'selected':''}>${esc(d.name)}</option>`).join('');
+}
 function editContact(id){
-  const c=state.contacts.find(x=>x.id===id)||{id:0,name:'',phone:'',grp:'',note:'',consent:true};
+  const c=state.contacts.find(x=>x.id===id)||{id:0,name:'',phone:'',grp:'',note:'',tags:'',database_id:0,consent:true};
   modal(`<h2>${ico('users')}${id?'Контакт #'+id:'Новый контакт'}</h2>
     <div class="formgrid">
       <div class="fld"><span class="lbl">Имя</span><input id="cName" class="input ctl" value="${esc(c.name)}" placeholder="Иван Петров"></div>
       <div class="fld"><span class="lbl">Телефон</span><input id="cPhone" class="input ctl" value="${esc(c.phone)}" placeholder="+79000000000"></div>
       <div class="fld"><span class="lbl">Группа</span><input id="cGrp" class="input ctl" value="${esc(c.grp)}" placeholder="клиенты, база 2026…"></div>
+      <div class="fld"><span class="lbl">База данных</span><select id="cDb" class="select ctl">${dbOptions(c.database_id)}</select></div>
+      <div class="fld span2"><span class="lbl">Теги (через запятую)</span><input id="cTags" class="input ctl" value="${esc(c.tags||'')}" placeholder="vip, москва, повторный"></div>
       <div class="fld" style="justify-content:flex-end"><label class="sw" style="padding-bottom:10px"><input id="cConsent" type="checkbox" ${c.consent?'checked':''}><span class="trk"></span>есть согласие на обзвон</label></div>
       <div class="fld span2"><span class="lbl">Примечание</span><textarea id="cNote" class="textarea ctl">${esc(c.note)}</textarea></div>
     </div>
     <div class="form-actions"><button class="btn" onclick="saveContact(${id})">${ico('check')}Сохранить</button><button class="btn x" onclick="closeModal()">Отмена</button></div>`);
 }
 async function saveContact(id){
-  const j=await safe(()=>api('/contacts/save',{body:{id:id,name:$('cName').value,phone:$('cPhone').value,group:$('cGrp').value,note:$('cNote').value,consent:$('cConsent').checked}}));
+  const j=await safe(()=>api('/contacts/save',{body:{id:id,name:$('cName').value,phone:$('cPhone').value,group:$('cGrp').value,note:$('cNote').value,consent:$('cConsent').checked,tags:$('cTags').value,database_id:parseInt($('cDb').value||'0')}}));
   if(j&&j.ok){closeModal();toast('Контакт сохранён');await fetchContacts();}
   else toast((j&&j.error)||'Ошибка сохранения','err');
+}
+/* ================= базы данных: загрузка Excel/CSV ================= */
+function fileToB64(file){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>{try{
+      const u=new Uint8Array(r.result);let s='';
+      for(let i=0;i<u.length;i+=0x8000){s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));}
+      res(btoa(s));
+    }catch(e){rej(e);}};
+    r.onerror=rej;r.readAsArrayBuffer(file);
+  });
+}
+function uploadDbModal(){
+  const dbs=state.databases||[];
+  modal(`<h2>${ico('file')}Загрузить базу контактов</h2>
+    <p class="hint" style="margin:0 0 10px">Файл <b>.xlsx</b> или <b>.csv</b> (до ~48 МБ). Колонки распознаются автоматически:
+    «Телефон / Phone», «Имя / Name», «Группа», «Теги», «Примечание», «Согласие». Номера приводятся к виду 7XXXXXXXXXX.
+    Подойдёт и простой список номеров без заголовков.</p>
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">Файл базы</span><input id="dbFile" type="file" class="input ctl" accept=".xlsx,.csv,.txt"></div>
+      <div class="fld"><span class="lbl">В существующую базу</span><select id="dbExist" class="select ctl"><option value="0">— новая база —</option>${dbs.map(d=>`<option value="${d.id}">${esc(d.name)} (${nFmt(d.contacts_count||0)})</option>`).join('')}</select></div>
+      <div class="fld"><span class="lbl">Название новой базы</span><input id="dbName" class="input ctl" placeholder="Например: МСК — сентябрь (из файла)"></div>
+      <div class="fld span2" style="justify-content:flex-end"><label class="sw"><input id="dbConsent" type="checkbox"><span class="trk"></span>считать, что согласие на обзвон есть у всех (если в файле нет колонки «Согласие»)</label></div>
+    </div>
+    <div class="form-actions"><button class="btn" id="dbUpBtn" onclick="uploadDbFile()">${ico('check')}Загрузить</button><button class="btn x" onclick="closeModal()">Отмена</button><span class="pillmsg" id="dbUpMsg"></span></div>
+    <div id="dbUpRes"></div>`);
+  $('dbFile').addEventListener('change',()=>{
+    const f=$('dbFile').files[0];
+    if(f&&!$('dbName').value)$('dbName').value=f.name.replace(/\.[^.]+$/,'');
+  });
+}
+async function uploadDbFile(){
+  const inp=$('dbFile');
+  const f=inp&&inp.files[0];
+  if(!f)return toast('Выберите файл .xlsx или .csv','warn');
+  const btn=$('dbUpBtn'),msg=$('dbUpMsg'),box=$('dbUpRes');
+  btn.disabled=true;msg.textContent='Чтение и загрузка…';msg.className='pillmsg';box.innerHTML='';
+  let b64='';
+  try{b64=await fileToB64(f);}catch(e){btn.disabled=false;msg.textContent='Не удалось прочитать файл';msg.classList.add('err');return;}
+  const j=await safe(()=>api('/contacts/import-file',{body:{filename:f.name,content_b64:b64,
+    database_id:parseInt($('dbExist').value||'0'),database_name:$('dbName').value,consent_default:$('dbConsent').checked}}));
+  btn.disabled=false;
+  if(!j||!j.ok){
+    msg.textContent='Ошибка: '+((j&&(j.detail||j.error))||'сеть');msg.classList.add('err');return;
+  }
+  msg.textContent=`✓ Строк: ${j.total_rows} · добавлено: ${j.added} · обновлено: ${j.updated} · пропущено: ${j.skipped}`;
+  msg.classList.add('ok');
+  const mp=Object.entries(j.mapping||{}).map(([k,v])=>`<span class="badge b">${esc(k)} ← ${esc(v)}</span>`).join(' ');
+  const errs=j.errors||[];
+  box.innerHTML=`<div class="hint" style="margin:8px 0">База: <b>${esc((j.database||{}).name||'')}</b> · распознано колонок: ${mp||'—'}</div>`
+    +(errs.length?`<div class="errbox"><b>Не импортировано (${j.errors_total||errs.length}):</b>${errs.map(e=>`<div>строка ${e.row} — ${esc(e.reason)}${e.phone?` (${esc(e.phone)})`:''}</div>`).join('')}${(j.errors_total||0)>errs.length?'<div class="dim">… показаны первые 100</div>':''}</div>`
+    :'<div class="hint">Ошибок нет — все строки загружены.</div>');
+  await fetchContacts();
+}
+async function manageDbModal(){
+  await safe(fetchDatabases);
+  const dbs=state.databases||[];
+  modal(`<h2>${ico('file')}Базы данных</h2>
+    <p class="hint" style="margin:0 0 10px">Каждая загрузка Excel/CSV создаёт базу. Удаление базы открепляет контакты (они остаются в общем списке) — либо удаляет их вместе с базой.</p>
+    <div class="tblwrap"><table style="width:100%">
+    <tr><th>Название</th><th>Файл</th><th class="num">Контактов</th><th class="num">С согласием</th><th>Теги</th><th class="num">Действия</th></tr>
+    ${dbs.map(d=>`<tr><td><b>${esc(d.name)}</b><div class="dim" style="font-size:11px">${esc(d.created||'')}</div></td>
+      <td>${esc(d.filename||'—')}</td><td class="num">${nFmt(d.contacts_count||0)}</td><td class="num">${nFmt(d.consent_count||0)}</td>
+      <td style="max-width:200px">${(d.tags||[]).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td class="num"><span class="btn-row">
+        <button class="btn ghost sm" onclick="delDb(${d.id},false)" title="Удалить базу, контакты останутся">Открепить</button>
+        <button class="btn d sm" onclick="delDb(${d.id},true)" title="Удалить базу вместе с контактами">${ico('trash')}</button>
+      </span></td></tr>`).join('')||'<tr><td colspan="6"><div class="dim" style="padding:8px">Баз пока нет — загрузите Excel/CSV кнопкой «Загрузить базу».</div></td></tr>'}
+    </table></div>
+    <div class="form-actions"><button class="btn x" onclick="closeModal()">Закрыть</button></div>`,true);
+}
+async function delDb(id,withContacts){
+  const d=(state.databases||[]).find(x=>x.id===id);
+  const nm=d?d.name:'#'+id;
+  if(!(await ask('Удалить базу',withContacts?`База «${nm}» и все её контакты будут удалены. Звонки и история сохранятся.`:`База «${nm}» будет удалена, контакты останутся в общем списке без привязки к базе.`,'Удалить')))return;
+  const j=await safe(()=>api('/databases/delete',{body:{ids:[id],delete_contacts:withContacts}}));
+  if(j&&j.ok){toast('База удалена');await manageDbModal();await fetchContacts();}
+  else toast('Ошибка удаления','err');
+}
+/* ================= карточка номера: динамика ================= */
+function callPill(st){
+  st=String(st||'');
+  if(/done_ok|operator_ok|qualified_yes|done_agent/.test(st))return '<span class="badge g">'+esc(st)+'</span>';
+  if(/busy|no_answer|machine|wait|ring|dial|talk|agent/.test(st))return '<span class="badge y">'+esc(st)+'</span>';
+  if(!st)return '<span class="badge">—</span>';
+  return '<span class="badge r">'+esc(st)+'</span>';
+}
+async function contactCard(id){
+  const j=await safe(()=>api('/contacts/history?id='+id));
+  if(!j||!j.contact)return toast('Карточка недоступна','err');
+  const c=j.contact,st=j.stats||{},calls=j.calls||[],items=j.items||[];
+  const ev=calls.map(x=>({t:x.started_at||'',h:`<b>Звонок #${x.id}</b> ${x.camp_name?`· ${esc(x.camp_name)}`:''} · с ${esc(x.caller_id||'—')}`,
+    b:`${callPill(x.result||x.status)} <span class="dim">${esc(x.started_at||'')} → ${esc(x.ended_at||'…')}${x.duration_sec?` · ${x.duration_sec} с`:''}${x.detail?` · ${esc(x.detail)}`:''}</span>`,
+    cls:/done_ok|operator_ok|qualified_yes/.test(x.result||'')?'ok':(/busy|no_answer|machine/.test(x.result||'')?'warn':(/failed|blocked|exhausted/.test(x.result||'')?'err':''))}));
+  const it=items.map(x=>({t:x.updated||'',h:`<b>В кампании</b> ${x.camp_name?`«${esc(x.camp_name)}»`:''}`,
+    b:`${callPill(x.last_result?x.status+': '+x.last_result:x.status)} <span class="dim">попыток: ${x.attempts||0}${x.next_attempt_at?` · след.: ${esc(x.next_attempt_at)}`:''}</span>`,cls:''}));
+  const all=ev.concat(it).sort((a,b)=>String(b.t).localeCompare(String(a.t)));
+  modal(`<h2>${ico('phone')}Карточка номера</h2>
+    <dl class="kv" style="margin:0 0 8px">
+      <dt>Контакт</dt><dd><b>${esc(c.name||'(без имени)')}</b></dd>
+      <dt>Телефон</dt><dd><b>${esc(c.phone)}</b></dd>
+      <dt>База</dt><dd>${esc(c.db_name||'— без базы —')}</dd>
+      <dt>Группа</dt><dd>${esc(c.grp||'—')}</dd>
+      <dt>Теги</dt><dd>${tagChips(c.tags)||'—'}</dd>
+      <dt>Согласие</dt><dd>${c.consent?'<span class="badge g">есть</span>':'<span class="badge">нет</span>'}${c.blacklisted?' <span class="badge r">ЧС</span>':''}${c.complaints?` <span class="badge y">жалоб: ${c.complaints}</span>`:''}</dd>
+      <dt>Звонков</dt><dd>всего ${st.calls_total||0} · завершено ${st.calls_done||0}${st.last_result?` · последний: ${callPill(st.last_result)} <span class="dim">${esc(st.last_at||'')}</span>`:''}</dd>
+      ${c.note?`<dt>Примечание</dt><dd>${esc(c.note)}</dd>`:''}
+    </dl>
+    <h3 style="margin:10px 0 4px;font-size:14px">Динамика работы с номером</h3>
+    <div class="tl">${all.map(e=>`<div class="tl-item ${e.cls}"><div>${e.h}</div><div>${e.b}</div></div>`).join('')||'<div class="dim">Звонков пока не было — номер ещё не обзванивали.</div>'}</div>
+    <div class="form-actions"><button class="btn ghost" onclick="editContact(${c.id})">${ico('edit')}Редактировать</button><button class="btn x" onclick="closeModal()">Закрыть</button></div>`,true);
 }
 async function delContact(id){
   if(!(await ask('Удалить контакт','Контакт будет удалён из базы без возможности восстановления.','Удалить')))return;
@@ -1226,7 +1382,9 @@ function shortAgent(s){if(!s)return'';try{const o=JSON.parse(s);return(o.qualifi
 function showCampFromLink(el){const id=parseInt(el.dataset.id);if(id)showCamp(id);}
 async function addContactsToCamp(id){
   if(!state.contacts.length)await safe(fetchContacts);
+  if(!state.databases.length)await safe(fetchDatabases);
   const cons=state.contacts||[];
+  const dbs=state.databases||[];
   const rows=cons.map(c=>`<label data-ck="${c.consent?1:0}"><input type="checkbox" class="ac" value="${c.id}" ${c.consent?'checked':''}>
     <span>${esc(c.name)} — <b class="nowrap">${esc(c.phone)}</b></span>${c.consent?'':'<span class="badge y">нет согласия</span>'}</label>`).join('');
   modal(`<h2>${ico('plus')}Добавить контакты · кампания #${id}</h2>
@@ -1241,6 +1399,10 @@ async function addContactsToCamp(id){
       <button class="btn ghost" onclick="addAllContacts(${id})">Все с согласием</button>
       <button class="btn x" onclick="closeModal()">Закрыть</button>
       <span class="pillmsg" id="pickMsg"></span>
+    </div>
+    <div class="toolbar" style="margin:8px 0 0;border-top:1px solid #1d3353;padding-top:10px">
+      <select id="pickDb" class="select" style="flex:1;min-width:180px">${dbs.map(d=>`<option value="${d.id}">${esc(d.name)} (${nFmt(d.contacts_count||0)})</option>`).join('')||'<option value="0">— баз нет —</option>'}</select>
+      <button class="btn ghost" onclick="addDbToCamp(${id})" ${dbs.length?'':'disabled'}>Добавить базу целиком</button>
     </div>`);
   const applyFilter=()=>{
     const only=$('consentOnly').checked,q=($('pickQ').value||'').toLowerCase();
@@ -1267,6 +1429,14 @@ async function addSelContacts(id){
 async function addAllContacts(id){
   const j=await safe(()=>api(`/campaigns/${id}/add-contacts`,{body:{consent_only:true}}));
   if(j&&j.ok){closeModal();toast('Добавлено: '+j.added);await loadCamps();showCamp(id);}
+}
+async function addDbToCamp(id){
+  const dbId=parseInt(($('pickDb')||{}).value||'0');
+  if(!dbId)return toast('Выберите базу','warn');
+  const only=($('consentOnly')||{}).checked!==false;
+  const j=await safe(()=>api(`/campaigns/${id}/add-contacts`,{body:{database_id:dbId,consent_only:only}}));
+  if(j&&j.ok){closeModal();toast('Добавлено из базы: '+j.added);await loadCamps();showCamp(id);}
+  else toast('Ошибка: '+((j&&j.error)||'?'),'err');
 }
 async function clearCamp(id){
   if(!(await ask('Очистить список кампании','Все контакты будут убраны из списка кампании. Звонки и история сохранятся.','Очистить')))return;
@@ -1759,6 +1929,7 @@ const Actions={
   cpause:el=>campAction(parseInt(el.dataset.id),'pause'),
   cstop:el=>campAction(parseInt(el.dataset.id),'stop'),
   editc:el=>editContact(parseInt(el.dataset.id)),
+  cardc:el=>contactCard(parseInt(el.dataset.id)),
   delc:el=>delContact(parseInt(el.dataset.id)),
   compl:el=>complaint(el.dataset.phone),
   editn:el=>editNum(parseInt(el.dataset.id)),

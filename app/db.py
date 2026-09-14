@@ -59,6 +59,41 @@ def update(table, data: dict, where: str, where_params=()):
       [data[c] for c in cols] + list(where_params))
 
 
+def list_databases():
+    """Базы данных (списки контактов) со счётчиками и тегами."""
+    dbs = fetch("SELECT * FROM databases ORDER BY id DESC")
+    for d in dbs:
+        r = fetch1("SELECT COUNT(*) c FROM contacts WHERE database_id=?", (d["id"],))
+        d["contacts_count"] = r["c"] if r else 0
+        r2 = fetch1("SELECT COUNT(*) c FROM contacts WHERE database_id=? AND consent=1", (d["id"],))
+        d["consent_count"] = r2["c"] if r2 else 0
+        tags = set()
+        for row in fetch("SELECT tags FROM contacts WHERE database_id=? AND tags<>'' LIMIT 5000",
+                         (d["id"],)):
+            for t in str(row["tags"] or "").split(","):
+                t = t.strip()
+                if t:
+                    tags.add(t)
+        d["tags"] = sorted(tags)[:50]
+    return dbs
+
+
+def delete_database(db_id, delete_contacts=False):
+    """Удаление базы. Контакты — открепить (по умолчанию) или удалить вместе
+    с их queued-элементами кампаний (звонки/история сохраняются)."""
+    db_id = int(db_id)
+    if delete_contacts:
+        rows = fetch("SELECT id FROM contacts WHERE database_id=?", (db_id,))
+        ids = [r["id"] for r in rows]
+        if ids:
+            ph = ",".join("?" * len(ids))
+            q("DELETE FROM campaign_items WHERE contact_id IN ({}) AND status='queued'".format(ph), ids)
+            q("DELETE FROM contacts WHERE id IN ({})".format(ph), ids)
+    else:
+        q("UPDATE contacts SET database_id=0 WHERE database_id=?", (db_id,))
+    q("DELETE FROM databases WHERE id=?", (db_id,))
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,10 +121,21 @@ CREATE TABLE IF NOT EXISTS contacts(
   consent_source TEXT NOT NULL DEFAULT '',
   blacklisted INTEGER NOT NULL DEFAULT 0,
   complaints INTEGER NOT NULL DEFAULT 0,
+  database_id INTEGER NOT NULL DEFAULT 0,
+  tags TEXT NOT NULL DEFAULT '',
   created TEXT,
   updated TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contacts_phone ON contacts(phone);
+CREATE INDEX IF NOT EXISTS ix_contacts_database ON contacts(database_id);
+CREATE TABLE IF NOT EXISTS databases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  filename TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created TEXT,
+  updated TEXT
+);
 CREATE TABLE IF NOT EXISTS numbers(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   number TEXT UNIQUE NOT NULL,
@@ -384,6 +430,8 @@ def clean_demo():
 
     Безопасно по маркерам: контакты consent_source='demo', кампания
     «Демо-кампания…», оператор operator с именем «Оператор (демо)».
+    Обычные контакты/кампании/операторы не затрагиваются.
+    Возвращает dict со�ор (демо)».
     Обычные контакты/кампании/операторы не затрагиваются.
     Возвращает dict со счётчиками удалённого (0 — если чистить нечего).
     """
