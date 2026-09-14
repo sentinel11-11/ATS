@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS contacts(
   updated TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_contacts_phone ON contacts(phone);
-CREATE INDEX IF NOT EXISTS ix_contacts_database ON contacts(database_id);
+-- Индекс по database_id создаётся в _migrate() ПОСЛЕ добавления колонки:
+-- на старых БД колонки ещё нет в момент executescript(SCHEMA), и CREATE INDEX падал бы.
 CREATE TABLE IF NOT EXISTS databases(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -301,6 +302,18 @@ def _migrate(c):
     if "active" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
         c.commit()
+    ccols = [r[1] for r in c.execute("PRAGMA table_info(contacts)").fetchall()]
+    if "database_id" not in ccols:
+        c.execute("ALTER TABLE contacts ADD COLUMN database_id INTEGER NOT NULL DEFAULT 0")
+        c.commit()
+    if "tags" not in ccols:
+        c.execute("ALTER TABLE contacts ADD COLUMN tags TEXT NOT NULL DEFAULT ''")
+        c.commit()
+    try:
+        c.execute("CREATE INDEX IF NOT EXISTS ix_contacts_database ON contacts(database_id)")
+        c.commit()
+    except Exception:
+        pass
 
 
 def _seed_templates():
