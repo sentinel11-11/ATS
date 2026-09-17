@@ -30,7 +30,7 @@ def list_numbers(include_disabled=False):
     return db.fetch(sql + " ORDER BY id")
 
 
-NUMBER_PROVIDERS = ("sim", "uis", "ami")
+NUMBER_PROVIDERS = ("sim", "uis", "ami", "megafon_vats")
 
 
 def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100):

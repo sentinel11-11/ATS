@@ -21,7 +21,7 @@ DEFAULT_SETTINGS = {
     "host": HOST_DEFAULT,
     "port": PORT_DEFAULT,
     # Fail-closed: пусто = провайдер НЕ ВЫБРАН, движок не стартует, пока админ
-    # явно не укажет sim|uis|ami (--provider при старте или Настройки).
+    # явно не укажет sim|uis|ami|megafon_vats (--provider при старте или Настройки).
     # sim — только стенд/тесты, молча не подставляется. Реализации: app/telephony.py.
     "provider": "",
     "max_channels": 3,
@@ -39,6 +39,11 @@ DEFAULT_SETTINGS = {
     "auto_quarantine_on_complaints": 3,
     "uis": {"api_url": "", "api_key": "", "number_pool_api": ""},
     "ami": {"host": "127.0.0.1", "port": 5038, "user": "", "secret": ""},
+    # МегаФон ВАТС (REST CRM API): base_url=https://{domain}; секреты — literal
+    # или env (маскируются в UI, плейсхолдер ******** не затирает — см. api.py).
+    "megafon_vats": {"base_url": "", "api_key": "", "api_key_env": "ATS_MEGAFON_API_KEY",
+                     "crm_token": "", "crm_token_env": "ATS_MEGAFON_CRM_TOKEN",
+                     "default_user": "", "default_group": "", "timeout_sec": 15},
     "llm": {"enabled": False, "base_url": "", "api_key_env": "ATS_LLM_KEY", "model": ""},
     "crm": {"driver": "csv"},     # csv | bitrix24
     "bitrix24": {"webhook_url": ""},

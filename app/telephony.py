@@ -4,7 +4,8 @@
 Реализации:
 - SimProvider        — симуляция (тесты, демо, «сухой» пилот без модемов/UIS);
 - UISCallApiProvider — адаптер UIS (Call API / SIP) — каркас, заполняется по ответу UIS (T01);
-- AsteriskAmiProvider— адаптер медиа-слоя Asterisk/AMI (SIP-транк к оператору) — каркас.
+- AsteriskAmiProvider— адаптер медиа-слоя Asterisk/AMI (SIP-транк к оператору) — каркас;
+- MegafonVatsProvider— МегаФон ВАТС (REST CRM API, см. app/providers/megafon_vats.py).
 
 Фабрика выбирает адаптер по settings["provider"]. Новые операторы (МТС и др.) = новые классы
 с тем же интерфейсом (мультиоператорность, задача T38).
@@ -502,7 +503,7 @@ def make_provider(settings: dict) -> TelephonyProvider:
     if not name:
         raise ProviderNotConfigured(
             "provider не задан (settings.provider пустой) — ATS не запускает звонки. "
-            "Укажите провайдера явно: --provider sim|uis|ami при старте "
+            "Укажите провайдера явно: --provider sim|uis|ami|megafon_vats при старте "
             "или Настройки → Провайдер (стенд/тесты: sim).")
     if name == "uis":
         return UISCallApiProvider().configure(settings)
@@ -510,8 +511,11 @@ def make_provider(settings: dict) -> TelephonyProvider:
         return AsteriskAmiProvider().configure(settings)
     if name == "sim":
         return SimProvider().configure(settings)
+    if name == "megafon_vats":
+        from .providers.megafon_vats import MegafonVatsProvider  # лениво: без цикла импорта
+        return MegafonVatsProvider().configure(settings)
     # Fail-closed: неизвестное имя (опечатка «uis » и т.п.) — громкая ошибка,
     # а не молчаливый звонок через симулятор.
     raise ProviderNotConfigured(
-        "unknown provider: {!r} (ожидалось: sim / uis / ami)".format(name))
+        "unknown provider: {!r} (ожидалось: sim / uis / ami / megafon_vats)".format(name))
 

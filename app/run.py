@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Точка входа ATS v2:
-    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami]
+    python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami|megafon_vats]
                       [--admin-password ..] [--init-only] [--clean-demo]
                       [--list-users] [--set-password LOGIN [PAROL]]
 """
@@ -51,7 +51,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="ATS v2")
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
-    ap.add_argument("--provider", default=None, choices=["sim", "uis", "ami"],
+    ap.add_argument("--provider", default=None, choices=["sim", "uis", "ami", "megafon_vats"],
                     help="Провайдер телефонии (сохраняется в настройки; "
                          "обязателен при первом запуске: без него движок не стартует)")
     ap.add_argument("--init-only", action="store_true")

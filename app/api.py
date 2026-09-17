@@ -255,14 +255,14 @@ def route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
-        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "llm", "bitrix24", "crm")})
+        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "megafon_vats", "llm", "bitrix24", "crm")})
         return {"provider_config": masked}, 200
     if p == ["settings", "raw"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
         cfg = body.get("provider_config") or body
-        for k in ("uis", "ami", "llm", "bitrix24", "crm"):
+        for k in ("uis", "ami", "megafon_vats", "llm", "bitrix24", "crm"):
             if isinstance(cfg.get(k), dict):
                 merged = dict(s.get(k) or {})
                 for fk, fv in cfg[k].items():
@@ -887,7 +887,7 @@ def _settings_save(body, sess=None):
     s = db.get_settings()
     if "provider" in body:
         pv = str(body.get("provider") or "").strip().lower()
-        if pv not in ("", "sim", "uis", "ami"):
+        if pv not in ("", "sim", "uis", "ami", "megafon_vats"):
             return {"ok": False, "error": "bad_provider"}, 400
         s["provider"] = pv  # "" = не настроен (fail-closed до явного выбора)
     for k in ("max_channels", "consent_required", "retry_max", "retry_delay_min",
