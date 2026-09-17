@@ -25,6 +25,14 @@ os.environ["ATS_DEV_SEED"] = "1"
 from app import api, config, db, numbers as numbers_mod  # noqa: E402
 from app.engine import Engine  # noqa: E402
 
+# Fail-closed провайдера: чистой БД симулятор не подставляется, поэтому тесты
+# явно выбирают sim (модули делят одну тестовую БД; сид идемпотентен).
+db.init_db()
+_test_seed = db.get_settings()
+if not _test_seed.get("provider"):
+    _test_seed["provider"] = "sim"
+    db.save_settings(_test_seed)
+
 
 def _save_settings():
     return json.loads(json.dumps(db.get_settings()))
@@ -744,8 +752,14 @@ class TestP0EngineUnit(unittest.TestCase):
             make_provider({"provider": "uis "})
         with self.assertRaises(ProviderNotConfigured):
             make_provider({"provider": "asterisk"})
+        with self.assertRaises(ProviderNotConfigured):
+            make_provider({})
+        with self.assertRaises(ProviderNotConfigured):
+            make_provider({"provider": "   "})
         self.assertEqual(make_provider({"provider": "sim"}).name, "sim")
-        self.assertEqual(make_provider({}).name, "sim")
+        self.assertEqual(make_provider({"provider": " SIM "}).name, "sim")
+        # fail-closed по умолчанию: чистой установке симулятор не подставляется
+        self.assertEqual(config.DEFAULT_SETTINGS.get("provider"), "")
 
     def test_password_reset_drops_sessions(self):
         from app import security
@@ -776,3 +790,85 @@ class TestP0EngineUnit(unittest.TestCase):
         self.assertEqual(seen.get("pending_during_send"), 1)
         self.assertEqual(res.get("Response"), "Error")  # таймаут без сервера
         self.assertEqual(c._pending, {})  # ожидание убрано
+
+
+class TestNumberPoolRotation(unittest.TestCase):
+    """CallerID-пул: ротация по счётчикам, карантин/лимиты, статистика."""
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+        cls.engine = Engine(auto_start=False)
+
+    def _add_num(self, number, weight=99):
+        ok, err = numbers_mod.add_number(number, label="rot", kind="mobile",
+                                         provider="sim", daily_limit=100)
+        self.assertTrue(ok, err)
+        n = db.fetch1("SELECT * FROM numbers WHERE number=?", (number,))
+        db.q("UPDATE numbers SET weight=? WHERE id=?", (weight, n["id"]))
+        return db.fetch1("SELECT * FROM numbers WHERE id=?", (n["id"],))
+
+    def test_acquire_rotates_by_counter(self):
+        self._add_num("79998880001")
+        self._add_num("79998880002")
+        try:
+            seq = []
+            for _ in range(4):
+                got = numbers_mod.acquire(provider="sim", cooldown_sec=0)
+                self.assertIsNotNone(got)
+                seq.append(got["number"])
+                numbers_mod.mark_used(got["id"], 0)
+            self.assertEqual(seq, ["79998880001", "79998880002",
+                                   "79998880001", "79998880002"])
+        finally:
+            db.q("DELETE FROM numbers WHERE number IN (?,?)",
+                 ("79998880001", "79998880002"))
+
+    def test_quarantine_and_limit(self):
+        n1 = self._add_num("79998880011")
+        n2 = self._add_num("79998880012")
+        try:
+            numbers_mod.quarantine(n1["id"], True)
+            for _ in range(2):
+                got = numbers_mod.acquire(provider="sim", cooldown_sec=0)
+                self.assertEqual(got["number"], "79998880012")
+                numbers_mod.mark_used(got["id"], 0)
+            db.q("UPDATE numbers SET daily_limit=1, daily_count=1, daily_date=? "
+                 "WHERE id IN (?,?)", (numbers_mod.today(), n1["id"], n2["id"]))
+            numbers_mod.quarantine(n1["id"], False)
+            got = numbers_mod.acquire(provider="sim", cooldown_sec=0)
+            if got is not None:
+                self.assertNotIn(got["number"], ("79998880011", "79998880012"))
+        finally:
+            db.q("DELETE FROM numbers WHERE number IN (?,?)",
+                 ("79998880011", "79998880012"))
+
+    def test_stats_counters(self):
+        n = self._add_num("79998880021")
+        try:
+            numbers_mod.mark_used(n["id"], 0)
+            numbers_mod.mark_used(n["id"], 0)
+            numbers_mod.mark_answered(n["id"])
+            r = db.fetch1("SELECT dialed_total, answered_total FROM numbers WHERE id=?",
+                          (n["id"],))
+            self.assertEqual(r["dialed_total"], 2)
+            self.assertEqual(r["answered_total"], 1)
+            st = {x["number"]: x for x in numbers_mod.pool_state()}
+            self.assertEqual(st["79998880021"]["dialed_total"], 2)
+            self.assertEqual(st["79998880021"]["answered_total"], 1)
+        finally:
+            db.q("DELETE FROM numbers WHERE number=?", ("79998880021",))
+
+    def test_engine_marks_answered(self):
+        n = self._add_num("79998880031")
+        try:
+            row = _p0_call_row("ringing", "79998880032")
+            row["number_id"] = n["id"]
+            call_id = db.insert("calls", row)
+            call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+            self.engine._on_answered(call, None, True)
+            r = db.fetch1("SELECT answered_total FROM numbers WHERE id=?", (n["id"],))
+            self.assertEqual(r["answered_total"], 1)
+        finally:
+            db.q("DELETE FROM numbers WHERE number=?", ("79998880031",))
+            db.q("DELETE FROM calls WHERE contact_phone=?", ("79998880032",))

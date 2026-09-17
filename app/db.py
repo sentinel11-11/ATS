@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS numbers(
   cooldown_until TEXT NOT NULL DEFAULT '',
   daily_date TEXT NOT NULL DEFAULT '',
   daily_count INTEGER NOT NULL DEFAULT 0,
+  dialed_total INTEGER NOT NULL DEFAULT 0,
+  answered_total INTEGER NOT NULL DEFAULT 0,
   created TEXT
 );
 CREATE TABLE IF NOT EXISTS campaigns(
@@ -305,6 +307,13 @@ def _migrate(c):
     ccols = [r[1] for r in c.execute("PRAGMA table_info(contacts)").fetchall()]
     if "database_id" not in ccols:
         c.execute("ALTER TABLE contacts ADD COLUMN database_id INTEGER NOT NULL DEFAULT 0")
+        c.commit()
+    ncols = [r[1] for r in c.execute("PRAGMA table_info(numbers)").fetchall()]
+    if "dialed_total" not in ncols:
+        c.execute("ALTER TABLE numbers ADD COLUMN dialed_total INTEGER NOT NULL DEFAULT 0")
+        c.commit()
+    if "answered_total" not in ncols:
+        c.execute("ALTER TABLE numbers ADD COLUMN answered_total INTEGER NOT NULL DEFAULT 0")
         c.commit()
     if "tags" not in ccols:
         c.execute("ALTER TABLE contacts ADD COLUMN tags TEXT NOT NULL DEFAULT ''")

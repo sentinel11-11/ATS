@@ -6,7 +6,8 @@
 - фоновый поток читает события и отдаёт их в обработчик.
 
 Используется адаптером AsteriskAmiProvider (app/telephony.py). Тесты протокола —
-tests/test_asterisk.py (кодек проверяется на фейковом AMI-сервере).
+tests/test_telephony_extra.py (кодек и базовый клиент на фейковом AMI-сервере)
+и tests/test_ami_bridge.py (handshake бриджа, reconnect, таймауты).
 """
 import logging
 import socket
@@ -62,6 +63,10 @@ class AMIClient:
         self._wlock = threading.Lock()
         self._reader = None
         self._pending = {}
+        self._event_waiters = []  # [(predicate, event, box)] для wait_for()
+        self.auto_reconnect = True
+        self.reconnect_delay = 1.0
+        self.reconnect_max = 30.0
         self._cond = threading.Condition()
         self.event_handler = None   # callable(event_dict)
         self._buffer = b""
@@ -70,16 +75,37 @@ class AMIClient:
 
     # ---------- соединение ----------
     def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
-        self.sock.settimeout(self.timeout)
-        # принять баннер (AMI шлёт "Asterisk Call Manager/1.1")
-        self._read_until_blank(initial=True)
+        self._closed.clear()
+        sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        sock.settimeout(self.timeout)
+        with self._wlock:
+            old = self.sock
+            self.sock = sock
+            self._buffer = b""
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        try:
+            # принять баннер (AMI шлёт "Asterisk Call Manager/1.1")
+            self._read_until_blank(initial=True)
+        except Exception:
+            with self._wlock:
+                if self.sock is sock:
+                    self.sock = None
+            try:
+                sock.close()
+            except Exception:
+                pass
+            raise
         self._reader = threading.Thread(target=self._read_loop, daemon=True, name="ami-reader")
         self._reader.start()
         return True
 
     def close(self):
         self._closed.set()
+        self._fail_pending("closed")
         with self._cond:
             self._pending.clear()
             self._cond.notify_all()
@@ -117,10 +143,9 @@ class AMIClient:
                 pass
 
     # ---------- действия ----------
-    def action(self, name, params=None, timeout=None, check=True):
-        action_id = None
+    def action(self, name, params=None, timeout=None, check=True, action_id=None):
         with self._cond:
-            payload, action_id = encode_action(name, params)
+            payload, action_id = encode_action(name, params, action_id)
             # Регистрируем ожидание ДО отправки: иначе быстрый ответ сервера
             # придёт раньше и будет потерян (ложный таймаут Originate).
             result = {"Response": "Error", "Message": "timeout"}
@@ -146,6 +171,33 @@ class AMIClient:
     def ping(self):
         return self.action("Ping", check=False)
 
+    def wait_for(self, predicate, timeout):
+        """Ждать событие AMI, удовлетворяющее predicate(msg)->bool.
+        Возвращает сообщение или None по таймауту/разрыву соединения."""
+        box = {}
+        waiter = threading.Event()
+        key = (predicate, waiter, box)
+        with self._cond:
+            self._event_waiters.append(key)
+        try:
+            waiter.wait(timeout)
+        finally:
+            with self._cond:
+                try:
+                    self._event_waiters.remove(key)
+                except ValueError:
+                    pass
+        return box.get("msg")
+
+    def _fail_pending(self, why):
+        """Разбудить всех ожидающих (ответы на actions и события) с ошибкой why."""
+        with self._cond:
+            for _aid, (waiter, result) in list(self._pending.items()):
+                result["Message"] = why
+                waiter.set()
+            for _pred, waiter, _box in list(self._event_waiters):
+                waiter.set()
+
     # ---------- чтение ----------
     def _read_until_blank(self, initial=False):
         while b"\r\n\r\n" not in self._buffer:
@@ -163,6 +215,8 @@ class AMIClient:
         while not self._closed.is_set():
             try:
                 blob = self._read_until_blank()
+            except socket.timeout:
+                continue  # тишина в пределах таймаута сокета — не разрыв
             except Exception:
                 break
             try:
@@ -172,14 +226,53 @@ class AMIClient:
             etype = str(msg.get("Event", "")).lower()
             if etype == "":
                 aid = str(msg.get("ActionID", ""))
-                if aid in self._pending:
-                    waiter, result = self._pending[aid]
+                with self._cond:
+                    pending = self._pending.get(aid)
+                if pending:
+                    waiter, result = pending
                     result.update(msg)
                     waiter.set()
             else:
+                with self._cond:
+                    waiters = list(self._event_waiters)
+                for pred, waiter, box in waiters:
+                    try:
+                        if pred(msg):
+                            box["msg"] = msg
+                            waiter.set()
+                    except Exception:
+                        pass
                 if self.event_handler:
                     try:
                         self.event_handler(msg)
                     except Exception:
                         log.exception("AMI event handler")
         self.connected = False
+        self._fail_pending("disconnected")
+        if not self._closed.is_set() and self.auto_reconnect:
+            self._reconnect_loop()
+
+    def _reconnect_loop(self):
+        """Фоновая петля переподключения: backoff + connect + login.
+        Вызывается из умирающего reader-потока; connect() стартует новый reader.
+        Подписки восстанавливать не нужно: AMI после login шлёт все события."""
+        delay = self.reconnect_delay if self.reconnect_delay > 0 else 0.1
+        while not self._closed.is_set():
+            if self._closed.wait(delay):
+                return
+            try:
+                self.connect()
+                self.login()
+            except Exception as e:
+                log.warning("AMI reconnect failed (%s:%s): %s", self.host, self.port, e)
+                delay = min(max(delay * 2, 0.1), self.reconnect_max)
+                continue
+            if self._closed.is_set():
+                # закрыли, пока переподключались, — откатываем
+                try:
+                    self.close()
+                except Exception:
+                    pass
+                return
+            log.warning("AMI reconnected to %s:%s", self.host, self.port)
+            return

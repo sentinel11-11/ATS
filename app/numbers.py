@@ -122,8 +122,16 @@ def mark_used(number_id, cooldown_sec):
         if not r:
             return
         dc = r["daily_count"] + 1 if r["daily_date"] == today() else 1
-        db.q("UPDATE numbers SET daily_count=?, daily_date=?, cooldown_until=? WHERE id=?",
+        db.q("UPDATE numbers SET daily_count=?, daily_date=?, cooldown_until=?, "
+                 "dialed_total=dialed_total+1 WHERE id=?",
              (dc, today(), cd, number_id))
+
+
+def mark_answered(number_id):
+    """Зафиксировать ответ абонента по номеру (статистика CallerID пула)."""
+    if not number_id:
+        return
+    db.q("UPDATE numbers SET answered_total=answered_total+1 WHERE id=?", (number_id,))
 
 
 def pool_state():
@@ -139,5 +147,6 @@ def pool_state():
             "weight": r["weight"], "quarantined": bool(r["quarantined"]),
             "cooldown_until": r["cooldown_until"], "cooling": cooling,
             "daily_date": r["daily_date"], "daily_count": r["daily_count"],
+            "dialed_total": r["dialed_total"], "answered_total": r["answered_total"],
         })
     return out

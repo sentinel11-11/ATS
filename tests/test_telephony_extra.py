@@ -18,6 +18,14 @@ os.environ["ATS_DEV_SEED"] = "1"
 from app import asterisk as ami_mod  # noqa: E402
 from app import config, db  # noqa: E402
 from app.engine import Engine  # noqa: E402
+
+# Fail-closed провайдера: чистой БД симулятор не подставляется, поэтому тесты
+# явно выбирают sim (модули делят одну тестовую БД; сид идемпотентен).
+db.init_db()
+_test_seed = db.get_settings()
+if not _test_seed.get("provider"):
+    _test_seed["provider"] = "sim"
+    db.save_settings(_test_seed)
 from app.telephony import map_uis_webhook  # noqa: E402
 
 
@@ -195,6 +203,7 @@ class TestAcdWatchdog(unittest.TestCase):
         db.init_db()
         s = db.get_settings()
         s["acd_wait_timeout_sec"] = 1
+        s["provider"] = "sim"  # fail-closed: свежей БД симулятор не подставляется
         db.save_settings(s)
         cls.engine = Engine(auto_start=False)
 

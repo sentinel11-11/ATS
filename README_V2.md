@@ -69,8 +69,9 @@ app/
   server.py     HTTP-сервер: статика app/ui, API, SSE
   run.py        CLI: python -m app.run
   ui/index.html одностраничный UI (vanilla JS)
-tests/          unittest-набор (73 теста: безопасность, БД, пул, E2E движка, HTTP API,
-                протокол AMI, вебхуки UIS, ACD-watchdog, базы/импорт, hardening, P0-RBAC)
+tests/          unittest-набор (88 тестов: безопасность, БД, пул, E2E движка, HTTP API,
+                протокол AMI, вебхуки UIS, ACD-watchdog, базы/импорт, hardening,
+                P0-RBAC, AMI-мост/reconnect, ротация пула)
 data_v2/        runtime (БД, логи, записи, CRM-выгрузка) — создаётся автоматически
 data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип, не используется v2)
 ```
@@ -120,8 +121,10 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
      "bitrix24": { "webhook_url": "https://..." } }
    ```
    или напрямую: `POST /api/v2/settings/raw` с `{"uis": {...}}`.
-3. Перезапустите: `python3 -m app.run` (провайдер выбирается на старте).
-4. Транспорт уже написан в общем виде: `UISCallApiProvider.dial` (POST Call API) + вебхук `/api/v2/webhooks/uis`; `AsteriskAmiProvider` на базе `AMIClient` (Originate + карта событий + `connect_operator`). Проверьте/уточните схемы запросов и событий по документации UIS и на живом стенде Asterisk (пометки T13/T14). Ядро, агент и ACD от транспорта не зависят.
+3. При первом запуске укажите провайдера явно: `python3 -m app.run --provider uis`
+   (флаг сохраняется в настройки; без провайдера движок не стартует — fail-closed).
+4. Транспорт уже написан в общем виде: `UISCallApiProvider.dial` (POST Call API) + вебхук `/api/v2/webhooks/uis`; `AsteriskAmiProvider` на базе `AMIClient` (Originate + карта событий + честный ACD-handshake
+   `connect_operator`: Originate → OriginateResponse → Bridge, иначе откат) + reconnect AMI с backoff. Проверьте/уточните схемы запросов и событий по документации UIS и на живом стенде Asterisk (пометки T13/T14). Ядро, агент и ACD от транспорта не зависят.
 5. Номера в пуле: для реального провайдера создайте номера с `provider = uis/ami` (номер = ваш Caller ID, E.164).
 
 ## 7. Что осталось «вне кода» (внешние зависимости из дорожной карты)

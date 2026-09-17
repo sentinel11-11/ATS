@@ -397,7 +397,7 @@ function editContact(id){
       <div class="fld"><span class="lbl">Группа</span><input id="cGrp" class="input ctl" value="${esc(c.grp)}" placeholder="клиенты, база 2026…"></div>
       <div class="fld"><span class="lbl">База данных</span><select id="cDb" class="select ctl">${dbOptions(c.database_id)}</select></div>
       <div class="fld span2"><span class="lbl">Теги (через запятую)</span><input id="cTags" class="input ctl" value="${esc(c.tags||'')}" placeholder="vip, москва, повторный"></div>
-      <div class="fld" style="justify-content:flex-end"><label class="sw" style="padding-bottom:10px"><input id="cConsent" type="checkbox" ${c.consent?'checked':''}><span class="trk"></span>есть согласие на обзвон</label></div>
+      <div class="fld" style="justify-content:flex-end"><label class="sw" style="padding-bottom:10px"><input id="cConsent" type="checkbox" ${c.consent?'checked':''} ${isAdmin()?'':'disabled'}><span class="trk"></span>есть согласие на обзвон${isAdmin()?'':' <span class="hint">(только админ)</span>'}</label></div>
       <div class="fld span2"><span class="lbl">Примечание</span><textarea id="cNote" class="textarea ctl">${esc(c.note)}</textarea></div>
     </div>
     <div class="form-actions"><button class="btn" onclick="saveContact(${id})">${ico('check')}Сохранить</button><button class="btn x" onclick="closeModal()">Отмена</button></div>`);
@@ -598,7 +598,7 @@ async function loadCamps(){
 }
 async function campAction(id,act){
   const j=await safe(()=>api(`/campaigns/${id}/${act}`,{body:{}}));
-  if(j&&j.ok){toast({start:'Кампания запущена',pause:'Кампания на паузе',stop:'Кампания остановлена'}[act]);
+  if(j&&j.ok){toast(act==='retry-exhausted'?'Исчерпанные возвращены в очередь: '+(j.requeued||0):({start:'Кампания запущена',pause:'Кампания на паузе',stop:'Кампания остановлена'}[act]));
     await loadCamps();if(state.activeTab==='campaigns')showCamp(id);safe(loadDash);}
   else toast('Ошибка: '+((j&&j.error)||'?'),'err');
 }
@@ -650,7 +650,8 @@ async function showCamp(id){
       <h2 style="margin:0" class="grow">Кампания #${c.id}: ${esc(c.name)}</h2>
       ${isAdmin()?`<button class="btn g sm" data-a="cstart" data-id="${c.id}">${ico('play')}Запустить</button>
       <button class="btn sm" style="background:#35557f" data-a="cpause" data-id="${c.id}">${ico('pause')}Пауза</button>
-      <button class="btn d sm" data-a="cstop" data-id="${c.id}">${ico('stop')}Остановить</button>`:''}
+      <button class="btn d sm" data-a="cstop" data-id="${c.id}">${ico('stop')}Остановить</button>
+      <button class="btn sm" style="background:#6a5acd" data-a="cretry" data-id="${c.id}" title="Вернуть в очередь контакты, исчерпавшие лимит попыток">${ico('refresh')}Дозвонить исчерпанные</button>`:''}
     </div>
     <div class="toolbar" style="margin-bottom:14px">
       ${statusPill(c.status)}
@@ -774,6 +775,7 @@ async function clearCamp(id){
   if(!(await ask('Очистить список кампании','Все контакты будут убраны из списка кампании. Звонки и история сохранятся.','Очистить')))return;
   const j=await safe(()=>api(`/campaigns/${id}/clear`,{body:{}}));
   if(j&&j.ok){toast('Список очищен');showCamp(id);}
+  else toast('Очистить нельзя ('+((j&&j.error)||'?')+'): сначала остановите кампанию и дождитесь конца звонков','err');
 }
 
 /* ================= пул номеров ================= */
@@ -1148,7 +1150,7 @@ async function loadSettings(){
   const j=await api('/settings');
   if(!j||!j.settings)return;
   const s=j.settings;state.settings=s;
-  $('sProvider').value=s.provider||'sim';
+  $('sProvider').value=s.provider||'';
   $('sChannels').value=s.max_channels;
   $('sRetryMax').value=s.retry_max;
   $('sRetryDelay').value=s.retry_delay_min;
@@ -1260,6 +1262,7 @@ const Actions={
   cstart:el=>campAction(parseInt(el.dataset.id),'start'),
   cpause:el=>campAction(parseInt(el.dataset.id),'pause'),
   cstop:el=>campAction(parseInt(el.dataset.id),'stop'),
+  cretry:el=>campAction(parseInt(el.dataset.id),'retry-exhausted'),
   editc:el=>editContact(parseInt(el.dataset.id)),
   cardc:el=>contactCard(parseInt(el.dataset.id)),
   delc:el=>delContact(parseInt(el.dataset.id)),

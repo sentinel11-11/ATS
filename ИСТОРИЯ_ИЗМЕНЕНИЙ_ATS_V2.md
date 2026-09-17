@@ -253,3 +253,25 @@ P0 внешнего ревью: RBAC владения accept/complete, согл�
 connect()==False откат, fail-closed провайдер, revoke сессий, вебхук в очередь,
 float-watchdog, свежий SSE-статус, AMI register-before-send, импорт parse-first,
 guard clear, start без сброса exhausted + retry-exhausted, валидация номеров).
+
+## 2026-09-17 — Живой Asterisk: честный ACD-бридж, reconnect, fail-closed провайдера
+
+- `connect_operator()`: Originate операторского leg'а → ожидание OriginateResponse
+  (ответ) → AMI Bridge с каналом абонента; True только при состоявшемся бридже,
+  иначе False и движок откатывает принятие (было: True сразу после Originate).
+- AMI-клиент: ожидание событий `wait_for()`, переподключение с backoff 1→30с
+  и повторным login; разрыв будит ожидающих fail-fast вместо глухого таймаута.
+- Исправлен суицид reader-потока на idle-таймауте сокета (`socket.timeout`
+  больше не роняет чтение событий).
+- `dial()`: OriginateResponse(Failure) сразу отдаёт движку `failed` + повтор
+  вместо висения в `dialing` до watchdog.
+- Провайдер fail-closed: дефолт `""` (не выбран), пустое значение — громкая
+  ошибка вместо молчаливого sim; первый выбор — `--provider sim|uis|ami`
+  (сохраняется в БД); whitelist в `/settings/save`; баннер СТЕНД для sim.
+- Статистика CallerID: `dialed_total`/`answered_total` у номеров (миграция),
+  ротация пула покрыта тестами.
+- CI: `.github/workflows/tests.yml` (Python 3.10/3.11/3.12).
+
+Состояние: **88/88 проходят** (+11 AMI-мост/reconnect, +4 ротация/статистика).
+Живой стенд T14 (транк, звук бриджа, обрыв сети) — следующий обязательный шаг
+перед боевыми звонками; чеклист — в §7 ДЕПЛОЙ_НА_СЕРВЕР.md.

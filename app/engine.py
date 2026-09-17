@@ -69,6 +69,9 @@ class Engine:
                       "или задайте ATS_ALLOW_SIM_FALLBACK=1 для стенда.")
                 raise
         self.provider.attach(self._evq)
+        if getattr(self.provider, "name", "") == "sim":
+            print("[engine] СТЕНД: провайдер 'sim' — звонки симулируются, "
+                  "реальной телефонии нет.")
         self.crm = make_crm(self.settings)
         self._stop = threading.Event()
         self._thread = None
@@ -155,6 +158,11 @@ class Engine:
             self.provider.hangup(call["id"])
             self._finish_attempt(call, item, "machine", "Автоответчик", retryable=True)
             return
+        if call.get("number_id"):
+            try:
+                numbers_mod.mark_answered(call["number_id"])
+            except Exception as e:
+                print("[engine] mark_answered:", e)
         campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?", (call["campaign_id"],)) if call["campaign_id"] else None
         flow = (campaign or {}).get("flow") or "message"
         if flow == "operator":

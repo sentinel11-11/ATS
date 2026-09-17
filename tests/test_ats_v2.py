@@ -24,6 +24,14 @@ os.environ["ATS_DEV_SEED"] = "1"
 from app import api, config, db, numbers as numbers_mod, security  # noqa: E402
 from app.engine import Engine  # noqa: E402
 
+# Fail-closed провайдера: чистой БД симулятор не подставляется, поэтому тесты
+# явно выбирают sim (модули делят одну тестовую БД; сид идемпотентен).
+db.init_db()
+_test_seed = db.get_settings()
+if not _test_seed.get("provider"):
+    _test_seed["provider"] = "sim"
+    db.save_settings(_test_seed)
+
 
 def iso_add_minutes(**kw):
     import datetime

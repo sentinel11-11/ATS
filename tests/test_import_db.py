@@ -25,6 +25,14 @@ from app import api, config, db, security  # noqa: E402
 from app import importers  # noqa: E402
 from app.engine import Engine  # noqa: E402
 
+# Fail-closed провайдера: чистой БД симулятор не подставляется, поэтому тесты
+# явно выбирают sim (модули делят одну тестовую БД; сид идемпотентен).
+db.init_db()
+_test_seed = db.get_settings()
+if not _test_seed.get("provider"):
+    _test_seed["provider"] = "sim"
+    db.save_settings(_test_seed)
+
 
 def make_xlsx(rows):
     """Минимальный .xlsx в памяти (sharedStrings + sheet1)."""

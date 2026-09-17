@@ -290,9 +290,13 @@ class AsteriskAmiProvider(TelephonyProvider):
 
     Originate: Channel PJSIP/{trunk}/{dial_prefix}{phone}, CallerID "{ats-call-<id>}" <caller_id>.
     Маркер в CallerIDName используется, чтобы сопоставить канал с нашим call_id (Newchannel).
-    Карта событий AMI → события движка минимальная и требует проверки на живом стенде (T14):
-    Newchannel -> ring, Dial(DialStatus=ANSWER)/Bridge -> answered, Hangup -> done.
-    connect_operator(): Originate на внутренний номер оператора + Bridge с каналом абонента.
+    Карта событий AMI → события движка (проверена на протокольном фейке, живой стенд T14):
+    Newchannel -> ring, Dial(ANSWER) -> answered, Hangup -> done,
+    OriginateResponse(Failure) -> failed.
+    connect_operator(): Originate операторского leg'а -> ожидание OriginateResponse
+    (ответ оператора) -> AMI Bridge двух каналов. True только если бридж состоялся.
+    Настройки бриджа (settings.ami): op_context (свой диалплан вместо Wait),
+    op_wait_sec=45, op_ring_timeout_ms=30000, acd_answer_timeout=35, bridge_timeout=10.
     """
     name = "ami"
 
@@ -301,6 +305,7 @@ class AsteriskAmiProvider(TelephonyProvider):
         self.cfg = {}
         self.client = None
         self.channels = {}   # call_id -> channel name
+        self._originate = {}  # action_id dial-Originate -> call_id (ждём OriginateResponse)
         self._lock = threading.RLock()
 
     def configure(self, settings: dict):
@@ -343,7 +348,11 @@ class AsteriskAmiProvider(TelephonyProvider):
             "Variable": "ATS_CALL_ID={}".format(req["call_id"]),
             "Async": "true",
         }
-        self.client.action("Originate", params)
+        resp = self.client.action("Originate", params)
+        aid = str(resp.get("ActionID", ""))
+        if aid:
+            with self._lock:
+                self._originate[aid] = req["call_id"]
         return True
 
     def hangup(self, call_id):
@@ -358,29 +367,64 @@ class AsteriskAmiProvider(TelephonyProvider):
                 pass
 
     def connect_operator(self, call_id, operator_ext):
-        """(живой стенд T14) соединить абонента с внутренним номером оператора."""
+        """Соединить абонента с оператором: Originate операторского leg'а,
+        ожидание ответа (OriginateResponse), затем AMI Bridge двух каналов.
+        True — только если бридж реально состоялся; иначе False и движок откатит
+        принятие (звонок останется в очереди, оператор — свободным)."""
         if not self.client or not operator_ext:
             return False
         with self._lock:
             caller_ch = self.channels.get(call_id)
         if not caller_ch:
             return False
-        op_chan = "PJSIP/{}".format(self.cfg.get("operator_trunk", self.cfg.get("trunk", ""))) + "/" + str(operator_ext)
-        # ВАЖНО: точная схема бриджа зависит от диаплана/транков; проверить на стенде.
-        # Штатно в Asterisk используется Dial() в диаплане: ответивший абонент попадает
-        # в ACD-контекст, который сам набирает оператора. Здесь — AMI Bridge двух каналов.
+        op_chan = "PJSIP/{}/{}".format(
+            self.cfg.get("operator_trunk", self.cfg.get("trunk", "")), operator_ext)
+        op_params = {
+            "Channel": op_chan,
+            "CallerID": '"ATS-ACD" <{}>'.format(self.cfg.get("acd_callerid", "")),
+            "Timeout": str(self.cfg.get("op_ring_timeout_ms", 30000)),
+            "Async": "true",
+        }
+        if self.cfg.get("op_context"):
+            # Свой диалплан: ответивший оператор попадёт в него (должен ждать бриджа).
+            op_params.update({"Exten": "s", "Context": self.cfg["op_context"], "Priority": "1"})
+        else:
+            # Штатно: ответивший канал ждёт бриджа внутри Wait.
+            op_params.update({"Application": "Wait",
+                              "Data": str(self.cfg.get("op_wait_sec", 45))})
+        aid = "ats-acd-{}-{}".format(call_id, uuid.uuid4().hex[:8])
         try:
-            self.client.action("Originate", {
-                "Channel": op_chan, "Exten": "s", "Context": self.cfg.get("context", "ats-in"),
-                "Priority": "1", "CallerID": '"ATS-ACD" <{}>'.format(self.cfg.get("acd_callerid", "")),
-                "Timeout": "30000", "Async": "true"})
-            # (после появления второго канала — Bridge, логика на стенде)
+            resp = self.client.action("Originate", op_params, action_id=aid)
         except Exception:
+            return False
+        if str(resp.get("Response", "")).lower() != "success":
+            return False
+        answer_timeout = float(self.cfg.get("acd_answer_timeout", 35))
+        ev = self.client.wait_for(
+            lambda m: str(m.get("Event", "")).lower() == "originateresponse"
+                      and str(m.get("ActionID", "")) == aid,
+            answer_timeout)
+        if not ev or str(ev.get("Response", "")).lower() != "success":
+            return False
+        op_ch = str(ev.get("Channel", ""))
+        if not op_ch:
+            return False
+        try:
+            self.client.action("Bridge", {"Channel1": op_ch, "Channel2": caller_ch},
+                               timeout=float(self.cfg.get("bridge_timeout", 10)))
+        except Exception:
+            try:
+                self.client.action("Hangup", {"Channel": op_ch}, check=False)
+            except Exception:
+                pass
             return False
         return True
 
     def _on_event(self, ev: dict):
         etype = str(ev.get("Event", "")).lower()
+        if etype == "originateresponse":
+            self._on_originate_response(ev)
+            return
         # маркер канала в CallerIDName (может быть "ats-call-<id>")
         ch = ev.get("Channel")
         marker = None
@@ -414,7 +458,24 @@ class AsteriskAmiProvider(TelephonyProvider):
             if st in ("ANSWER",):
                 self.emit({"event": "answered", "call_id": call_id, "human": True})
         elif etype == "hangup" and call_id:
+            with self._lock:
+                for k in [k for k, v in self._originate.items() if v == call_id]:
+                    del self._originate[k]
             self.emit({"event": "done", "call_id": call_id, "detail": "Hangup"})
+
+    def _on_originate_response(self, ev: dict):
+        """Ответ на dial-Originate: Failure сразу отдаём движку как failed
+        (иначе звонок висел бы в dialing до watchdog). Success дальше ведут
+        Newchannel/Dial/Hangup. ACD-leg'и сюда не попадают: их ждёт wait_for
+        в connect_operator (их ActionID в карте нет)."""
+        with self._lock:
+            call_id = self._originate.pop(str(ev.get("ActionID", "")), None)
+        if not call_id:
+            return
+        if str(ev.get("Response", "")).lower() != "success":
+            detail = str(ev.get("Reason", ev.get("Message", "")))[:200] or "Originate failed"
+            self.emit({"event": "status", "call_id": call_id,
+                       "status": "failed", "detail": detail})
 
     def channels_rev_get(self, ch):
         with self._lock:
@@ -437,7 +498,12 @@ class AsteriskAmiProvider(TelephonyProvider):
 
 
 def make_provider(settings: dict) -> TelephonyProvider:
-    name = str(settings.get("provider") or "sim").strip().lower()
+    name = str(settings.get("provider") or "").strip().lower()
+    if not name:
+        raise ProviderNotConfigured(
+            "provider не задан (settings.provider пустой) — ATS не запускает звонки. "
+            "Укажите провайдера явно: --provider sim|uis|ami при старте "
+            "или Настройки → Провайдер (стенд/тесты: sim).")
     if name == "uis":
         return UISCallApiProvider().configure(settings)
     if name == "ami":

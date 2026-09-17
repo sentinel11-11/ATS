@@ -20,7 +20,10 @@ FAST = os.environ.get("ATS_FAST", "") == "1"           # ускоренные т
 DEFAULT_SETTINGS = {
     "host": HOST_DEFAULT,
     "port": PORT_DEFAULT,
-    "provider": "sim",            # sim | uis | ami  (реализации в app/telephony.py)
+    # Fail-closed: пусто = провайдер НЕ ВЫБРАН, движок не стартует, пока админ
+    # явно не укажет sim|uis|ami (--provider при старте или Настройки).
+    # sim — только стенд/тесты, молча не подставляется. Реализации: app/telephony.py.
+    "provider": "",
     "max_channels": 3,
     "consent_required": True,
     "retry_max": 2,

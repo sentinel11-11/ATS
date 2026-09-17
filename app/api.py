@@ -885,7 +885,12 @@ def _complaint(body):
 
 def _settings_save(body, sess=None):
     s = db.get_settings()
-    for k in ("provider", "max_channels", "consent_required", "retry_max", "retry_delay_min",
+    if "provider" in body:
+        pv = str(body.get("provider") or "").strip().lower()
+        if pv not in ("", "sim", "uis", "ami"):
+            return {"ok": False, "error": "bad_provider"}, 400
+        s["provider"] = pv  # "" = не настроен (fail-closed до явного выбора)
+    for k in ("max_channels", "consent_required", "retry_max", "retry_delay_min",
               "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",
               "window_start", "window_end", "sim_answer", "auto_quarantine_on_complaints",
               "sim_outcome", "crm"):
