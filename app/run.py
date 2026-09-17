@@ -72,8 +72,13 @@ def main(argv=None):
         print("База инициализирована:", config.DB_PATH)
         return 0
 
-    # Переключение провайдера конфигурацией: при недоступности движок сам откатится на sim
-    engine = Engine()
+    # Провайдер из конфигурации. При недоступности сервер НЕ стартует
+    # (тихий откат на sim запрещён; для стенда: ATS_ALLOW_SIM_FALLBACK=1).
+    try:
+        engine = Engine()
+    except Exception as e:
+        print("[ATS v2] Не удалось запустить движок: {}".format(e))
+        return 1
     api.ENGINE = engine
 
     from .server import create_server

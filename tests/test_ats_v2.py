@@ -162,6 +162,11 @@ class TestEngineE2E(unittest.TestCase):
         cls.engine = Engine(auto_start=False)
 
     def test_agent_qualified_transfer_and_operator(self):
+        # свободного оператора создаём явно: движок больше не фабрикует
+        # виртуальных операторов при принятии из очереди
+        if not db.fetch1("SELECT id FROM operators WHERE status='free'"):
+            db.insert("operators", {"user_id": 0, "name": "E2E-оператор", "ext": "101",
+                                    "status": "free", "updated": config.now_iso()})
         c1 = add_contact("Квал", "79031000001")
         c2 = add_contact("Отказ", "79031000002")
         cid = make_campaign(retry_max=0)

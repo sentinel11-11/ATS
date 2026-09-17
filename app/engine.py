@@ -7,6 +7,7 @@ message (информирование), agent (ИИ-агент L1/L2), operator 
 """
 import datetime
 import json
+import os
 import queue
 import threading
 import time
@@ -54,9 +55,19 @@ class Engine:
         try:
             self.provider = provider or make_provider(self.settings)
         except Exception as e:
-            print("[engine] Провайдер недоступен, переход на sim:", e)
-            from .telephony import SimProvider
-            self.provider = SimProvider()
+            # Production: молчаливый переход на sim ЗАПРЕЩЁН — иначе оператор
+            # решит, что звонки идут, а они будут симулироваться. Fallback
+            # включается только явно (стенд/разработка): ATS_ALLOW_SIM_FALLBACK=1.
+            if os.environ.get("ATS_ALLOW_SIM_FALLBACK") == "1":
+                print("[engine] Провайдер недоступен, ЯВНЫЙ переход на sim:", e)
+                from .telephony import SimProvider
+                self.provider = SimProvider()
+            else:
+                print("[engine] КРИТИЧНО: провайдер '{}' недоступен: {}".format(
+                    self.settings.get("provider", "?"), e))
+                print("[engine] Сервер остановлен. Проверьте настройки провайдера "
+                      "или задайте ATS_ALLOW_SIM_FALLBACK=1 для стенда.")
+                raise
         self.provider.attach(self._evq)
         self.crm = make_crm(self.settings)
         self._stop = threading.Event()
@@ -169,8 +180,16 @@ class Engine:
                 result = {"qualified": False, "engine": "llm_error", "summary": str(e)}
         else:
             ch = self.provider.make_channel(call["id"], call["contact_phone"])
-            result = agent_mod.run_scripted(ch, campaign["template_id"], contact)
-            result["engine"] = "scripted_l1"
+            if ch is None:
+                # Провайдер без интерактивного канала (не sim): голосовой диалог
+                # невозможен — фиксируем честный результат вместо падения.
+                result = {"qualified": False, "engine": "no_channel", "answers": [],
+                          "summary": "Провайдер '{}' не поддерживает голосовой диалог".format(
+                              getattr(self.provider, "name", "?")),
+                          "transcript": ""}
+            else:
+                result = agent_mod.run_scripted(ch, campaign["template_id"], contact)
+                result["engine"] = "scripted_l1"
         db.q("UPDATE calls SET agent_result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), call["id"]))
         db.insert("agent_sessions", {"call_id": call["id"], "scenario": "{}",
                                      "result": json.dumps(result, ensure_ascii=False),
@@ -420,15 +439,25 @@ class Engine:
             return False, "acd_not_queued"
         if operator_id:
             op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
+            if not op:
+                return False, "operator_not_found"
         else:
-            op = db.fetch1("SELECT * FROM operators WHERE status IN ('free','offline') ORDER BY id LIMIT 1")
-            if not op:  # демо: авто-оператор
-                op_id = db.insert("operators", {"user_id": 0, "name": "Оператор #{}".format(uuid.uuid4().hex[:4]),
-                                                "ext": "", "status": "busy", "updated": now_iso()})
-                op = db.fetch1("SELECT * FROM operators WHERE id=?", (op_id,))
-        if not op:
-            return False, "operator_not_found"
+            op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
+            if not op:
+                return False, "no_free_operator"
         operator_id = op["id"]
+        # Сначала реальное соединение (если провайдер умеет бридж), и только
+        # потом — статусы «ок». Иначе в базе «успешно», а по факту тишина.
+        connect = getattr(self.provider, "connect_operator", None)
+        if connect and op.get("ext"):
+            try:
+                connect(acd["call_id"], op["ext"])
+            except Exception as e:
+                print("[acd] connect_operator failed:", e)
+                db.q("UPDATE acd SET status='queued', operator_id=0, updated=? WHERE id=?",
+                     (now_iso(), acd_id))
+                events.publish("acd", {"id": acd_id, "status": "transfer_failed"})
+                return False, "transfer_failed"
         db.q("UPDATE acd SET status='accepted', operator_id=?, updated=? WHERE id=?",
              (operator_id, now_iso(), acd_id))
         db.q("UPDATE operators SET status='busy', updated=? WHERE id=?", (now_iso(), operator_id))
@@ -437,13 +466,6 @@ class Engine:
         item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (acd["item_id"],)) if acd["item_id"] else None
         if item:
             db.q("UPDATE campaign_items SET status='operator_ok', completed_at=? WHERE id=?", (now_iso(), item["id"]))
-        # Если провайдер умеет реально соединять с оператором (Asterisk/AMI) — инициируем бридж
-        try:
-            connect = getattr(self.provider, "connect_operator", None)
-            if connect and op.get("ext"):
-                connect(acd["call_id"], op["ext"])
-        except Exception as e:
-            print("[acd] connect_operator:", e)
         events.publish("acd", {"id": acd_id, "status": "accepted", "operator": op["name"]})
         return True, "ok"
 

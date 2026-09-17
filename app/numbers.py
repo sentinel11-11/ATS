@@ -4,7 +4,10 @@ import datetime
 
 from . import db
 
-TODAY = datetime.date.today().isoformat()
+def today():
+    """Текущая дата. Вызывается каждый раз заново (не кэшируется),
+    иначе после полуночи суточные лимиты считались бы по вчерашней дате."""
+    return datetime.date.today().isoformat()
 
 
 def reset_daily_if_needed():
@@ -12,8 +15,8 @@ def reset_daily_if_needed():
     with db._lock:
         rows = db.fetch("SELECT id, daily_date, daily_count FROM numbers")
         for r in rows:
-            if r["daily_date"] != TODAY and r["daily_count"]:
-                db.q("UPDATE numbers SET daily_count=0, daily_date=? WHERE id=?", (TODAY, r["id"]))
+            if r["daily_date"] != today() and r["daily_count"]:
+                db.q("UPDATE numbers SET daily_count=0, daily_date=? WHERE id=?", (today(), r["id"]))
 
 
 def _now_iso():
@@ -34,7 +37,7 @@ def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100)
     try:
         db.insert("numbers", {"number": number, "label": label, "kind": kind, "provider": provider,
                               "active": 1, "daily_limit": int(daily_limit), "weight": 1,
-                              "quarantined": 0, "cooldown_until": "", "daily_date": TODAY,
+                              "quarantined": 0, "cooldown_until": "", "daily_date": today(),
                               "daily_count": 0, "created": _now_iso()})
         return True, "ok"
     except Exception:
@@ -63,7 +66,7 @@ def acquire(provider="sim", cooldown_sec=0, exclude_ids=None):
     reset_daily_if_needed()
     exclude = exclude_ids or []
     now = _now_iso()
-    params = [provider, TODAY]
+    params = [provider, today()]
     excl = ""
     if exclude:
         excl = " AND id NOT IN ({})".format(",".join("?" * len(exclude)))
@@ -87,9 +90,9 @@ def mark_used(number_id, cooldown_sec):
         r = db.fetch1("SELECT daily_date, daily_count FROM numbers WHERE id=?", (number_id,))
         if not r:
             return
-        dc = r["daily_count"] + 1 if r["daily_date"] == TODAY else 1
+        dc = r["daily_count"] + 1 if r["daily_date"] == today() else 1
         db.q("UPDATE numbers SET daily_count=?, daily_date=?, cooldown_until=? WHERE id=?",
-             (dc, TODAY, cd, number_id))
+             (dc, today(), cd, number_id))
 
 
 def pool_state():

@@ -58,14 +58,15 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _static(self, rel):
-        # защита от path traversal
-        if rel != rel and (".." in rel or "\\" in rel):
-            rel = "index.html"
-        path = (STATIC_DIR / rel).resolve()
-        if not str(path).startswith(str(STATIC_DIR.resolve())):
-            path = STATIC_DIR / "index.html"
+        # защита от path traversal: файл обязан лежать внутри STATIC_DIR
+        root = STATIC_DIR.resolve()
+        try:
+            path = (root / rel).resolve()
+            path.relative_to(root)
+        except Exception:
+            path = root / "index.html"
         if not path.exists() or path.is_dir():
-            path = STATIC_DIR / "index.html"
+            path = root / "index.html"
         data = path.read_bytes()
         ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",

@@ -57,6 +57,25 @@ def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+MASK = "********"
+
+
+def _is_secret_key(key):
+    kl = str(key or "").lower()
+    if kl.endswith("_env"):
+        return False  # имя env-переменной (напр. api_key_env) — не секрет
+    return any(s in kl for s in ("api_key", "apikey", "secret", "token", "password", "passwd"))
+
+
+def _mask_secrets(obj):
+    if isinstance(obj, dict):
+        return {k: (MASK if _is_secret_key(k) and v else _mask_secrets(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask_secrets(x) for x in obj]
+    return obj
+
+
 def need_auth(headers, role=None):
     tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or ""
     s = security.get_session(tok)
@@ -108,7 +127,11 @@ def route(method, path, body, headers):
     if p == ["webhooks", "uis"] and method == "POST":
         s = db.get_settings()
         secret = (s.get("uis") or {}).get("webhook_secret", "")
-        if secret and headers.get("X-UIS-Secret", "") != secret:
+        if not secret:
+            # Production: вебхук без настроенного секрета отключён,
+            # иначе любой может слать события в движок.
+            return {"ok": False, "error": "webhook_disabled"}, 403
+        if headers.get("X-UIS-Secret", "") != secret:
             return {"ok": False, "error": "bad_secret"}, 403
         from .telephony import map_uis_webhook
         ev = map_uis_webhook(body)
@@ -230,7 +253,8 @@ def route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
-        return {"provider_config": {k: s.get(k) for k in ("uis", "ami", "llm", "bitrix24", "crm")}}, 200
+        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "llm", "bitrix24", "crm")})
+        return {"provider_config": masked}, 200
     if p == ["settings", "raw"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -238,7 +262,12 @@ def route(method, path, body, headers):
         cfg = body.get("provider_config") or body
         for k in ("uis", "ami", "llm", "bitrix24", "crm"):
             if isinstance(cfg.get(k), dict):
-                s[k] = cfg[k]
+                merged = dict(s.get(k) or {})
+                for fk, fv in cfg[k].items():
+                    if fv == MASK and fk in merged:
+                        continue  # плейсхолдер — секрет не менялся, оставить старый
+                    merged[fk] = fv
+                s[k] = merged
         db.save_settings(s)
         return OK, 200
     if p == ["operators"]:
@@ -836,6 +865,8 @@ def _settings_save(body, sess=None):
         salt = security.new_salt()
         db.q("UPDATE users SET salt=?, password_hash=? WHERE login=?",
              (salt, security.hash_password(body["new_password"], salt), login))
+        if login == "admin":
+            db.drop_initial_credentials()  # стартовый пароль из файла недействителен
     db.save_settings(s)
     return OK, 200
 
@@ -870,12 +901,10 @@ def _acd_accept(body):
     if uid:
         op = db.fetch1("SELECT * FROM operators WHERE id=?", (int(uid),))
     if not op and uid is None:
-        op = db.fetch1("SELECT * FROM operators WHERE status IN ('free','offline') ORDER BY id LIMIT 1")
+        op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
     if not op:
-        # создать виртуального оператора (демо без регистрации операторов)
-        op_id = db.insert("operators", {"user_id": 0, "name": "Оператор #{}".format(uuid.uuid4().hex[:4]),
-                                        "ext": "", "status": "busy", "updated": now_iso()})
-        op = db.fetch1("SELECT * FROM operators WHERE id=?", (op_id,))
+        # Production: виртуальных операторов не создаём — звонок ждёт свободного.
+        return {"ok": False, "error": "no_free_operator"}, 400
     ok, err = ENGINE.accept_acd(acd_id, op["id"])
     if not ok:
         return {"ok": False, "error": err}, 400

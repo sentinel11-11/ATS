@@ -368,8 +368,14 @@ def _seed_users():
     note = ("Логин: admin  Пароль: {}  (роль admin)\n"
             "СМЕНИТЕ ПАРОЛЬ АДМИНА в Настройках после первого входа.\n"
             "Операторов добавляет администратор: Настройки → Пользователи и операторы.").format(password)
-    (config.DATA_DIR / "initial_credentials.txt").write_text(note, encoding="utf-8")
-    print("[ATS v2] Создан администратор. Учётные данные записаны в data_v2/initial_credentials.txt")
+    cred_path = config.DATA_DIR / "initial_credentials.txt"
+    cred_path.write_text(note, encoding="utf-8")
+    try:
+        os.chmod(cred_path, 0o600)  # только владелец (на Windows игнорируется)
+    except Exception:
+        pass
+    print("[ATS v2] Создан администратор. Учётные данные записаны в {}".format(cred_path))
+    print("[ATS v2] Файл будет удалён автоматически после смены пароля администратора.")
     if generated:
         print("[ATS v2] Админ-пароль (сгенерирован):", password)
 
@@ -388,7 +394,16 @@ def set_admin_password(password: str) -> bool:
     salt = config_secure_salt()
     q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
       (salt, hash_password(password, salt), user["id"]))
+    drop_initial_credentials()  # пароль из файла больше недействителен — файл удаляем
     return True
+
+
+def drop_initial_credentials():
+    """Удалить файл стартовых учётных данных (после смены пароля админа)."""
+    try:
+        (config.DATA_DIR / "initial_credentials.txt").unlink()
+    except Exception:
+        pass
 
 
 def config_secure_salt():
