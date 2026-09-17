@@ -2,6 +2,7 @@
 """Точка входа ATS v2:
     python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami]
                       [--admin-password ..] [--init-only] [--clean-demo]
+                      [--list-users] [--set-password LOGIN PAROL]
 """
 import argparse
 import sys
@@ -46,6 +47,10 @@ def main(argv=None):
                     help="Сменить пароль администратора (admin) и запустить сервер; с --init-only — только сменить")
     ap.add_argument("--clean-demo", action="store_true",
                     help="Удалить демо-данные (сид-контакты, «Демо-кампания», демо-оператора) и выйти")
+    ap.add_argument("--list-users", action="store_true",
+                    help="Показать пользователей (логин, роль, доступ) и выйти")
+    ap.add_argument("--set-password", nargs=2, default=None, metavar=("LOGIN", "PAROL"),
+                    help="Сменить пароль пользователя и выйти: --set-password operator1 NovyjParol123")
     args = ap.parse_args(argv)
 
     db.init_db()
@@ -61,6 +66,29 @@ def main(argv=None):
             print("[ATS v2] Пароль администратора (admin) обновлён.")
         else:
             print("[ATS v2] Пользователь admin не найден — пароль не изменён.")
+    if args.list_users:
+        rows = db.fetch("SELECT u.login, u.role, u.active, o.name AS op_name, o.ext "
+                        "FROM users u LEFT JOIN operators o ON o.user_id=u.id ORDER BY u.id")
+        if not rows:
+            print("[ATS v2] Пользователей нет.")
+        for r in rows:
+            print("[ATS v2] {:<16} роль={:<8} доступ={} {}".format(
+                r["login"], r["role"], "да" if r["active"] else "НЕТ",
+                ("(" + (r["op_name"] or "") + (", внутр. " + r["ext"] if r["ext"] else "") + ")")
+                if r["op_name"] else ""))
+        return 0
+    if args.set_password:
+        login, pwd = args.set_password
+        if len(pwd) < 6:
+            print("[ATS v2] Пароль слишком короткий (минимум 6 символов) — не изменён.")
+            return 1
+        if db.set_user_password(login, pwd):
+            print("[ATS v2] Пароль пользователя '{}' обновлён.".format(
+                str(login).strip().lower()))
+        else:
+            print("[ATS v2] Пользователь '{}' не найден — пароль не изменён.".format(login))
+            return 1
+        return 0
     st = db.get_settings()
     if args.provider:
         st["provider"] = args.provider

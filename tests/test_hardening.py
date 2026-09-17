@@ -307,6 +307,36 @@ class TestHardeningHttp(unittest.TestCase):
         finally:
             _restore_settings(snap)
 
+    def test_login_case_insensitive(self):
+        tok = self._token()
+        st, _ = self.call("POST", "/api/v2/users/save",
+                          {"login": "HardCase1", "role": "operator",
+                           "password": "HardCase123!", "name": "Регистр Тест",
+                           "ext": "103"}, token=tok)
+        self.assertEqual(st, 200)
+        row = db.fetch1("SELECT login FROM users WHERE login='hardcase1'")
+        self.assertTrue(row)
+        for variant in ("HardCase1", "HARDCASE1", "hardcase1"):
+            st, raw = self.call("POST", "/api/v2/auth/login",
+                                {"login": variant, "password": "HardCase123!"})
+            self.assertEqual(st, 200, variant)
+            self.assertEqual(json.loads(raw)["role"], "operator")
+
+    def test_cli_set_password_recovery(self):
+        tok = self._token()
+        st, _ = self.call("POST", "/api/v2/users/save",
+                          {"login": "hardcli1", "role": "operator",
+                           "password": "HardCli123!", "name": "CLI"}, token=tok)
+        self.assertEqual(st, 200)
+        st, _ = self.call("POST", "/api/v2/auth/login",
+                          {"login": "hardcli1", "password": "WrongPass"})
+        self.assertEqual(st, 403)
+        self.assertTrue(db.set_user_password("HARDcli1", "NewHard456!"))
+        st, raw = self.call("POST", "/api/v2/auth/login",
+                            {"login": "hardcli1", "password": "NewHard456!"})
+        self.assertEqual(st, 200)
+        self.assertFalse(db.set_user_password("no-such-user", "xxx"))
+
     def test_static_traversal_blocked(self):
         st, raw = self.call("GET", "/ui/../../app/db.py")
         self.assertEqual(st, 200)

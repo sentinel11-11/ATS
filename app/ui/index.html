@@ -890,9 +890,9 @@ function showGate(){
 }
 async function doLogin(){
   const btn=$('gateBtn');btn.disabled=true;$('gateErr').textContent='';
-  const j=await safe(()=>api('/auth/login',{body:{login:$('login').value.trim(),password:$('password').value}}));
+  const j=await safe(()=>api('/auth/login',{body:{login:$('login').value.trim().toLowerCase(),password:$('password').value}}));
   btn.disabled=false;
-  if(j&&j.ok){state.token=j.token;state.role=j.role;state.login=j.login||$('login').value.trim();
+  if(j&&j.ok){state.token=j.token;state.role=j.role;state.login=j.login||$('login').value.trim().toLowerCase();
     localStorage.setItem('ats_token',j.token);enterApp();}
   else if(j&&j.retry_after_sec){$('gateErr').textContent='Слишком много попыток. Подождите '+j.retry_after_sec+' с.';}
   else $('gateErr').textContent='Неверный логин или пароль';

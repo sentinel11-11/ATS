@@ -108,7 +108,9 @@ def route(method, path, body, headers):
     p = parts[2:]
     # ---------- auth ----------
     if p == ["auth", "login"]:
-        login = str(body.get("login", ""))
+        # Логины хранятся строчными (см. _user_save) — приводим и при входе,
+        # иначе "Operator1" не найдёт "operator1" -> ложный bad_login.
+        login = str(body.get("login", "")).strip().lower()
         password = str(body.get("password", ""))
         allowed, retry_after = _login_allowed(login)
         if not allowed:

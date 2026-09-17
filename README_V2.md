@@ -69,7 +69,7 @@ app/
   server.py     HTTP-сервер: статика app/ui, API, SSE
   run.py        CLI: python -m app.run
   ui/index.html одностраничный UI (vanilla JS)
-tests/          unittest-набор (55 тестов: безопасность, БД, пул, E2E движка, HTTP API,
+tests/          unittest-набор (57 тестов: безопасность, БД, пул, E2E движка, HTTP API,
                 протокол AMI, вебхуки UIS, ACD-watchdog, базы/импорт, hardening)
 data_v2/        runtime (БД, логи, записи, CRM-выгрузка) — создаётся автоматически
 data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип, не используется v2)

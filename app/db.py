@@ -385,17 +385,25 @@ def gen_admin_pwd():
     return gen_admin_password()
 
 
-def set_admin_password(password: str) -> bool:
-    """Сброс/смена пароля администратора (login 'admin'). True, если обновлено."""
+def set_user_password(login: str, password: str) -> bool:
+    """Сброс/смена пароля любого пользователя (CLI-восстановление доступа).
+    True, если обновлено."""
     from .security import hash_password
-    user = fetch1("SELECT id FROM users WHERE login='admin'")
+    login = str(login or "").strip().lower()
+    user = fetch1("SELECT id FROM users WHERE login=?", (login,))
     if not user:
         return False
     salt = config_secure_salt()
     q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
       (salt, hash_password(password, salt), user["id"]))
-    drop_initial_credentials()  # пароль из файла больше недействителен — файл удаляем
+    if login == "admin":
+        drop_initial_credentials()  # пароль из файла больше недействителен — файл удаляем
     return True
+
+
+def set_admin_password(password: str) -> bool:
+    """Сброс/смена пароля администратора (login 'admin'). True, если обновлено."""
+    return set_user_password("admin", password)
 
 
 def drop_initial_credentials():

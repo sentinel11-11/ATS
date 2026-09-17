@@ -192,7 +192,7 @@ T01 (ответ UIS) → T13/T14 (телефония) → T15 (дымовой т
 | T08 REST API v2 + авторизация/роли | ✅ | `app/api.py`, `app/security.py`, `app/server.py` |
 | T09 Базовый UI v2 | ✅ | `app/ui/index.html` |
 | T10 События/SSE | ✅ | `app/events.py`, `/api/v2/events` |
-| T11 Тесты | ✅ 55 тестов (ядро, пул, E2E, HTTP API, AMI, вебхуки, ACD, базы/импорт, hardening) | `tests/test_ats_v2.py`, `tests/test_telephony_extra.py`, `tests/test_import_db.py`, `tests/test_hardening.py` |
+| T11 Тесты | ✅ 57 тестов (ядро, пул, E2E, HTTP API, AMI, вебхуки, ACD, базы/импорт, hardening) | `tests/test_ats_v2.py`, `tests/test_telephony_extra.py`, `tests/test_import_db.py`, `tests/test_hardening.py` |
 | T12 Перенос данных legacy | ✅ (контакты/шаблоны при первом старте) | `app/db._import_legacy` |
 | T13 Интерфейс провайдера + каркас UIS | ✅ интерфейс/фабрика; ⏳ транспорт UIS по ответу T01 | `app/telephony.py` |
 | T14 Медиа-слой Asterisk | ⏳ каркас AMI (заполнить по T01) | `app/telephony.py` |
