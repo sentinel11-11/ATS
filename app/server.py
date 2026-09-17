@@ -2,6 +2,7 @@
 """HTTP-сервер ATS v2: статика (app/ui), REST API v2, SSE для событий."""
 import json
 import re
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -158,8 +159,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(payload, status)
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Глушит штатный сетевой шум: клиент разорвал соединение раньше,
+    чем сервер успел ответить (WinError 10053, reset/pipe). Это не ошибка
+    программы — браузеры, антивирусы и сканеры сети так делают регулярно."""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ConnectionError):
+            return
+        super().handle_error(request, client_address)
+
+
 def create_server(host, port):
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = QuietHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     httpd.allow_reuse_address = True
     return httpd

@@ -247,5 +247,5 @@ python -m app.run
 python -m unittest discover -s tests
 ```
 
-Состояние: **54/54 проходят** (движок, телефония, watchdog, записи,
+Состояние: **55/55 проходят** (движок, телефония, watchdog, записи,
 endpoints, чистый старт/clean-demo, базы/импорт Excel, hardening).

@@ -316,5 +316,30 @@ class TestHardeningHttp(unittest.TestCase):
         self.assertIn("html", raw.lower())
 
 
+class TestQuietServer(unittest.TestCase):
+    def test_connection_noise_silenced_real_errors_shown(self):
+        import io
+        from contextlib import redirect_stderr
+        from app.server import create_server
+        srv = create_server("127.0.0.1", 0)
+        try:
+            try:
+                raise ConnectionAbortedError(10053, "teardown")
+            except OSError:
+                buf = io.StringIO()
+                with redirect_stderr(buf):
+                    srv.handle_error(None, ("127.0.0.1", 1))
+                self.assertEqual(buf.getvalue(), "")
+            try:
+                raise ValueError("boom")
+            except ValueError:
+                buf = io.StringIO()
+                with redirect_stderr(buf):
+                    srv.handle_error(None, ("127.0.0.1", 1))
+                self.assertIn("ValueError", buf.getvalue())
+        finally:
+            srv.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()
