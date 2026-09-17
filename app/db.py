@@ -240,7 +240,8 @@ CREATE TABLE IF NOT EXISTS calls(
   rating INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_calls_started ON calls(started_at);
-CREATE INDEX IF NOT EXISTS ix_calls_provider_ext ON calls(provider, external_call_id);
+-- ix_calls_provider_ext — только в _migrate() (после ALTER): на старых БД
+-- колонки external_call_id ещё нет в момент executescript(SCHEMA).
 CREATE TABLE IF NOT EXISTS provider_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   provider TEXT NOT NULL DEFAULT '',

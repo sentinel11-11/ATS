@@ -257,5 +257,88 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(mine["op_vats"], "manager")
 
 
+class MigrationTest(unittest.TestCase):
+    """Регрессия: init_db на СТАРОЙ БД (таблицы без новых колонок) не падает.
+
+    Ловит ошибку «индекс по новой колонке в SCHEMA»: на существующих БД
+    CREATE TABLE IF NOT EXISTS колонок не добавляет, и CREATE INDEX падает
+    с no such column. Индексы по новым колонкам — только в _migrate()."""
+
+    _OLD_SCHEMA = """
+CREATE TABLE calls(id INTEGER PRIMARY KEY AUTOINCREMENT,
+campaign_id INTEGER NOT NULL DEFAULT 0, item_id INTEGER NOT NULL DEFAULT 0,
+contact_id INTEGER NOT NULL DEFAULT 0, contact_name TEXT NOT NULL DEFAULT '',
+contact_phone TEXT NOT NULL DEFAULT '', caller_id TEXT NOT NULL DEFAULT '',
+number_id INTEGER NOT NULL DEFAULT 0, provider TEXT NOT NULL DEFAULT '',
+direction TEXT NOT NULL DEFAULT 'out', status TEXT NOT NULL DEFAULT 'new',
+result TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '',
+agent_result TEXT NOT NULL DEFAULT '', recording TEXT NOT NULL DEFAULT '',
+started_at TEXT NOT NULL DEFAULT '', answered_at TEXT NOT NULL DEFAULT '',
+ended_at TEXT NOT NULL DEFAULT '', duration_sec INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE numbers(id INTEGER PRIMARY KEY AUTOINCREMENT,
+number TEXT UNIQUE NOT NULL, label TEXT NOT NULL DEFAULT '',
+kind TEXT NOT NULL DEFAULT 'mobile', provider TEXT NOT NULL DEFAULT 'sim',
+active INTEGER NOT NULL DEFAULT 1, daily_limit INTEGER NOT NULL DEFAULT 100,
+weight INTEGER NOT NULL DEFAULT 1, quarantined INTEGER NOT NULL DEFAULT 0,
+cooldown_until TEXT NOT NULL DEFAULT '', daily_date TEXT NOT NULL DEFAULT '',
+daily_count INTEGER NOT NULL DEFAULT 0, created TEXT);
+CREATE TABLE operators(id INTEGER PRIMARY KEY AUTOINCREMENT,
+user_id INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL DEFAULT '',
+ext TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'offline',
+updated TEXT);
+"""
+
+    def test_old_db_migrates(self):
+        import pathlib as _pl
+        import sqlite3
+        tmp = _pl.Path(tempfile.mkdtemp(prefix="ats_mig_")) / "old.db"
+        c = sqlite3.connect(str(tmp))
+        c.executescript(self._OLD_SCHEMA)
+        c.execute("INSERT INTO calls(contact_phone,status) VALUES ('79000000001','done')")
+        c.commit()
+        c.close()
+        old_path, old_conn = config.DB_PATH, db._conn
+        try:
+            try:
+                if old_conn is not None:
+                    old_conn.close()
+            except Exception:
+                pass
+            db._conn = None
+            config.DB_PATH = tmp
+            db.init_db()  # главная проверка: не падает
+            cols = [r["name"] for r in db.fetch("PRAGMA table_info(calls)")]
+            for col in ("external_call_id", "diversion", "provider_user",
+                        "recording_url", "external_status", "wait_sec",
+                        "missed_status", "rating"):
+                self.assertIn(col, cols)
+            idx = [r["name"] for r in
+                   db.fetch("SELECT name FROM sqlite_master WHERE type='index'")]
+            for ix in ("ix_calls_provider_ext", "ux_provider_events_fp",
+                       "ix_provider_events_call"):
+                self.assertIn(ix, idx)
+            tbl = [r["name"] for r in
+                   db.fetch("SELECT name FROM sqlite_master WHERE type='table'")]
+            for t in ("provider_events", "vats_users", "vats_groups"):
+                self.assertIn(t, tbl)
+            ncols = [r["name"] for r in db.fetch("PRAGMA table_info(numbers)")]
+            for col in ("carrier", "provider_ref", "enabled_outgoing"):
+                self.assertIn(col, ncols)
+            self.assertIn("vats_login", [r["name"] for r in
+                                         db.fetch("PRAGMA table_info(operators)")])
+            rows = db.fetch("SELECT * FROM calls")
+            self.assertEqual(len(rows), 1)  # данные пользователя целы
+            self.assertEqual(rows[0]["contact_phone"], "79000000001")
+            db.init_db()  # идемпотентность
+        finally:
+            try:
+                if db._conn is not None:
+                    db._conn.close()
+            except Exception:
+                pass
+            db._conn = None
+            config.DB_PATH = old_path
+
+
 if __name__ == "__main__":
     unittest.main()
