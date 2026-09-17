@@ -181,6 +181,8 @@ def route(method, path, body, headers):
         # Как и UIS: только в очередь, обработка — тиком движка.
         ENGINE.push_event(ev)
         return OK, 200
+    if p == ["health"] and method == "GET":
+        return _health(), 200
     if p == ["auth", "me"]:
         sess2, err2, code2 = need_auth(headers)
         if err2:
@@ -328,6 +330,18 @@ def route(method, path, body, headers):
                 "groups": db.fetch(
             "SELECT group_id,name,ext,call_order,updated "
             "FROM vats_groups ORDER BY name")}, 200
+    if p == ["health", "details"]:
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _health_details(), 200
+    if p == ["megafon", "check"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _megafon_check_route()
+    if p == ["megafon", "simulate-event"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _megafon_simulate_route(body)
     if p == ["operators"]:
         return {"operators": ENGINE.operators()}, 200
     if p == ["acd"]:
@@ -701,6 +715,113 @@ def _truthy(v):
 
 
 # ---------------- пользователи и операторы (админ) ----------------
+def _health():
+    """Публичный health (§52 ТЗ): только флаги, никаких секретов."""
+    from .providers.base import resolve_secret
+    db_ok = False
+    try:
+        db.fetch1("SELECT 1")
+        db_ok = True
+    except Exception:
+        pass
+    prov = getattr(ENGINE, "provider", None) if ENGINE else None
+    pname = getattr(prov, "name", "") if prov is not None else ""
+    connected = False
+    if prov is not None:
+        if pname == "ami":
+            try:
+                connected = bool(getattr(getattr(prov, "client", None),
+                                         "connected", False))
+            except Exception:
+                connected = False
+        else:
+            # sim/uis/megafon_vats: persistent-соединения нет (REST/эмуляция);
+            # «подключён» = провайдер сконфигурирован. Живость API ВАТС —
+            # отдельным POST /megafon/check (там реальные чтения).
+            connected = True
+    s = {}
+    try:
+        s = db.get_settings()
+    except Exception:
+        pass
+    wh_megafon = bool(resolve_secret(s.get("megafon_vats") or {}, "crm_token",
+                                     "crm_token_env", "ATS_MEGAFON_CRM_TOKEN"))
+    wh_uis = bool((s.get("uis") or {}).get("webhook_secret", ""))
+    eng_ok = ENGINE is not None
+    return {"ok": bool(db_ok and eng_ok), "db": db_ok, "engine": eng_ok,
+            "telephony": {"provider": pname, "connected": connected},
+            "webhook": bool(wh_megafon or wh_uis), "timestamp": now_iso()}
+
+
+def _health_details():
+    """Расширенный health для админа: маскированный конфиг, счётчики."""
+    h = _health()
+    s = db.get_settings()
+    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami")})
+    today = now_iso()[:10]
+    try:
+        calls_today = db.fetch1(
+            "SELECT COUNT(*) c FROM calls WHERE started_at>=?",
+            (today + " 00:00:00",))["c"]
+        items_queued = db.fetch1(
+            "SELECT COUNT(*) c FROM campaign_items WHERE status='queued'")["c"]
+        ops_free = db.fetch1(
+            "SELECT COUNT(*) c FROM operators WHERE status='free'")["c"]
+        pool_total = db.fetch1(
+            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats'")["c"]
+        pool_usable = db.fetch1(
+            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats' "
+            "AND active=1 AND quarantined=0 AND enabled_outgoing=1")["c"]
+        vats_users = db.fetch1("SELECT COUNT(*) c FROM vats_users")["c"]
+        vats_groups = db.fetch1("SELECT COUNT(*) c FROM vats_groups")["c"]
+    except Exception:
+        calls_today = items_queued = ops_free = -1
+        pool_total = pool_usable = vats_users = vats_groups = -1
+    thread_alive = bool(ENGINE is not None and ENGINE.is_running())
+    return {"health": h, "engine_thread": thread_alive,
+            "provider_config": masked,
+            "webhooks": {"megafon": bool(h["webhook"] and
+                                         (masked.get("megafon_vats") or {}).get(
+                                             "crm_token")),
+                         "uis": bool((s.get("uis") or {}).get("webhook_secret"))},
+            "stats": {"calls_today": calls_today, "items_queued": items_queued,
+                      "operators_free": ops_free,
+                      "pool_megafon": {"total": pool_total, "usable": pool_usable},
+                      "vats_users": vats_users, "vats_groups": vats_groups},
+            "settings": {k: s.get(k) for k in
+                         ("provider", "max_channels", "retry_max",
+                          "window_start", "window_end")}}
+
+
+def _megafon_check_route():
+    from .providers.base import ProviderApiError
+    from .telephony import ProviderNotConfigured
+    try:
+        rep = ENGINE.megafon_check()
+    except ProviderNotConfigured as e:
+        return {"ok": False, "error": "vats_not_configured",
+                "detail": str(e)[:300]}, 400
+    except ProviderApiError as e:
+        return {"ok": False, "error": "vats_error",
+                "detail": str(e)[:300]}, 502
+    if rep.get("ok"):
+        return {"ok": True, "report": rep}, 200
+    return {"ok": False, "error": "vats_error", "report": rep}, 502
+
+
+def _megafon_simulate_route(body):
+    """Локальная симуляция вебхука ВАТС (admin, БЕЗ crm_token): прогнать
+    входящий/историю через движок без живой ВАТС. Только для стенда/отладки."""
+    from .providers.megafon_vats import (map_megafon_webhook,
+                                         webhook_fingerprint)
+    ev = map_megafon_webhook(body or {})
+    if not ev:
+        return {"ok": False, "error": "unrecognized"}, 422
+    ev["fingerprint"] = webhook_fingerprint(ev)
+    ENGINE.push_event(ev)
+    return {"ok": True, "event": {k: v for k, v in ev.items() if k != "raw"}}, 200
+
+
 def _megafon_sync_route(kind, body):
     from .providers.base import ProviderApiError
     from .telephony import ProviderNotConfigured

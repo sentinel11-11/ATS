@@ -587,6 +587,28 @@ class Engine:
         print("[megafon] синк отделов: {}".format(upserted))
         return {"total": len(groups), "upserted": upserted}
 
+    def is_running(self):
+        t = self._thread
+        return bool(t is not None and t.is_alive())
+
+    def megafon_check(self):
+        """Живая проверка связи с ВАТС (§51 ТЗ): три опорных чтения.
+        Возвращает {"ok", "stages", ...}; первое упавшее чтение — в failed_stage
+        с конкретным статусом/деталью (401/таймаут/DNS — из клиента)."""
+        from .providers.base import ProviderApiError
+        client = self._megafon_client()
+        stages = {}
+        for name, fn in (("users", lambda: client.get_users(limit=1)),
+                         ("telnums", lambda: client.get_telnums(limit=1)),
+                         ("caller_ids", client.get_caller_id_telnums)):
+            try:
+                stages[name] = {"ok": True, "sample": fn()}
+            except ProviderApiError as e:
+                stages[name] = {"ok": False, "status": e.status,
+                                "detail": str(e)[:300]}
+                return {"ok": False, "failed_stage": name, "stages": stages}
+        return {"ok": True, "stages": stages}
+
     def _duration(self, call):
         st = _iso_to_dt(call.get("answered_at") or call.get("started_at"))
         if not st:

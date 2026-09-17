@@ -65,6 +65,18 @@
     Проверьте `COMPLETED` без `ACCEPTED` (сброс во время гудков) — звонок
     должен уйти в `failed`+ретрай, а не зависнуть.
 
+## 0. Быстрые проверки tooling'ом (до звонков)
+
+- `GET /api/v2/health` (без токена): `"db": true, "engine": true`,
+  `"telephony.provider": "megafon_vats"`, `"webhook": true`.
+- `POST /api/v2/megafon/check` (admin): все три stage `ok` — иначе
+  в `failed_stage` конкретная причина (401/таймаут/DNS).
+- `POST /api/v2/megafon/pool-sync` с `{"dry_run": true}`: сверить план
+  с панелью ВАТС, затем без `dry_run` — применить.
+- `POST /api/v2/megafon/users-sync`, `/groups-sync`, `GET /megafon/directory`.
+- `POST /api/v2/megafon/simulate-event` (admin, стенд): прогнать INCOMING/
+  history через движок без живой ВАТС.
+
 ## Критерии приёмки
 
 - [ ] Шаги 6–8: чтения совпадают с панелью

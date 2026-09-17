@@ -16,7 +16,7 @@ ATS v2 — переработанное ядро старого прототип
   - `agent` — ИИ-агент: сценарный диалог L1 (вопросы/ответы 1–2) либо LLM L2 (OpenAI-совместимый, если настроен `llm`); квалифицированных — на оператора;
   - `operator` — сразу перевод на оператора (ACD-очередь).
 - **ACD (перевод на сотрудника)**: операторы, статусы, очередь, принять/завершить, контекст (кто звонил, ответы бота).
-- **Телефония за интерфейсом `TelephonyProvider`**: `sim` (симуляция, работает без оборудования), `uis` (UIS/МегаФон «Ювис», каркас), `ami` (Asterisk, каркас).
+- **Телефония за интерфейсом `TelephonyProvider`**: `sim` (симуляция), `uis` (каркас), `ami` (Asterisk/AMI), `megafon_vats` (МегаФон ВАТС REST API: makecall, вебхуки, синки пула/справочников; медиа нет — только `flow=operator`).
 - **CRM за интерфейсом `CrmDriver`**: `csv` (файловый экспорт результатов, работает сейчас), `bitrix24` (каркас).
 - **Безопасность**: обязательная авторизация (X-Ats-Token), роли admin/operator, PBKDF2, пароль админа генерируется при первом запуске.
 - **Хранение**: SQLite (WAL), журнал попыток (1 звонок = N попыток), события + SSE в UI.
@@ -58,6 +58,7 @@ app/
   db.py         SQLite: схема, миграции, сиды, импорт legacy data/*.json, settings
   security.py   пароли (PBKDF2), токены, роли
   events.py     шина событий + SSE
+  providers/    Подключаемые провайдеры: megafon_vats.py (REST-клиент ВАТС /crmapi/v1 + провайдер)
   telephony.py  TelephonyProvider: SimProvider (работает), UIS (Call API HTTP+вебхуки),
                 AsteriskAmiProvider (AMI-клиент) — реализация транспорта
   asterisk.py   AMI-клиент Asterisk (протокол Manager API: кодек, action, события)
@@ -96,6 +97,13 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 | GET/POST `/api/v2/settings`; GET/POST `/api/v2/settings/raw` (админ) | Настройки; конфигурация uis/ami/llm/crm/bitrix24 |
 | POST `/api/v2/sim/script` | Задание исхода симуляции для номера |
 | POST `/api/v2/webhooks/uis` | Вебхук UIS (статусы звонков), опц. секрет `uis.webhook_secret` (заголовок `X-UIS-Secret`) |
+| POST `/api/v2/webhooks/megafon` | Вебхук ВАТС МегаФон (form: event/history/contact/rating), секрет `crm_token` в теле |
+| GET `/api/v2/health` | Публичный health (БД/движок/провайдер/вебхук, без секретов) |
+| GET `/api/v2/health/details` | Health для админа (маскированный конфиг, счётчики) |
+| POST `/api/v2/megafon/check` | Живая проверка связи с ВАТС (users/telnums/caller-ids) |
+| POST `/api/v2/megafon/pool-sync` | Сверить пул с ВАТС (`dry_run`) |
+| POST `/api/v2/megafon/users-sync`, `/groups-sync` | Снапшоты сотрудников/отделов |
+| POST `/api/v2/megafon/simulate-event` | Симуляция вебхука ВАТС (стенд, без токена) |
 | POST `/api/v2/calls/recording` | Загрузить запись разговора и привязать к звонку (admin; JSON: call_id, filename, data_b64) |
 | GET `/api/v2/calls/{id}/recording` | Скачать/слушать запись (auth: заголовок или ?token=) |
 | GET `/api/v2/events?token=...` | SSE: события call/item/acd/campaign/agent |
@@ -108,7 +116,12 @@ data/, server.py, xp_bridge/, static/  — LEGACY (старый прототип
 
 Звонок (calls): `dialing → ringing → answered → (talk|agent|wait_operator) → done`, плюс результат и детали; для агента — `agent_result` (JSON: qualified, answers, transcript, engine).
 
-## 6. Подключение реальной телефонии (UIS / Asterisk) — по шагам T01/T13/T14
+## 6. Подключение реальной телефонии
+
+### 6.0 МегаФон ВАТС (реализовано, ждёт живой стенд)
+Настройки → provider_config `megafon_vats`: `base_url=https://{domain}`, `api_key` (панель ВАТС → «Ключ для авторизации в АТС») или env `ATS_MEGAFON_API_KEY`, `crm_token` или env `ATS_MEGAFON_CRM_TOKEN`, `default_user` (логин сотрудника для callback). Callback URL в панели ВАТС: `https://<домен>/api/v2/webhooks/megafon`. Порядок: `POST /megafon/check` → `pool-sync` → `users-sync` → кампании `flow=operator`. Полный чек-лист — `LIVE_TEST_MEGAFON.md`. Ограничения: нет аудиоканала (`flow=message/agent-скрипт` честно завершаются `no_media`/`no_channel`), CallerID выбирает ВАТС (сверка clid в логе), `responsible` в `contact` пока не отдаём.
+
+### 6.1 UIS / Asterisk — по шагам T01/T13/T14
 
 1. Запросите у UIS: SIP-линии/транк на существующие номера, либо Call API (ключ, URL, лимиты) — письмо-черновик в `ДОРОЖНАЯ_КАРТА_ATS.md` (Приложение A).
 2. Заполните конфигурацию: UI → Настройки → «Провайдеры и интеграции (JSON)», например:
