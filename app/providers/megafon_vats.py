@@ -433,3 +433,144 @@ class MegafonVatsProvider(TelephonyProvider):
     def make_channel(self, call_id, phone):
         # Аудиоканала в REST API нет (§6 ТЗ) — честный None вместо притворства.
         return None
+
+
+# ---------- Вебхуки ВАТС → ATS (стадия 2): нормализация ----------
+# ВАТС шлёт POST application/x-www-form-urlencoded с полями cmd/crm_token/...
+# на единую точку; в ответ ждёт JSON. События движка — нормализованные:
+# движок НЕ знает про crm_token/diversion/telnum (§3 ТЗ).
+
+# event.type → событие движка (сырец сохраняется в norm["raw_type"])
+MEGAFON_EVENT_MAP = {
+    "INCOMING": "ring",        # поступил входящий (у менеджера звонит телефон)
+    "OUTGOING": "ring",        # менеджер совершает исходящий (дозвон до клиента)
+    "ACCEPTED": "answered",    # трубку сняли; для исходящего callback — см. допущение ниже
+    "COMPLETED": "done",       # разговор завершён (положили трубку после разговора)
+    "CANCELLED": "canceled",    # сброшен до ответа / не дождался
+    "TRANSFERRED": "transferred",
+}
+
+# history.status → (result движка, retryable); сравнение — case-insensitive:
+# в доке "Success", но "missed" строчными (§2.1). Inbound missed обрабатывается
+# отдельно (задача «перезвонить»), out missed = клиент не взял трубку.
+MEGAFON_HISTORY_MAP = {
+    "success": ("ok", True),       # ok резолвится по flow вызывающей стороной
+    "missed": ("missed", False),   # in: пропущенный; out: перемаппится в no_answer
+    "cancel": ("failed", True),
+    "busy": ("busy", True),
+    "notavailable": ("no_answer", True),
+    "notallowed": ("failed", False),  # запрет направления — ретраи бессмысленны
+    "notfound": ("failed", False),    # нет такого SIP-номера — чинить конфиг
+}
+
+
+def parse_vats_start(ts):
+    """YYYYmmddTHHMMSSZ (UTC) → локальное 'YYYY-MM-DD HH:MM:SS'. '' при мусоре."""
+    import datetime as _dt
+    s = str(ts or "").strip()
+    try:
+        d = _dt.datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=_dt.timezone.utc)
+        return d.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return ""
+
+
+def phone_variants(phone):
+    """Варианты написания номера для поиска контакта (digits/+/8↔7)."""
+    d = _digits(phone)
+    out = []
+    for v in (d, "+" + d if d else ""):
+        if v and v not in out:
+            out.append(v)
+    if len(d) == 11 and d[0] in ("7", "8"):
+        alt = ("8" if d[0] == "7" else "7") + d[1:]
+        for v in (alt, "+" + alt):
+            if v not in out:
+                out.append(v)
+    return out
+
+
+def _num(v, default=0):
+    try:
+        return int(float(str(v).strip() or default))
+    except (TypeError, ValueError):
+        return default
+
+
+def map_megafon_webhook(form):
+    """Нормализовать form-вебхук ВАТС в событие движка (dict) или None.
+
+    Возвращает нормализованное событие; engine работает только с ним.
+    cmd=contact здесь НЕ обрабатывается (требует синхронного ответа с именем —
+    его отдаёт HTTP-хендлер напрямую, см. app/api.py).
+    """
+    f = {str(k): ("" if v is None else str(v)) for k, v in (form or {}).items()}
+    cmd = f.get("cmd", "").strip().lower()
+    if cmd in ("", "contact"):
+        return None
+    callid = f.get("callid", "").strip()
+    if not callid and cmd in ("event", "history", "rating"):
+        return None
+    norm = {"provider": "megafon_vats", "cmd": cmd, "external_call_id": callid,
+            "phone": f.get("phone", "").strip(), "raw": dict(f)}
+    if cmd == "event":
+        raw_type = f.get("type", "").strip().upper()
+        if raw_type not in MEGAFON_EVENT_MAP:
+            return None
+        direction = f.get("direction", "").strip().lower()
+        if direction not in ("in", "out"):
+            # direction обязателен по доку, но страхуемся выводом из типа
+            direction = "out" if raw_type == "OUTGOING" else "in" if raw_type == "INCOMING" else ""
+        norm.update({"event": MEGAFON_EVENT_MAP[raw_type], "raw_type": raw_type,
+                     "direction": direction, "user": f.get("user", "").strip(),
+                     "diversion": f.get("diversion", "").strip(),
+                     "group": f.get("groupRealName", "").strip(),
+                     "telnum": f.get("telnum", "").strip(),
+                     "second_callid": f.get("second_callid", "").strip()})
+        return norm
+    if cmd == "history":
+        htype = f.get("type", "").strip().lower()
+        if htype not in ("in", "out"):
+            return None
+        norm.update({"event": "history", "direction": htype,
+                     "user": f.get("user", "").strip(),
+                     "diversion": f.get("diversion", "").strip(),
+                     "group": f.get("groupRealName", "").strip(),
+                     "telnum": f.get("telnum", "").strip(),
+                     "status": f.get("status", "").strip().lower(),
+                     "start": parse_vats_start(f.get("start")),
+                     "duration": _num(f.get("duration")),
+                     "wait": _num(f.get("wait")),
+                     "rating": _num(f.get("rating")),
+                     "missed_status": f.get("missedStatus", "").strip(),
+                     "record_url": f.get("link", "").strip()})
+        return norm
+    if cmd == "rating":
+        norm.update({"event": "rating", "phone": f.get("phone", "").strip(),
+                     "rating": _num(f.get("rating")),
+                     "user": f.get("user", "").strip(),
+                     "direction": "in"})
+        return norm
+    if cmd == "webhook":
+        # Пока единственный тип — sipregs_error (§15.6/§18): неуспешная
+        # SIP-регистрация. Звонков не касается — алерт администратору.
+        norm.update({"event": "provider_webhook",
+                     "webhook_type": f.get("type", "").strip(),
+                     "data": f.get("data", "")})
+        return norm
+    return None
+
+
+def webhook_fingerprint(norm):
+    """Устойчивый отпечаток события для идемпотентности (§21 ТЗ):
+    sha256 по стабильным полям. Повторная доставка того же вебхука
+    даёт тот же отпечаток и не обрабатывается дважды."""
+    import hashlib
+    n = norm or {}
+    parts = [str(n.get("provider", "")), str(n.get("cmd", "")),
+             str(n.get("raw_type") or n.get("event") or ""),
+             str(n.get("external_call_id", "")), str(n.get("phone", "")),
+             str(n.get("direction", "")), str(n.get("status", "")),
+             str(n.get("start", "")), str(n.get("duration", "")),
+             str(n.get("rating", "")), str(n.get("webhook_type", ""))]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()

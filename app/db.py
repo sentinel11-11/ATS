@@ -203,9 +203,31 @@ CREATE TABLE IF NOT EXISTS calls(
   started_at TEXT NOT NULL DEFAULT '',
   answered_at TEXT NOT NULL DEFAULT '',
   ended_at TEXT NOT NULL DEFAULT '',
-  duration_sec INTEGER NOT NULL DEFAULT 0
+  duration_sec INTEGER NOT NULL DEFAULT 0,
+  external_call_id TEXT NOT NULL DEFAULT '',
+  diversion TEXT NOT NULL DEFAULT '',
+  provider_user TEXT NOT NULL DEFAULT '',
+  recording_url TEXT NOT NULL DEFAULT '',
+  external_status TEXT NOT NULL DEFAULT '',
+  wait_sec INTEGER NOT NULL DEFAULT 0,
+  missed_status TEXT NOT NULL DEFAULT '',
+  rating INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_calls_started ON calls(started_at);
+CREATE INDEX IF NOT EXISTS ix_calls_provider_ext ON calls(provider, external_call_id);
+CREATE TABLE IF NOT EXISTS provider_events(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  external_call_id TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  received_at TEXT NOT NULL DEFAULT '',
+  processed_at TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'new'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_events_fp ON provider_events(fingerprint);
+CREATE INDEX IF NOT EXISTS ix_provider_events_call ON provider_events(provider, external_call_id);
 CREATE TABLE IF NOT EXISTS attempts(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   call_id INTEGER NOT NULL DEFAULT 0,
@@ -323,6 +345,46 @@ def _migrate(c):
         c.commit()
     except Exception:
         pass
+    # МегаФон ВАТС, стадия 2: корреляция по внешнему callid, журнал
+    # провайдерских событий (идемпотентность), привязка операторов.
+    callcols = [r[1] for r in c.execute("PRAGMA table_info(calls)").fetchall()]
+    for col, ddl in (("external_call_id", "TEXT NOT NULL DEFAULT ''"),
+                     ("diversion", "TEXT NOT NULL DEFAULT ''"),
+                     ("provider_user", "TEXT NOT NULL DEFAULT ''"),
+                     ("recording_url", "TEXT NOT NULL DEFAULT ''"),
+                     ("external_status", "TEXT NOT NULL DEFAULT ''"),
+                     ("wait_sec", "INTEGER NOT NULL DEFAULT 0"),
+                     ("missed_status", "TEXT NOT NULL DEFAULT ''"),
+                     ("rating", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in callcols:
+            c.execute("ALTER TABLE calls ADD COLUMN {} {}".format(col, ddl))
+            c.commit()
+    opcols = [r[1] for r in c.execute("PRAGMA table_info(operators)").fetchall()]
+    if "vats_login" not in opcols:
+        c.execute("ALTER TABLE operators ADD COLUMN vats_login TEXT NOT NULL DEFAULT ''")
+        c.commit()
+    c.execute("CREATE TABLE IF NOT EXISTS provider_events("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+              "provider TEXT NOT NULL DEFAULT '',"
+              "fingerprint TEXT NOT NULL DEFAULT '',"
+              "external_call_id TEXT NOT NULL DEFAULT '',"
+              "event_type TEXT NOT NULL DEFAULT '',"
+              "payload_json TEXT NOT NULL DEFAULT '{}',"
+              "received_at TEXT NOT NULL DEFAULT '',"
+              "processed_at TEXT NOT NULL DEFAULT '',"
+              "status TEXT NOT NULL DEFAULT 'new')")
+    c.commit()
+    for idx in ("CREATE INDEX IF NOT EXISTS ix_calls_provider_ext "
+                "ON calls(provider, external_call_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_events_fp "
+                "ON provider_events(fingerprint)",
+                "CREATE INDEX IF NOT EXISTS ix_provider_events_call "
+                "ON provider_events(provider, external_call_id)"):
+        try:
+            c.execute(idx)
+            c.commit()
+        except Exception:
+            pass
 
 
 def _seed_templates():

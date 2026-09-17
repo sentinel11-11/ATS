@@ -53,8 +53,18 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0 or n > MAX_BODY:
             return {}
+        raw = self.rfile.read(n)
+        ctype = str(self.headers.get("Content-Type", "") or "").lower()
+        if "application/x-www-form-urlencoded" in ctype:
+            # Вебхуки ВАТС (МегаФон и др.): form, а не JSON. Значения — первые.
+            try:
+                from urllib.parse import parse_qsl
+                return {k: v for k, v in parse_qsl(raw.decode("utf-8", "ignore"),
+                                                  keep_blank_values=True)}
+            except Exception:
+                return {}
         try:
-            return json.loads(self.rfile.read(n).decode("utf-8", "ignore"))
+            return json.loads(raw.decode("utf-8", "ignore"))
         except Exception:
             return {}
 

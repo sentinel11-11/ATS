@@ -119,6 +119,10 @@ class Engine:
         return got
 
     def handle_event(self, ev):
+        if ev.get("provider") == "megafon_vats" and ev.get("call_id") is None:
+            # Нормализованное событие ВАТС: корреляция по external_call_id —
+            # наш call_id ещё не резолвлен (см. _on_megafon).
+            return self._on_megafon(ev)
         evt = ev.get("event")
         call_id = ev.get("call_id")
         call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
@@ -146,6 +150,334 @@ class Engine:
                  (now_iso(), self._duration(call), call_id))
             events.publish("call", {"id": call_id, "status": "done", "phone": call["contact_phone"]})
 
+    # ---------- МегаФон ВАТС: нормализованные события (без нашего call_id) ----------
+    def _on_megafon(self, ev):
+        """Корреляция по external_call_id + дедуп по fingerprint (§21 ТЗ)."""
+        fp = ev.get("fingerprint") or ""
+        if fp and db.fetch1("SELECT id FROM provider_events WHERE fingerprint=?", (fp,)):
+            print("[megafon] дубль вебхука {} — пропущен".format(fp[:12]))
+            return
+        if fp:
+            db.insert("provider_events", {
+                "provider": "megafon_vats", "fingerprint": fp,
+                "external_call_id": ev.get("external_call_id", ""),
+                "event_type": ev.get("raw_type") or ev.get("event", ""),
+                "payload_json": json.dumps(ev.get("raw") or {}, ensure_ascii=False),
+                "received_at": now_iso(), "processed_at": "", "status": "new"})
+        kind = ev.get("event")
+        if kind == "history":
+            return self._megafon_history(ev, fp)
+        if kind == "rating":
+            return self._megafon_rating(ev, fp)
+        if kind == "provider_webhook":
+            print("[megafon] webhook {}: {}".format(ev.get("webhook_type"), ev.get("data")))
+            events.publish("system", {"kind": "vats_webhook",
+                                      "type": ev.get("webhook_type"),
+                                      "data": ev.get("data")})
+            return self._megafon_mark(fp, "done")
+        call = self._megafon_resolve(ev.get("external_call_id"))
+        if not call and kind == "ring" and ev.get("direction") == "in" \
+                and ev.get("raw_type") == "INCOMING":
+            call = self._megafon_incoming(ev)
+        if not call:
+            print("[megafon] orphan {} {}: звонок не найден".format(
+                kind, ev.get("external_call_id")))
+            return self._megafon_mark(fp, "orphan")
+        item = db.fetch1("SELECT * FROM campaign_items WHERE id=?",
+                         (call["item_id"],)) if call["item_id"] else None
+        if kind == "ring":
+            if call["status"] != "done":
+                db.q("UPDATE calls SET status='ringing', diversion=?, provider_user=? "
+                     "WHERE id=?", (ev.get("diversion", ""), ev.get("user", ""), call["id"]))
+                if item and item.get("status") in ("queued", "dialing"):
+                    db.update("campaign_items", {"status": "dialing"}, "id=?", (item["id"],))
+                events.publish("call", {"id": call["id"], "status": "ringing",
+                                        "phone": call["contact_phone"]})
+            return self._megafon_mark(fp, "done")
+        if kind == "answered":
+            if call["status"] == "done":
+                return self._megafon_mark(fp, "done")
+            if (call.get("direction") or "out") == "in":
+                # Входящий: разговор идёт на стороне ВАТС, flow нет (нет кампании).
+                # Через _on_answered НЕ вести — там message-ветка «доставит»
+                # сообщение и повесит трубку живого разговора.
+                db.q("UPDATE calls SET status='answered', answered_at=? WHERE id=?",
+                     (now_iso(), call["id"]))
+                events.publish("call", {"id": call["id"], "status": "answered",
+                                        "phone": call["contact_phone"], "direction": "in"})
+                return self._megafon_mark(fp, "done")
+            # Исходящий: клиент на линии (допущение: ACCEPTED для callback-плеча —
+            # ответ клиента; сверяется на живом стенде, см. LIVE_TEST_MEGAFON.md).
+            ev = dict(ev, call_id=call["id"], human=True)
+            self.handle_event(ev)
+            return self._megafon_mark(fp, "done")
+        if kind == "done":
+            return self._megafon_completed(call, item, ev, fp)
+        if kind == "canceled":
+            return self._megafon_canceled(call, item, ev, fp)
+        if kind == "transferred":
+            db.q("UPDATE calls SET detail=? WHERE id=?",
+                 (("переведён (second_callid={})".format(ev.get("second_callid"))
+                   if ev.get("second_callid") else "переведён на другого сотрудника")[:300],
+                  call["id"]))
+            events.publish("call", {"id": call["id"], "status": call["status"],
+                                    "phone": call["contact_phone"], "transferred": True})
+            return self._megafon_mark(fp, "done")
+        print("[megafon] неизвестное нормализованное событие: {}".format(kind))
+        return self._megafon_mark(fp, "done")
+
+    def _megafon_mark(self, fp, status):
+        if fp:
+            db.q("UPDATE provider_events SET status=?, processed_at=? WHERE fingerprint=?",
+                 (status, now_iso(), fp))
+
+    def _megafon_resolve(self, external_id):
+        if not external_id:
+            return None
+        return db.fetch1("SELECT * FROM calls WHERE provider='megafon_vats' "
+                         "AND external_call_id=? ORDER BY id DESC LIMIT 1", (external_id,))
+
+    def _megafon_contact(self, phone):
+        from .providers.megafon_vats import phone_variants
+        for variant in phone_variants(phone):
+            if not variant:
+                continue
+            c = db.fetch1("SELECT * FROM contacts WHERE phone=?", (variant,))
+            if c:
+                return c
+        return None
+
+    def _megafon_incoming(self, ev):
+        """Новый входящий звонок: карточка (SSE) + запись журнала. Без автосоздания
+        контакта (не спамим базу) и без ACD (маршрутизирует сама ВАТС)."""
+        contact = self._megafon_contact(ev.get("phone"))
+        call_id = db.insert("calls", {
+            "campaign_id": 0, "item_id": 0, "contact_id": contact["id"] if contact else 0,
+            "contact_name": contact["name"] if contact else "",
+            "contact_phone": ev.get("phone", ""), "caller_id": "", "number_id": 0,
+            "provider": "megafon_vats", "external_call_id": ev.get("external_call_id", ""),
+            "direction": "in", "status": "ringing", "result": "", "detail": "",
+            "agent_result": "", "recording": "", "started_at": now_iso(), "answered_at": "",
+            "ended_at": "", "duration_sec": 0, "diversion": ev.get("diversion", ""),
+            "provider_user": ev.get("user", "")})
+        events.publish("call", {"id": call_id, "status": "ringing",
+                                "phone": ev.get("phone", ""), "direction": "in",
+                                "contact_name": contact["name"] if contact else "",
+                                "incoming": True})
+        return db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+
+    def _megafon_completed(self, call, item, ev, fp):
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        if not call or call["status"] == "done":
+            return self._megafon_mark(fp, "done")
+        direction = call.get("direction") or "out"
+        if direction == "in":
+            if call.get("answered_at"):
+                db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, "
+                     "result='done_ok', detail=? WHERE id=?",
+                     (now_iso(), self._duration(call), "Входящий: разговор завершён",
+                      call["id"]))
+                self._push_crm(call, "done_ok")
+                events.publish("call", {"id": call["id"], "status": "done",
+                                        "phone": call["contact_phone"]})
+            else:
+                self._megafon_missed_in(call, "завершён без ответа (COMPLETED)")
+            return self._megafon_mark(fp, "done")
+        # Исходящий: разговор на стороне ВАТС завершён.
+        if not call.get("answered_at") and call.get("status") in ("new", "dialing", "ringing"):
+            self._finish_attempt(call, item, "failed", "Завершён ВАТС без ответа",
+                                 retryable=True)
+            return self._megafon_mark(fp, "done")
+        campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?",
+                             (call["campaign_id"],)) if call["campaign_id"] else None
+        flow = (campaign or {}).get("flow") or "message"
+        if flow == "operator":
+            db.q("UPDATE acd SET status='completed', updated=? "
+                 "WHERE call_id=? AND status IN ('queued','accepted')", (now_iso(), call["id"]))
+            self._finish_attempt(call, item, "operator_ok", "Разговор завершён (ВАТС)",
+                                 ok=True)
+        else:
+            # agent финиширует на ответе; сюда попадает только при потере ACCEPTED.
+            self._finish_attempt(call, item, "done_ok", "Разговор завершён (ВАТС)",
+                                 ok=True)
+        return self._megafon_mark(fp, "done")
+
+    def _megafon_canceled(self, call, item, ev, fp):
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        if not call or call["status"] == "done":
+            return self._megafon_mark(fp, "done")
+        if call.get("answered_at") or call.get("status") not in (
+                "new", "dialing", "ringing", "wait_operator"):
+            # Обрыв после ответа (или в очереди ACD после бриджа) — был разговор.
+            return self._megafon_completed(call, item, ev, fp)
+        if (call.get("direction") or "out") == "in":
+            self._megafon_missed_in(call, "отменён до ответа (CANCELLED)")
+        else:
+            self._finish_attempt(call, item, "failed", "Отменён ВАТС до ответа (CANCELLED)",
+                                 retryable=True)
+        return self._megafon_mark(fp, "done")
+
+    def _megafon_missed_in(self, call, reason):
+        """Пропущенный входящий: журнал + задача «перезвонить» в CRM."""
+        db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? "
+             "WHERE id=?", (now_iso(), reason[:200], call["id"]))
+        try:
+            self.crm.create_task(
+                "Перезвонить клиенту",
+                "Пропущенный входящий {} {} (звонок #{}, ВАТС {}) — {}".format(
+                    call.get("contact_name", ""), call.get("contact_phone", ""),
+                    call["id"], call.get("external_call_id", ""), reason))
+        except Exception as e:
+            print("[crm] create_task:", e)
+        self._push_crm(call, "missed")
+        events.publish("call", {"id": call["id"], "status": "missed",
+                                "phone": call["contact_phone"], "direction": "in"})
+
+    def _megafon_history(self, ev, fp):
+        """History-пуш: ground truth от ВАТС. Топ-ап фактов + финализация,
+        если движок её пропустил (потеряно COMPLETED)."""
+        from .providers.megafon_vats import MEGAFON_HISTORY_MAP
+        call = self._megafon_resolve(ev.get("external_call_id"))
+        raw = ev.get("raw") or {}
+        st = (ev.get("status") or "").lower()
+        if not call:
+            # Журнальная запись из пуша (напр. пропущенный без INCOMING):
+            # звонок создаём, контакт — нет.
+            contact = self._megafon_contact(ev.get("phone"))
+            started = ev.get("start") or now_iso()
+            try:
+                import datetime as _dt
+                ended = (_dt.datetime.strptime(started, "%Y-%m-%d %H:%M:%S")
+                         + _dt.timedelta(seconds=int(ev.get("duration") or 0))
+                         ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                ended = now_iso()
+            result, detail = self._megafon_history_result(st, ev.get("direction"), None)
+            call_id = db.insert("calls", {
+                "campaign_id": 0, "item_id": 0,
+                "contact_id": contact["id"] if contact else 0,
+                "contact_name": contact["name"] if contact else "",
+                "contact_phone": ev.get("phone", ""), "caller_id": "", "number_id": 0,
+                "provider": "megafon_vats",
+                "external_call_id": ev.get("external_call_id", ""),
+                "direction": ev.get("direction") or "in", "status": "done",
+                "result": result, "detail": detail, "agent_result": "", "recording": "",
+                "started_at": started,
+                "answered_at": started if result in ("ok", "done_ok", "operator_ok") else "",
+                "ended_at": ended, "duration_sec": int(ev.get("duration") or 0),
+                "diversion": ev.get("diversion", ""),
+                "provider_user": ev.get("user", ""),
+                "recording_url": ev.get("record_url", ""),
+                "external_status": raw.get("status", ""),
+                "wait_sec": int(ev.get("wait") or 0),
+                "missed_status": ev.get("missed_status", ""),
+                "rating": int(ev.get("rating") or 0)})
+            call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+            if result == "missed":
+                try:
+                    self.crm.create_task(
+                        "Перезвонить клиенту",
+                        "Пропущенный входящий {} {} (звонок #{}, ВАТС {})".format(
+                            call.get("contact_name", ""), call.get("contact_phone", ""),
+                            call["id"], call.get("external_call_id", "")))
+                except Exception as e:
+                    print("[crm] create_task:", e)
+            self._push_crm(call, result)
+            events.publish("call", {"id": call["id"], "status": result,
+                                    "phone": call["contact_phone"]})
+            return self._megafon_mark(fp, "done")
+        # Топ-ап: непустое из ВАТС побеждает (ground truth точнее наших часов).
+        upd, args = [], []
+        for col, val in (("recording_url", ev.get("record_url")),
+                         ("external_status", raw.get("status")),
+                         ("diversion", ev.get("diversion")),
+                         ("provider_user", ev.get("user")),
+                         ("missed_status", ev.get("missed_status"))):
+            if val:
+                upd.append(col + "=?")
+                args.append(str(val)[:500])
+        for col, val in (("duration_sec", ev.get("duration")),
+                         ("wait_sec", ev.get("wait")), ("rating", ev.get("rating"))):
+            if int(val or 0) > 0:
+                upd.append(col + "=?")
+                args.append(int(val))
+        if upd:
+            args.append(call["id"])
+            db.q("UPDATE calls SET {} WHERE id=?".format(", ".join(upd)), tuple(args))
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        if call["status"] == "done":
+            # Сверка: ВАТС говорит «провал», а мы зафиксировали «разговор» —
+            # правим результат звонка (позицию кампании не переоткрываем,
+            # чтобы не плодить дубли дозвонов и CRM-пушей).
+            mapped = MEGAFON_HISTORY_MAP.get(st)
+            if mapped and mapped[0] not in ("ok", "missed") and not mapped[1] \
+                    and call.get("result") in ("operator_ok", "done_ok"):
+                db.q("UPDATE calls SET result=?, detail=? WHERE id=?",
+                     (mapped[0], "history ВАТС: {}".format(raw.get("status", ""))[:200],
+                      call["id"]))
+                print("[megafon] history скорректировала результат звонка {}: {} "
+                      "(было {})".format(call["id"], mapped[0], call.get("result")))
+            return self._megafon_mark(fp, "done")
+        campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?",
+                             (call["campaign_id"],)) if call["campaign_id"] else None
+        flow = (campaign or {}).get("flow") or "message"
+        if st == "success" and flow == "message" and call.get("direction") == "out":
+            # Сообщение не озвучивалось (нет медиа) — done_ok было бы ложью.
+            self._finish_attempt(call, None, "no_media",
+                                 "flow=message невозможен на ВАТС (нет аудио)", retryable=False)
+            return self._megafon_mark(fp, "done")
+        result, detail = self._megafon_history_result(
+            st, call.get("direction"), flow if call.get("direction") == "out" else None)
+        if result == "missed":
+            self._megafon_missed_in(call, "пропущенный (history ВАТС)")
+            return self._megafon_mark(fp, "done")
+        item = db.fetch1("SELECT * FROM campaign_items WHERE id=?",
+                         (call["item_id"],)) if call["item_id"] else None
+        if result == "ok":
+            ok_result = "operator_ok" if flow == "operator" else "done_ok"
+            self._finish_attempt(call, item, ok_result, detail, ok=True)
+        else:
+            _m = MEGAFON_HISTORY_MAP.get(st, ("failed", True))
+            self._finish_attempt(call, item, result, detail, retryable=_m[1])
+        return self._megafon_mark(fp, "done")
+
+    def _megafon_history_result(self, st, direction, flow):
+        from .providers.megafon_vats import MEGAFON_HISTORY_MAP
+        mapped = MEGAFON_HISTORY_MAP.get(st)
+        if not mapped:
+            print("[megafon] неизвестный history-статус {!r} — failed+ретрай".format(st))
+            return "failed", "Неизвестный статус history ВАТС: {}".format(st)
+        result, _retryable = mapped
+        if result == "ok":
+            if direction == "in":
+                return "done_ok", "Входящий: разговор завершён (history ВАТС)"
+            if flow == "operator":
+                return "ok", "Разговор завершён (history ВАТС)"
+            return "done_ok", "Разговор завершён (history ВАТС)"
+        if result == "missed":
+            if direction == "out":
+                return "no_answer", "Клиент не ответил (history ВАТС)"
+            return "missed", "Пропущенный входящий (history ВАТС)"
+        detail = {"failed": "Звонок не состоялся (history ВАТС: {})",
+                  "busy": "Занято (history ВАТС)",
+                  "no_answer": "Абонент недоступен (history ВАТС)"}.get(
+                      result, "history ВАТС: {}")
+        return result, detail.format(st)
+
+    def _megafon_rating(self, ev, fp):
+        call = self._megafon_resolve(ev.get("external_call_id"))
+        if not call:
+            print("[megafon] orphan rating {}: звонок не найден".format(
+                ev.get("external_call_id")))
+            return self._megafon_mark(fp, "orphan")
+        if int(ev.get("rating") or 0) > 0:
+            db.q("UPDATE calls SET rating=? WHERE id=?",
+                 (int(ev.get("rating")), call["id"]))
+        events.publish("call", {"id": call["id"], "status": call["status"],
+                                "phone": call["contact_phone"],
+                                "rating": int(ev.get("rating") or 0)})
+        return self._megafon_mark(fp, "done")
+
     def _duration(self, call):
         st = _iso_to_dt(call.get("answered_at") or call.get("started_at"))
         if not st:
@@ -165,6 +497,14 @@ class Engine:
                 print("[engine] mark_answered:", e)
         campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?", (call["campaign_id"],)) if call["campaign_id"] else None
         flow = (campaign or {}).get("flow") or "message"
+        if flow == "message" and (call.get("direction") or "out") == "out" \
+                and getattr(self.provider, "name", "") == "megafon_vats":
+            # REST API ВАТС не передаёт аудио: «доставить сообщение» нечем.
+            # Честный терминальный результат вместо ложного done_ok (§65 ТЗ).
+            self._finish_attempt(call, item, "no_media",
+                                 "flow=message невозможен: REST API ВАТС не передаёт аудио "
+                                 "(нужен Asterisk с медиа-слоем)", retryable=False)
+            return
         if flow == "operator":
             self._to_operator_queue(call, item, campaign)
         elif flow == "agent":
@@ -411,6 +751,19 @@ class Engine:
                  (now_iso(), str(e)[:300], call_id))
             self._finish_attempt(db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,)), item, "failed", str(e)[:200], retryable=True)
             return True
+        try:
+            _eid = getattr(self.provider, "external_id", None)
+            _ext = _eid(call_id) if callable(_eid) else {}
+        except Exception:
+            _ext = {}
+        if isinstance(_ext, dict) and _ext.get("callid"):
+            # Корреляция вебхуков переживает рестарт (иначе — orphan-события).
+            db.q("UPDATE calls SET external_call_id=? WHERE id=?",
+                 (str(_ext["callid"])[:64], call_id))
+            if _ext.get("clid"):
+                # Фактический исходящий номер от ВАТС честнее пулового.
+                db.q("UPDATE calls SET caller_id=? WHERE id=?",
+                     (str(_ext["clid"])[:32], call_id))
         numbers_mod.mark_used(num["id"], int(settings.get("line_cooldown_sec", 5)))
         events.publish("call", {"id": call_id, "status": "dialing", "phone": contact["phone"],
                                 "caller_id": num["number"], "campaign": camp["name"]})

@@ -144,6 +144,43 @@ def route(method, path, body, headers):
         # а повторная обработка тех же событий даст дубли.
         ENGINE.push_event(ev)
         return OK, 200
+    if p == ["webhooks", "megafon"] and method == "POST":
+        from .providers.base import resolve_secret
+        from .providers.megafon_vats import (map_megafon_webhook, phone_variants,
+                                             webhook_fingerprint)
+        s = db.get_settings()
+        mcfg = s.get("megafon_vats") or {}
+        expected = resolve_secret(mcfg, "crm_token", "crm_token_env",
+                                  "ATS_MEGAFON_CRM_TOKEN")
+        if not expected:
+            # Fail-closed: без настроенного crm_token вебхук отключён.
+            return {"ok": False, "error": "webhook_disabled"}, 403
+        if str((body or {}).get("crm_token") or "") != expected:
+            return {"ok": False, "error": "bad_secret"}, 403
+        cmd = str((body or {}).get("cmd") or "").strip().lower()
+        if cmd == "contact":
+            # Единственный синхронный ответ: ВАТС ждёт имя/ответственного
+            # прямо в HTTP-ответе (показ на телефоне, автораутинг).
+            # Только быстрый индексированный поиск — никакой тяжёлой работы.
+            c = None
+            for variant in phone_variants((body or {}).get("phone")):
+                if not variant:
+                    continue
+                c = db.fetch1("SELECT * FROM contacts WHERE phone=?", (variant,))
+                if c:
+                    break
+            if c and c.get("name"):
+                return {"contact_name": c["name"]}, 200
+            return {"contact_name": ""}, 200
+        ev = map_megafon_webhook(body or {})
+        if not ev:
+            return {"ok": False, "error": "unrecognized"}, 422
+        # Отпечаток для идемпотентности считает транспортный слой —
+        # движок использует его как opaque-строку (§3 ТЗ).
+        ev["fingerprint"] = webhook_fingerprint(ev)
+        # Как и UIS: только в очередь, обработка — тиком движка.
+        ENGINE.push_event(ev)
+        return OK, 200
     if p == ["auth", "me"]:
         sess2, err2, code2 = need_auth(headers)
         if err2:
