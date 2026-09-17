@@ -116,11 +116,8 @@ kbd{background:#0e1c31;border:1px solid var(--line2);border-bottom-width:2px;bor
 .input:focus,.select:focus,.textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(61,134,255,.22)}
 .textarea{resize:vertical;min-height:88px;font-family:var(--font);line-height:1.5}
 .input[type=time].input,input[type=number].input{width:auto;min-width:110px}
-/* время расписания: явно кликабельно */
-.input.tin{cursor:pointer;min-width:136px;font-variant-numeric:tabular-nums}
-.input.tin:hover{border-color:var(--acc);box-shadow:0 0 0 3px rgba(61,134,255,.15)}
-.input.tin::-webkit-calendar-picker-indicator{cursor:pointer;opacity:.85;margin-left:4px;filter:invert(62%) sepia(45%) saturate(500%) hue-rotate(185deg)}
-.timelab{color:var(--muted);font-size:13px;font-weight:600}
+/* поле времени редактируется как текст: курсор-палочка вместо стрелки */
+.input[type=time]{cursor:text}
 select.select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%239db4d2' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;cursor:pointer}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:0;border-radius:10px;padding:8.5px 15px;font-weight:600;font-size:13px;
@@ -618,9 +615,8 @@ body.is-admin .opOnly{display:none!important}
             <select id="sCrm" class="select ctl"><option value="csv">csv — файловая выгрузка</option><option value="bitrix24">bitrix24 — вебхук REST</option></select></div>
           <div class="fld"><span class="lbl">Ответ абонента в симуляции (по умолч.)</span><input id="sSimAns" class="input ctl" placeholder="1"></div>
           <div class="fld span2"><span class="lbl">Расписание звонков</span>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-              <span class="timelab">с</span><input id="sWinStart" type="time" class="input tin" title="Нажмите, чтобы выбрать время начала" onclick="pickTime(this)">
-              <span class="timelab">до</span><input id="sWinEnd" type="time" class="input tin" title="Нажмите, чтобы выбрать время окончания" onclick="pickTime(this)">
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+              <input id="sWinStart" type="time" class="input"><span class="muted">—</span><input id="sWinEnd" type="time" class="input">
               <span class="hint">локальное время сервера</span></div></div>
           <div class="fld span2"><span class="lbl">Дни недели</span><div class="dayschips" id="sDays"></div></div>
           <div class="span2"><label class="sw"><input id="sConsent" type="checkbox"><span class="trk"></span>Требовать согласие контакта на обзвон</label></div>
@@ -1820,7 +1816,6 @@ function renderDayChips(days){
 }
 function dayChip(ch){ch.closest('.daychip').classList.toggle('on',ch.checked);}
 function selectedDays(){return [...document.querySelectorAll('#sDays input:checked')].map(x=>parseInt(x.value));}
-function pickTime(el){try{if(el.showPicker){el.showPicker();return;}}catch(e){}el.focus();}
 async function loadSettings(){
   const j=await api('/settings');
   if(!j||!j.settings)return;
