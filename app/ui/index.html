@@ -158,6 +158,12 @@
           <input id="nNumber" class="input" placeholder="Номер E.164, напр. 79000000000" style="width:220px">
           <input id="nLabel" class="input" placeholder="Метка (офис 1, SIP-линия…)" style="width:170px">
           <input id="nLimit" class="input" type="number" value="100" style="width:110px" title="Суточный лимит звонков">
+          <select id="nProv" class="select" style="width:150px" title="Провайдер номера — должен совпадать с провайдером телефонии в настройках">
+            <option value="sim">sim</option>
+            <option value="uis">uis</option>
+            <option value="ami">ami</option>
+            <option value="megafon_vats">megafon_vats</option>
+          </select>
           <button class="btn" onclick="addNumber()">Добавить номер</button>
           <span class="pillmsg" id="numMsg"></span>
         </div>
@@ -251,6 +257,7 @@
           <div class="fld"><span class="lbl">Остывание номера после звонка, сек</span><input id="sCooldown" type="number" min="0" class="input ctl"></div>
           <div class="fld"><span class="lbl">Watchdog «зависших» звонков, мин</span><input id="sWatchdog" type="number" min="1" class="input ctl"></div>
           <div class="fld"><span class="lbl">Таймаут ожидания оператора, сек</span><input id="sAcdT" type="number" min="5" class="input ctl"><span class="hint">не ответил → no_operator + задача на перезвон</span></div>
+          <div class="fld"><span class="lbl">Страховка VATS-разговора, мин</span><input id="sVatsT" type="number" min="0" class="input ctl"><span class="hint">0 — выкл; нет финала от ВАТС → timeout+ретрай</span></div>
           <div class="fld"><span class="lbl">Жалоб до автокарантина номера</span><input id="sQuar" type="number" min="1" class="input ctl"></div>
           <div class="fld"><span class="lbl">CRM-драйвер</span>
             <select id="sCrm" class="select ctl"><option value="csv">csv — файловая выгрузка</option><option value="bitrix24">bitrix24 — вебхук REST</option></select></div>
@@ -276,13 +283,27 @@
 
       <div class="panel hidden" id="rawPanel">
         <h2>Провайдеры и интеграции <span class="badge y">только админ</span></h2>
-        <p class="hint" style="margin:0 0 10px">UIS (Call API/SIP), Asterisk AMI, LLM-агент, CRM/Bitrix24. Секреты показаны как ******** — не меняйте их, чтобы оставить. После изменения — перезапуск: python -m app.run.</p>
+        <p class="hint" style="margin:0 0 10px">UIS (Call API/SIP), Asterisk AMI, МегаФон ВАТС (base_url, api_key, crm_token, default_user), LLM-агент, CRM/Bitrix24. Секреты показаны как ******** — не меняйте их, чтобы оставить. После изменения — перезапуск: python -m app.run.</p>
         <textarea id="sRaw" class="textarea" style="min-height:210px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px"></textarea>
         <div class="toolbar" style="margin:10px 0 0">
           <button class="btn ghost sm" onclick="loadRawCfg()">Показать текущее</button>
           <button class="btn sm" onclick="saveRawCfg()">Сохранить конфигурацию</button>
           <span class="pillmsg" id="rawMsg"></span>
         </div>
+      </div>
+      <div class="panel hidden" id="vatsPanel">
+        <h2>МегаФон ВАТС — проверки и синхронизация <span class="badge y">только админ</span></h2>
+        <p class="hint" style="margin:0 0 10px">Живые чтения из ВАТС для сверки с панелью (шаги 6–8 LIVE) и синки справочников. Пул: сначала «План», сверьте, затем «Применить».</p>
+        <div class="toolbar" style="margin:0;flex-wrap:wrap;gap:8px">
+          <button class="btn ghost sm" onclick="vatsCheck()">Проверить связь</button>
+          <button class="btn ghost sm" onclick="vatsPool(true)">Пул: план</button>
+          <button class="btn ghost sm" onclick="vatsPool(false)">Пул: применить</button>
+          <button class="btn ghost sm" onclick="vatsSync('users')">Синк сотрудников</button>
+          <button class="btn ghost sm" onclick="vatsSync('groups')">Синк отделов</button>
+          <button class="btn ghost sm" onclick="vatsDir()">Справочник</button>
+          <span class="pillmsg" id="vatsMsg"></span>
+        </div>
+        <pre id="vatsOut" class="hidden" style="margin-top:10px;max-height:320px;overflow:auto;background:#0a1628;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;font-size:12px;white-space:pre-wrap"></pre>
       </div>
       <div class="panel hidden" id="passPanel">
         <h2>Смена пароля</h2>

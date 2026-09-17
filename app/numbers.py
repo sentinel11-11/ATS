@@ -148,7 +148,9 @@ def pool_state():
         cooling = bool(r["cooldown_until"]) and r["cooldown_until"] > now
         out.append({
             "id": r["id"], "number": r["number"], "label": r["label"], "kind": r["kind"],
-            "provider": r["provider"], "active": bool(r["active"]), "daily_limit": r["daily_limit"],
+            "provider": r["provider"], "active": bool(r["active"]),
+            "enabled_outgoing": bool(r["enabled_outgoing"]),
+            "daily_limit": r["daily_limit"],
             "weight": r["weight"], "quarantined": bool(r["quarantined"]),
             "cooldown_until": r["cooldown_until"], "cooling": cooling,
             "daily_date": r["daily_date"], "daily_count": r["daily_count"],

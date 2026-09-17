@@ -268,7 +268,10 @@ class Engine:
 
     def _megafon_completed(self, call, item, ev, fp):
         call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
-        if not call or call["status"] == "done":
+        if not call:
+            return self._megafon_mark(fp, "done")
+        if call["status"] == "done":
+            self._megafon_heal_no_operator(call, "COMPLETED ВАТС")
             return self._megafon_mark(fp, "done")
         direction = call.get("direction") or "out"
         if direction == "in":
@@ -332,6 +335,30 @@ class Engine:
         self._push_crm(call, "missed")
         events.publish("call", {"id": call["id"], "status": "missed",
                                 "phone": call["contact_phone"], "direction": "in"})
+
+    def _megafon_heal_no_operator(self, call, source):
+        """Гонка watchdog↔финал ВАТС: разговор состоялся (answered_at есть),
+        но watchdog уже закрыл звонок как no_operator. Правим результат звонка
+        по ground truth ВАТС. Позицию кампании и CRM не трогаем — та же
+        философия, что у history-downgrade (не плодим дубли дозвонов/пушей)."""
+        if not call or call.get("status") != "done" or call.get("result") != "no_operator" \
+                or not call.get("answered_at"):
+            return False
+        if (call.get("direction") or "out") == "in":
+            heal = "done_ok"
+        else:
+            campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?",
+                                 (call["campaign_id"],)) if call["campaign_id"] else None
+            flow = (campaign or {}).get("flow") or "message"
+            heal = "operator_ok" if flow == "operator" else "done_ok"
+        db.q("UPDATE calls SET result=?, detail=? WHERE id=?",
+             (heal, "разговор состоялся ({}), watchdog закрыл раньше".format(source)[:200],
+              call["id"]))
+        print("[megafon] heal звонка {}: no_operator → {} ({})".format(
+            call["id"], heal, source))
+        events.publish("call", {"id": call["id"], "status": "done", "result": heal,
+                                "phone": call.get("contact_phone", "")})
+        return True
 
     def _megafon_history(self, ev, fp):
         """History-пуш: ground truth от ВАТС. Топ-ап фактов + финализация,
@@ -417,6 +444,8 @@ class Engine:
                       call["id"]))
                 print("[megafon] history скорректировала результат звонка {}: {} "
                       "(было {})".format(call["id"], mapped[0], call.get("result")))
+            if mapped and mapped[0] == "ok":
+                self._megafon_heal_no_operator(call, "history ВАТС")
             return self._megafon_mark(fp, "done")
         campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?",
                              (call["campaign_id"],)) if call["campaign_id"] else None
@@ -914,11 +943,16 @@ class Engine:
                 self.provider.hangup(c["id"])
             except Exception:
                 pass
-        # ACD: оператор не принял звонок в срок -> no_operator + задача на перезвон
+        # ACD: оператор не принял звонок в срок -> no_operator + задача на перезвон.
+        # Исключение — исходящие makecall-разговоры МегаФона (external_call_id
+        # задан): там сотрудника с клиентом уже соединила сама ВАТС, «ожидания»
+        # нет — финал придёт через COMPLETED/history. Короткий таймаут их не
+        # трогает, иначе живой разговор ложно закроется как no_operator.
         acd_timeout_sec = int(settings.get("acd_wait_timeout_sec", 60))
         if acd_timeout_sec > 0:
             waiting = db.fetch(
-                "SELECT * FROM calls WHERE ended_at='' AND status='wait_operator' AND started_at<=?",
+                "SELECT * FROM calls WHERE ended_at='' AND status='wait_operator' AND started_at<=? "
+                "AND NOT (provider='megafon_vats' AND external_call_id<>'')",
                 (self._ago(acd_timeout_sec / 60.0),))
             for c in waiting:
                 item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (c["item_id"],)) if c["item_id"] else None
@@ -927,6 +961,25 @@ class Engine:
                     self.provider.hangup(c["id"])
                 except Exception:
                     pass
+        # Страховка для VATS-разговоров: если ВАТС не прислала финал
+        # (потерян вебхук, обрыв связи) — не висим в wait_operator вечно,
+        # а закрываем timeout+ретрай. Нормальный путь — COMPLETED/history,
+        # сюда попадаем только при потере событий.
+        vats_stuck_min = int(settings.get("vats_conversation_timeout_min", 30))
+        if vats_stuck_min > 0:
+            stuck = db.fetch(
+                "SELECT * FROM calls WHERE ended_at='' AND status='wait_operator' "
+                "AND provider='megafon_vats' AND external_call_id<>'' AND started_at<=?",
+                (self._ago(vats_stuck_min),))
+            for c in stuck:
+                item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (c["item_id"],)) if c["item_id"] else None
+                print("[megafon] СТРАХОВКА: звонок {} в wait_operator дольше {} мин "
+                      "без финала ВАТС — timeout+ретрай".format(c["id"], vats_stuck_min))
+                db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?",
+                     (now_iso(), c["id"]))
+                self._finish_attempt(c, item, "timeout",
+                                     "Нет финала от ВАТС за {} мин".format(vats_stuck_min),
+                                     retryable=True)
 
         # ACD: accept завис между фазами (обрыв HTTP, падение провайдера) —
         # возвращаем звонок в очередь, оператора освобождаем (если не на бридже).

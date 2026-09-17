@@ -178,6 +178,10 @@ def route(method, path, body, headers):
         # Отпечаток для идемпотентности считает транспортный слой —
         # движок использует его как opaque-строку (§3 ТЗ).
         ev["fingerprint"] = webhook_fingerprint(ev)
+        # Live-forensics: каждый вебхук виден в логе (сверка фаз ВАТС).
+        print("[megafon] webhook cmd={} ev={} callid={} dir={} user={}".format(
+            cmd, ev.get("event"), ev.get("external_call_id"),
+            ev.get("direction"), ev.get("user")))
         # Как и UIS: только в очередь, обработка — тиком движка.
         ENGINE.push_event(ev)
         return OK, 200
@@ -286,6 +290,27 @@ def route(method, path, body, headers):
             params.append(cid)
         rows = db.fetch("SELECT * FROM calls WHERE {} ORDER BY id DESC LIMIT {}".format(where, limit), params)
         return {"calls": rows}, 200
+    if p and len(p) == 3 and p[0] == "calls" and p[1].isdigit() and p[2] == "timeline" \
+            and method == "GET":
+        # Forensics звонка для live-отладки (шаг 13 LIVE): карточка звонка +
+        # все события ВАТС по external_call_id в порядке поступления + ACD-след.
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (int(p[1]),))
+        if not call:
+            return {"ok": False, "error": "not_found"}, 404
+        evs = []
+        if call.get("external_call_id"):
+            evs = db.fetch(
+                "SELECT fingerprint, event_type, external_call_id, received_at, "
+                "processed_at, status, payload_json FROM provider_events "
+                "WHERE external_call_id=? ORDER BY received_at, id",
+                (call["external_call_id"],))
+            for e in evs:
+                try:
+                    e["payload"] = json.loads(e.pop("payload_json") or "{}")
+                except Exception:
+                    e["payload"] = {}
+        acd = db.fetch("SELECT * FROM acd WHERE call_id=? ORDER BY id", (call["id"],))
+        return {"call": call, "events": evs, "acd": acd}, 200
     if p == ["blacklist"]:
         return {"blacklist": db.fetch("SELECT * FROM blacklist ORDER BY id DESC")}, 200
     if p == ["settings"]:
@@ -1096,6 +1121,7 @@ def _settings_save(body, sess=None):
         s["provider"] = pv  # "" = не настроен (fail-closed до явного выбора)
     for k in ("max_channels", "consent_required", "retry_max", "retry_delay_min",
               "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",
+              "vats_conversation_timeout_min",
               "window_start", "window_end", "sim_answer", "auto_quarantine_on_complaints",
               "sim_outcome", "crm"):
         if k in body:

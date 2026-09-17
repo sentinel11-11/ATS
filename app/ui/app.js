@@ -288,7 +288,7 @@ function numCard(n){
     <div style="min-width:0"><div class="num">${esc(n.number)}</div><div class="lbl">${esc(n.label||'без метки')}</div></div>
     <span class="acts">${isAdmin()?`<button class="iconbtn sm" style="width:30px;height:30px" data-a="editn" data-id="${n.id}" title="Изменить">${ico('edit')}</button>`:''}</span></div>
     <div class="meta"><span class="badge ${n.active?'g':'b'}">${n.active?'активен':'выключен'}</span>
-      <span class="badge b">${esc(n.provider)}</span>${n.quarantined?'<span class="badge r">карантин</span>':''}${n.cooling?'<span class="badge y">остывает</span>':''}</div>
+      <span class="badge b">${esc(n.provider)}</span>${n.quarantined?'<span class="badge r">карантин</span>':''}${n.cooling?'<span class="badge y">остывает</span>':''}${n.enabled_outgoing===false?'<span class="badge r" title="ВАТС запретила исходящие с номера (caller-ids)">исходящие запрещены</span>':''}</div>
     <div>${pbar(n.daily_count,n.daily_limit,barCls)}</div>
     ${isAdmin()?`<div class="toolbar" style="margin:2px 0 0"><button class="btn ghost sm" data-a="quar" data-id="${n.id}" data-on="${n.quarantined?0:1}">${n.quarantined?'Снять карантин':'Карантин'}</button>
       <button class="btn ghost sm" data-a="togglen" data-id="${n.id}" data-on="${n.active?0:1}">${n.active?'Выключить':'Включить'}</button></div>`:''}
@@ -494,12 +494,21 @@ function callPill(st){
   if(!st)return '<span class="badge">—</span>';
   return '<span class="badge r">'+esc(st)+'</span>';
 }
+function recLink(x){
+  // Запись ВАТС (внешняя ссылка из history) приоритетнее локального файла.
+  if(x.recording_url)return `<a class="iconbtn sm" style="width:29px;height:29px" href="${esc(x.recording_url)}" target="_blank" title="Слушать запись ВАТС">${ico('mic')}</a>`;
+  if(x.recording)return `<a class="iconbtn sm" style="width:29px;height:29px" href="/api/v2/calls/${x.id}/recording?token=${encodeURIComponent(state.token)}" target="_blank" title="Слушать запись">${ico('mic')}</a>`;
+  return '';
+}
+function extStatus(x){
+  return x.external_status?` <span class="badge b" title="Статус history ВАТС (ground truth)">ВАТС: ${esc(x.external_status)}</span>`:'';
+}
 async function contactCard(id){
   const j=await safe(()=>api('/contacts/history?id='+id));
   if(!j||!j.contact)return toast('Карточка недоступна','err');
   const c=j.contact,st=j.stats||{},calls=j.calls||[],items=j.items||[];
-  const ev=calls.map(x=>({t:x.started_at||'',h:`<b>Звонок #${x.id}</b> ${x.camp_name?`· ${esc(x.camp_name)}`:''} · с ${esc(x.caller_id||'—')}`,
-    b:`${callPill(x.result||x.status)} <span class="dim">${esc(x.started_at||'')} → ${esc(x.ended_at||'…')}${x.duration_sec?` · ${x.duration_sec} с`:''}${x.detail?` · ${esc(x.detail)}`:''}</span>`,
+  const ev=calls.map(x=>({t:x.started_at||'',h:`<b>Звонок #${x.id}</b> ${x.camp_name?`· ${esc(x.camp_name)}`:''} · с ${esc(x.caller_id||'—')} <span class="btn-row">${recLink(x)}</span>`,
+    b:`${callPill(x.result||x.status)}${extStatus(x)} <span class="dim">${esc(x.started_at||'')} → ${esc(x.ended_at||'…')}${x.duration_sec?` · ${x.duration_sec} с`:''}${x.detail?` · ${esc(x.detail)}`:''}</span>`,
     cls:/done_ok|operator_ok|qualified_yes/.test(x.result||'')?'ok':(/busy|no_answer|machine/.test(x.result||'')?'warn':(/failed|blocked|exhausted/.test(x.result||'')?'err':''))}));
   const it=items.map(x=>({t:x.updated||'',h:`<b>В кампании</b> ${x.camp_name?`«${esc(x.camp_name)}»`:''}`,
     b:`${callPill(x.last_result?x.status+': '+x.last_result:x.status)} <span class="dim">попыток: ${x.attempts||0}${x.next_attempt_at?` · след.: ${esc(x.next_attempt_at)}`:''}</span>`,cls:''}));
@@ -615,7 +624,7 @@ function editCampaign(c){
           <option value="message" ${c.flow==='message'?'selected':''}>Сообщение (озвучка)</option>
           <option value="agent" ${!c.flow||c.flow==='agent'?'selected':''}>ИИ-агент (квалификация)</option>
           <option value="operator" ${c.flow==='operator'?'selected':''}>Сразу на оператора</option></select></div>
-        <div class="fld"><span class="lbl">Шаблон / сценарий бота</span><select id="kTemplate" class="select ctl"><option value="0">— без шаблона —</option>${tpls.map(t=>`<option value="${t.id}" ${t.id==c.template_id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
+        <div class="fld"><span classect id="kTemplate" class="select ctl"><option value="0">— без шаблона —</option>${tpls.map(t=>`<option value="${t.id}" ${t.id==c.template_id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
         <div class="fld"><span class="lbl">Окно звонков: с</span><input id="kWs" type="time" class="input ctl" value="${esc((c.schedule&&c.schedule.start)||'08:00')}"></div>
         <div class="fld"><span class="lbl">Окно звонков: до</span><input id="kWe" type="time" class="input ctl" value="${esc((c.schedule&&c.schedule.end)||'20:00')}"></div>
         <div class="fld"><span class="lbl">Попыток на контакт</span><input id="kRetry" type="number" min="1" class="input ctl" value="${c.retry_max>=0?c.retry_max:''}" placeholder="по умолчанию"></div>
@@ -705,7 +714,7 @@ async function renderCampCalls(id){
       <td class="nowrap">${esc(x.caller_id)}</td><td class="num">${x.duration_sec?Math.round(x.duration_sec)+' с':''}</td>
       <td>${badge(x.result||x.status)}</td><td class="dim">${esc(shortAgent(x.agent_result))}</td>
       <td class="num"><span class="btn-row">
-      ${x.recording?`<a class="iconbtn sm" style="width:29px;height:29px" href="/api/v2/calls/${x.id}/recording?token=${encodeURIComponent(state.token)}" target="_blank" title="Слушать запись">${ico('mic')}</a>`:''}
+      ${recLink(x)}
       ${isAdmin()?`<button class="iconbtn sm" style="width:29px;height:29px" data-a="uprec" data-id="${x.id}" title="Загрузить запись">${ico('up')}</button>`:''}
       </span></td></tr>`).join('')
       ||`<tr><td colspan="8">${empty('phone','Звонков ещё нет','Запустите кампанию — звонки появятся здесь в реальном времени')}</td></tr>`}</table></div>`;
@@ -804,11 +813,12 @@ function editNum(id){
       <div class="fld"><span class="lbl">Метка</span><input id="eLabel" class="input ctl" value="${esc(n.label)}"></div>
       <div class="fld"><span class="lbl">Суточный лимит звонков</span><input id="eLimit" type="number" min="1" class="input ctl" value="${n.daily_limit}"></div>
       <div class="fld"><span class="lbl">Вес (приоритет)</span><input id="eWeight" type="number" min="1" class="input ctl" value="${n.weight||1}"></div>
+      <div class="fld"><span class="lbl">Провайдер</span><select id="eProv" class="select ctl">${['sim','uis','ami','megafon_vats'].map(p=>`<option value="${p}" ${n.provider===p?'selected':''}>${p}</option>`).join('')}</select></div>
     </div>
     <div class="form-actions"><button class="btn" onclick="saveNum(${id})">${ico('check')}Сохранить</button><button class="btn x" onclick="closeModal()">Отмена</button></div>`);
 }
 async function saveNum(id){
-  const j=await safe(()=>api('/numbers/save',{body:{id,number:$('eNum').value.trim(),label:$('eLabel').value,daily_limit:parseInt($('eLimit').value),weight:parseInt($('eWeight').value||1)}}));
+  const j=await safe(()=>api('/numbers/save',{body:{id,number:$('eNum').value.trim(),label:$('eLabel').value,daily_limit:parseInt($('eLimit').value),weight:parseInt($('eWeight').value||1),provider:$('eProv').value}}));
   if(j&&j.ok){closeModal();toast('Номер обновлён');await loadNumbers();safe(loadDash);}
   else toast('Ошибка','err');
 }
@@ -887,7 +897,7 @@ async function loadJournal(){
   const rows=j.calls||[];
   $('jCnt').textContent='· '+nFmt(rows.length);
   $('journalTable').innerHTML='<tr><th class="num">#</th><th>Время</th><th>Контакт</th><th>С номера</th><th class="num">Кампания</th><th>Длит.</th><th>Результат</th><th>Детали</th></tr>'+
-   rows.map(x=>`<tr><td class="dim">${x.id}</td><td class="nowrap">${dTxt(x.started_at)}</td>
+   rows.map(x=>`<tr><td class="dim"><a href="#" onclick="event.preventDefault();showTimeline(${x.id})" title="События ВАТС по звонку">${x.id}</a></td><td class="nowrap">${dTxt(x.started_at)}</td>
     <td style="min-width:0">${av(x.contact_name)}<span style="width:4px"></span>${esc(x.contact_name)}<div class="dim" style="font-size:11px">${esc(x.contact_phone)}</div></td>
     <td class="nowrap">${esc(x.caller_id)}</td><td class="num">#${x.campaign_id||''}</td><td class="num">${x.duration_sec?Math.round(x.duration_sec)+' с':''}</td>
     <td>${badge(x.result||x.status)}</td>
@@ -1165,9 +1175,10 @@ async function loadSettings(){
   $('sSimAns').value=s.sim_answer;
   $('sConsent').checked=!!s.consent_required;
   const ro=!isAdmin();
-  ['sProvider','sChannels','sRetryMax','sRetryDelay','sCooldown','sWatchdog','sAcdT','sQuar','sCrm','sSimAns','sWinStart','sWinEnd','sConsent'].forEach(i=>{const el=$(i);if(el)el.disabled=ro;});
+  ['sProvider','sChannels','sRetryMax','sRetryDelay','sCooldown','sWatchdog','sAcdT','sVatsT','sQuar','sCrm','sSimAns','sWinStart','sWinEnd','sConsent'].forEach(i=>{const el=$(i);if(el)el.disabled=ro;});
   document.querySelectorAll('#sDays input').forEach(x=>{x.disabled=ro;});
   $('rawPanel').classList.toggle('hidden',!isAdmin());
+  $('vatsPanel').classList.toggle('hidden',!isAdmin());
   $('passPanel').classList.remove('hidden');
   if(isAdmin())safe(()=>loadUsers());
 }
@@ -1205,6 +1216,62 @@ async function changePass(){
   const j=await safe(()=>api('/settings/save',{body:{new_password:v}}));
   if(j&&j.ok){toast('Пароль изменён');$('newPass').value='';}
   else toast('Ошибка смены пароля','err');
+}
+
+/* ================= timeline звонка (forensics ВАТС) ================= */
+async function showTimeline(id){
+  const j=await safe(()=>api('/calls/'+id+'/timeline'));
+  if(!j||!j.call)return toast('Карточка недоступна','err');
+  const c=j.call,evs=j.events||[],acd=j.acd||[];
+  modal(`<h2>${ico('phone')}Звонок #${c.id} — события ВАТС</h2>
+    <dl class="kv" style="margin:0 0 8px">
+      <dt>Направление</dt><dd>${esc(c.direction||'')}${c.external_call_id?` · callid <b>${esc(c.external_call_id)}</b>`:''}</dd>
+      <dt>Контакт</dt><dd>${esc(c.contact_name||'')} · ${esc(c.contact_phone||'')}</dd>
+      <dt>Статус</dt><dd>${badge(c.result||c.status)}${extStatus(c)}</dd>
+      <dt>Время</dt><dd>${esc(c.started_at||'')} → ${esc(c.ended_at||'…')}${c.duration_sec?` · ${c.duration_sec} с`:''}</dd>
+      ${c.recording_url?`<dt>Запись</dt><dd><a href="${esc(c.recording_url)}" target="_blank">слушать запись ВАТС</a> <span class="btn-row">${recLink(c)}</span></dd>`:''}
+      ${c.provider_user?`<dt>Сотрудник ВАТС</dt><dd>${esc(c.provider_user)}</dd>`:''}
+    </dl>
+    <h3 style="margin:10px 0 4px;font-size:14px">События (${evs.length})</h3>
+    <div class="tblwrap thin" style="max-height:260px"><table>
+      <tr><th>Время</th><th>Тип</th><th>Статус обработки</th></tr>
+      ${evs.map(e=>`<tr><td class="nowrap">${esc(e.received_at||'')}</td><td><b>${esc(e.event_type||'')}</b> <span class="dim">${esc(e.fingerprint||'').slice(0,12)}</span></td><td>${esc(e.status||'')}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">Событий от ВАТС пока нет</td></tr>'}
+    </table></div>
+    ${acd.length?`<h3 style="margin:10px 0 4px;font-size:14px">ACD</h3><div class="dim">${acd.map(a=>`#${a.id}: ${esc(a.status)} (оператор ${a.operator_id||'—'})`).join(' · ')}</div>`:''}
+    <div class="form-actions"><button class="btn x" onclick="closeModal()">Закрыть</button></div>`,true);
+}
+
+/* ================= МегаФон ВАТС: проверки и синки (админ) ================= */
+function vatsShow(msg,out){
+  const m=$('vatsMsg');m.textContent=msg||'';m.classList.remove('err');m.classList.add('ok');
+  const o=$('vatsOut');o.classList.remove('hidden');
+  o.textContent=typeof out==='string'?out:JSON.stringify(out,null,2);
+}
+function vatsErr(msg){
+  const m=$('vatsMsg');m.textContent=msg;m.classList.add('err');m.classList.remove('ok');
+}
+async function vatsCheck(){
+  const j=await safe(()=>api('/megafon/check',{body:{}}));
+  if(!j)return vatsErr('Нет ответа сервера');
+  if(j.ok)vatsShow('✓ Связь в порядке',j.report);
+  else vatsErr('Ошибка: '+(j.error||j.detail||'?'));
+}
+async function vatsPool(dry){
+  const j=await safe(()=>api('/megafon/pool-sync',{body:{dry_run:!!dry}}));
+  if(!j)return vatsErr('Нет ответа сервера');
+  if(j.ok)vatsShow(dry?'✓ План готов — сверьте с панелью ВАТС':'✓ Применено',j.report);
+  else vatsErr('Ошибка: '+(j.error||'?'));
+}
+async function vatsSync(kind){
+  const j=await safe(()=>api('/megafon/'+kind+'-sync',{body:{}}));
+  if(!j)return vatsErr('Нет ответа сервера');
+  if(j.ok)vatsShow('✓ Готово',j.report);
+  else vatsErr('Ошибка: '+(j.error||'?'));
+}
+async function vatsDir(){
+  const j=await safe(()=>api('/megafon/directory'));
+  if(!j)return vatsErr('Нет ответа сервера');
+  vatsShow('Сотрудников: '+((j.users||[]).length)+' · отделов: '+((j.groups||[]).length),j);
 }
 
 /* ================= модалки ================= */

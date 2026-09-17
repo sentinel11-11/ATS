@@ -662,9 +662,10 @@ def save_settings(data: dict):
 
 def public_settings() -> dict:
     s = get_settings()
-    for k in ("uis", "ami", "llm", "bitrix24"):
-        pass  # не отдаём секреты наружу
-    pub = {k: v for k, v in s.items() if k not in ("uis", "ami", "llm", "bitrix24")}
+    # Секции с секретами наружу не отдаём (api_key/crm_token ВАТС, ключи UIS/AMI/LLM,
+    # вебхук Bitrix24). Админ правит их через /settings/raw с маскированием.
+    pub = {k: v for k, v in s.items()
+           if k not in ("uis", "ami", "megafon_vats", "llm", "bitrix24")}
     return pub
 
 

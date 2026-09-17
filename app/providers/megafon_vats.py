@@ -417,6 +417,9 @@ class MegafonVatsProvider(TelephonyProvider):
         with self._lock:
             self._external[req.get("call_id")] = {"callid": str(res.get("callid")),
                                                   "clid": got_clid}
+        print("[megafon_vats] makecall ok: call_id={} phone={} user={} callid={} clid={}".format(
+            req.get("call_id"), phone, user or group, res.get("callid"),
+            got_clid or clid or "-"))
         return True
 
     def external_id(self, call_id):

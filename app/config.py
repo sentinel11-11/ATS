@@ -31,6 +31,9 @@ DEFAULT_SETTINGS = {
     "line_cooldown_sec": 5,
     "watchdog_timeout_min": 20,
     "acd_wait_timeout_sec": 60,
+    # Страховка VATS-разговоров: нет финала от ВАТС дольше N мин —
+    # timeout+ретрай (0 — выкл). Короткий acd-таймаут их не касается.
+    "vats_conversation_timeout_min": 30,
     "window_start": "08:00",
     "window_end": "20:00",
     "window_days": [0, 1, 2, 3, 4, 5, 6],
