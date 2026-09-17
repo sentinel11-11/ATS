@@ -150,6 +150,14 @@ class _FakeHandler(BaseHTTPRequestHandler):
                 [{"type": "group", "group": "sales", "group_name": "Отдел продаж",
                   "greeting": False, "is_main_phone": True, "location": "",
                   "disabled": False, "telnum": "79264010121", "name": "",
+                  "crm": "", "calltracking": ""},
+                 {"type": "user", "user": "admin", "greeting": False,
+                  "is_main_phone": False, "location": "", "disabled": False,
+                  "telnum": "79262005060", "name": "Основной",
+                  "crm": "", "calltracking": ""},
+                 {"type": "user", "user": "", "greeting": False,
+                  "is_main_phone": False, "location": "", "disabled": True,
+                  "telnum": "79260009999", "name": "Выключен",
                   "crm": "", "calltracking": ""}], 0, 100))
         if ep.startswith("telnums/") and m == "GET":
             t = ep.split("/")[1]
@@ -170,7 +178,8 @@ class _FakeHandler(BaseHTTPRequestHandler):
                                "groups": [], "regions": []})
         if ep == "caller-ids/telnums" and m == "GET":
             return self._send([{"telnum": "79262005060", "enabled": True},
-                               {"telnum": "79264010121", "enabled": False}])
+                               {"telnum": "79264010121", "enabled": False},
+                               {"telnum": "79260009999", "enabled": False}])
         if ep == "makecall" and m == "POST":
             if not body or not body.get("phone"):
                 return self._send("Validation error", 400, "text/plain")

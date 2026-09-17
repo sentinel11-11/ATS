@@ -33,7 +33,8 @@ def list_numbers(include_disabled=False):
 NUMBER_PROVIDERS = ("sim", "uis", "ami", "megafon_vats")
 
 
-def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100):
+def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100,
+               carrier="", provider_ref="", enabled_outgoing=1):
     number = "".join(ch for ch in str(number).strip() if ch.isdigit() or ch == "+")
     if not number:
         return None, "empty"
@@ -52,6 +53,9 @@ def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100)
     try:
         db.insert("numbers", {"number": number, "label": str(label or "")[:200],
                               "kind": str(kind or "mobile")[:50], "provider": provider,
+                              "carrier": str(carrier or "")[:50],
+                              "provider_ref": str(provider_ref or "")[:64],
+                              "enabled_outgoing": 1 if enabled_outgoing else 0,
                               "active": 1, "daily_limit": daily_limit, "weight": 1,
                               "quarantined": 0, "cooldown_until": "", "daily_date": today(),
                               "daily_count": 0, "created": _now_iso()})
@@ -103,7 +107,8 @@ def acquire(provider="sim", cooldown_sec=0, exclude_ids=None):
         excl = " AND id NOT IN ({})".format(",".join("?" * len(exclude)))
         params += list(exclude)
     rows = db.fetch(
-        "SELECT * FROM numbers WHERE provider=? AND active=1 AND quarantined=0"
+        "SELECT * FROM numbers WHERE provider=? AND active=1 AND quarantined=0 "
+        "AND enabled_outgoing=1"
         " AND (daily_date<>? OR daily_count<daily_limit)"
         " AND (cooldown_until='' OR cooldown_until<=?)" + excl +
         " ORDER BY weight DESC, daily_count ASC, id ASC LIMIT 1",

@@ -309,6 +309,25 @@ def route(method, path, body, headers):
                 s[k] = merged
         db.save_settings(s)
         return OK, 200
+    if p == ["megafon", "pool-sync"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _megafon_sync_route("pool", body)
+    if p == ["megafon", "users-sync"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _megafon_sync_route("users", body)
+    if p == ["megafon", "groups-sync"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _megafon_sync_route("groups", body)
+    if p == ["megafon", "directory"]:
+        return {"users": db.fetch(
+            "SELECT login,name,position,ext,telnum,role,status,updated "
+            "FROM vats_users ORDER BY login"),
+                "groups": db.fetch(
+            "SELECT group_id,name,ext,call_order,updated "
+            "FROM vats_groups ORDER BY name")}, 200
     if p == ["operators"]:
         return {"operators": ENGINE.operators()}, 200
     if p == ["acd"]:
@@ -682,10 +701,29 @@ def _truthy(v):
 
 
 # ---------------- пользователи и операторы (админ) ----------------
+def _megafon_sync_route(kind, body):
+    from .providers.base import ProviderApiError
+    from .telephony import ProviderNotConfigured
+    try:
+        if kind == "pool":
+            rep = ENGINE.megafon_pool_sync(dry_run=bool((body or {}).get("dry_run")))
+        elif kind == "users":
+            rep = ENGINE.megafon_users_sync()
+        else:
+            rep = ENGINE.megafon_groups_sync()
+        return {"ok": True, "report": rep}, 200
+    except ProviderNotConfigured as e:
+        return {"ok": False, "error": "vats_not_configured",
+                "detail": str(e)[:300]}, 400
+    except ProviderApiError as e:
+        return {"ok": False, "error": "vats_error", "detail": str(e)[:300]}, 502
+
+
 def _users_list():
     return db.fetch(
         "SELECT u.id, u.login, u.role, u.active, u.created,"
-        " o.id AS op_id, o.name AS op_name, o.ext, o.status AS op_status"
+        " o.id AS op_id, o.name AS op_name, o.ext, o.status AS op_status, "
+        "o.vats_login AS op_vats"
         " FROM users u LEFT JOIN operators o ON o.user_id=u.id ORDER BY u.id")
 
 
@@ -715,6 +753,7 @@ def _user_save(body, sess):
     role = str(body.get("role") or "operator")
     name = str(body.get("name") or "").strip()[:200] or login
     ext = str(body.get("ext") or "").strip()[:30]
+    vats_login = str(body.get("vats_login") or "").strip()[:64]
     password = str(body.get("password") or "")
     active = 1 if body.get("active", True) not in (0, "0", False) else 0
     if role not in ("admin", "operator"):
@@ -747,9 +786,15 @@ def _user_save(body, sess):
         if role == "operator":
             op = db.fetch1("SELECT id FROM operators WHERE user_id=?", (uid,))
             if op:
-                db.q("UPDATE operators SET name=?, ext=? WHERE id=?", (name, ext, op["id"]))
+                if "vats_login" in body:
+                    db.q("UPDATE operators SET name=?, ext=?, vats_login=? WHERE id=?",
+                         (name, ext, vats_login, op["id"]))
+                else:
+                    db.q("UPDATE operators SET name=?, ext=? WHERE id=?",
+                         (name, ext, op["id"]))
             else:
                 db.insert("operators", {"user_id": uid, "name": name, "ext": ext,
+                                        "vats_login": vats_login,
                                         "status": "offline", "updated": now_iso()})
         else:
             db.q("DELETE FROM operators WHERE user_id=?", (uid,))
@@ -771,6 +816,7 @@ def _user_save(body, sess):
                               "active": active, "created": now_iso()})
     if role == "operator":
         db.insert("operators", {"user_id": nid, "name": name, "ext": ext,
+                                "vats_login": vats_login,
                                 "status": "offline", "updated": now_iso()})
     return {"ok": True, "id": nid}, 200
 

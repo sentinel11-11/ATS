@@ -152,7 +152,33 @@ CREATE TABLE IF NOT EXISTS numbers(
   daily_count INTEGER NOT NULL DEFAULT 0,
   dialed_total INTEGER NOT NULL DEFAULT 0,
   answered_total INTEGER NOT NULL DEFAULT 0,
+  carrier TEXT NOT NULL DEFAULT '',
+  provider_ref TEXT NOT NULL DEFAULT '',
+  enabled_outgoing INTEGER NOT NULL DEFAULT 1,
   created TEXT
+);
+CREATE TABLE IF NOT EXISTS vats_users(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  login TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  position TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  ext TEXT NOT NULL DEFAULT '',
+  telnum TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  mobile TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  updated TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS vats_groups(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  ext TEXT NOT NULL DEFAULT '',
+  call_order TEXT NOT NULL DEFAULT '',
+  users_json TEXT NOT NULL DEFAULT '[]',
+  updated TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS campaigns(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -359,6 +385,26 @@ def _migrate(c):
         if col not in callcols:
             c.execute("ALTER TABLE calls ADD COLUMN {} {}".format(col, ddl))
             c.commit()
+    numcols = [r[1] for r in c.execute("PRAGMA table_info(numbers)").fetchall()]
+    for col, ddl in (("carrier", "TEXT NOT NULL DEFAULT ''"),
+                     ("provider_ref", "TEXT NOT NULL DEFAULT ''"),
+                     ("enabled_outgoing", "INTEGER NOT NULL DEFAULT 1")):
+        if col not in numcols:
+            c.execute("ALTER TABLE numbers ADD COLUMN {} {}".format(col, ddl))
+            c.commit()
+    c.execute("CREATE TABLE IF NOT EXISTS vats_users("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, login TEXT UNIQUE NOT NULL, "
+              "name TEXT NOT NULL DEFAULT '', position TEXT NOT NULL DEFAULT '', "
+              "email TEXT NOT NULL DEFAULT '', ext TEXT NOT NULL DEFAULT '', "
+              "telnum TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', "
+              "mobile TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', "
+              "raw_json TEXT NOT NULL DEFAULT '{}', updated TEXT NOT NULL DEFAULT '')")
+    c.execute("CREATE TABLE IF NOT EXISTS vats_groups("
+              "id INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT UNIQUE NOT NULL, "
+              "name TEXT NOT NULL DEFAULT '', ext TEXT NOT NULL DEFAULT '', "
+              "call_order TEXT NOT NULL DEFAULT '', users_json TEXT NOT NULL DEFAULT '[]', "
+              "updated TEXT NOT NULL DEFAULT '')")
+    c.commit()
     opcols = [r[1] for r in c.execute("PRAGMA table_info(operators)").fetchall()]
     if "vats_login" not in opcols:
         c.execute("ALTER TABLE operators ADD COLUMN vats_login TEXT NOT NULL DEFAULT ''")

@@ -16,7 +16,7 @@ import uuid
 from . import agent as agent_mod
 from . import config, db, events, numbers as numbers_mod
 from .crm import make_crm
-from .telephony import make_provider
+from .telephony import ProviderNotConfigured, make_provider
 
 RETRYABLE = {"busy", "no_answer", "machine", "failed", "timeout"}
 TERMINAL_OK = {"done_ok", "done_agent", "operator_ok", "not_qualified", "qualified_no"}
@@ -477,6 +477,115 @@ class Engine:
                                 "phone": call["contact_phone"],
                                 "rating": int(ev.get("rating") or 0)})
         return self._megafon_mark(fp, "done")
+
+    # ---------- МегаФон ВАТС: синки пула и справочников (стадия 3) ----------
+    def _megafon_client(self):
+        """Клиент ВАТС из настроек (синки работают независимо от глобального
+        провайдера — пул можно готовить до переключения телефонии)."""
+        from .providers.base import resolve_secret
+        from .providers.megafon_vats import DEFAULT_API_KEY_ENV, MegafonVatsClient
+        mcfg = (self.settings or {}).get("megafon_vats") or {}
+        base = str(mcfg.get("base_url") or "").strip()
+        key = resolve_secret(mcfg, "api_key", "api_key_env", DEFAULT_API_KEY_ENV)
+        if not base or not key:
+            raise ProviderNotConfigured(
+                "megafon_vats не настроен: заполните base_url и api_key "
+                "(Настройки → provider_config).")
+        return MegafonVatsClient(base, key, mcfg.get("timeout_sec", 15))
+
+    def megafon_pool_sync(self, dry_run=False):
+        """Сверить локальный пул с GET /caller-ids/telnums + GET /telnums.
+        Ничего не удаляет, карантин и active (выключатель админа) не трогает;
+        управляет только enabled_outgoing + добавляет пригодные номера."""
+        from .providers.megafon_vats import plan_number_sync
+        client = self._megafon_client()
+        caller = client.get_caller_id_telnums() or []
+        telnums = client.get_telnums_all()
+        local = db.fetch("SELECT * FROM numbers WHERE provider='megafon_vats' ORDER BY id")
+        plan = plan_number_sync(caller, telnums, local)
+        by_id = {r["id"]: r["number"] for r in local}
+        report = {"dry_run": bool(dry_run),
+                  "added": [a["number"] for a in plan["add"]],
+                  "enabled": [by_id.get(i, i) for i in plan["enable"]],
+                  "disabled": [by_id.get(i, i) for i in plan["disable"]],
+                  "errors": []}
+        if dry_run:
+            return report
+        for a in plan["add"]:
+            ok, err = numbers_mod.add_number(
+                a["number"], label=a["label"], provider="megafon_vats",
+                carrier=a["carrier"], provider_ref=a["provider_ref"])
+            if not ok:
+                report["errors"].append("{}: {}".format(a["number"], err))
+        for nid in plan["enable"]:
+            db.q("UPDATE numbers SET enabled_outgoing=1 WHERE id=?", (nid,))
+        for nid in plan["disable"]:
+            db.q("UPDATE numbers SET enabled_outgoing=0 WHERE id=?", (nid,))
+            print("[megafon] пул: номер {} отключён от исходящих "
+                  "(нет в caller-ids/enabled ВАТС)".format(by_id.get(nid, nid)))
+        print("[megafon] синк пула: +{} вкл:{} выкл:{}".format(
+            len(report["added"]), len(report["enabled"]), len(report["disabled"])))
+        return report
+
+    def megafon_users_sync(self):
+        """Снапшот сотрудников ВАТС → vats_users + отчёт о маппинге на операторов
+        ATS (ключ — operators.vats_login, задаёт админ в карточке пользователя)."""
+        import json as _json
+        client = self._megafon_client()
+        users = client.get_users_all()
+        upserted = 0
+        for u in users:
+            login = str((u or {}).get("login") or "").strip()
+            if not login:
+                continue
+            db.q("INSERT INTO vats_users(login,name,position,email,ext,telnum,role,"
+                 "mobile,status,raw_json,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                 "ON CONFLICT(login) DO UPDATE SET name=excluded.name,"
+                 "position=excluded.position,email=excluded.email,ext=excluded.ext,"
+                 "telnum=excluded.telnum,role=excluded.role,mobile=excluded.mobile,"
+                 "status=excluded.status,raw_json=excluded.raw_json,updated=excluded.updated",
+                 (login, str(u.get("name") or "")[:200], str(u.get("position") or "")[:200],
+                  str(u.get("email") or "")[:200], str(u.get("ext") or "")[:30],
+                  str(u.get("telnum") or "")[:32], str(u.get("role") or "")[:64],
+                  str(u.get("mobile") or "")[:32], str(u.get("status") or "")[:32],
+                  _json.dumps(u, ensure_ascii=False)[:8000], now_iso()))
+            upserted += 1
+        vlogins = {str(r["login"]) for r in
+                   db.fetch("SELECT login FROM vats_users")}
+        ops = db.fetch("SELECT id, name, vats_login FROM operators")
+        mapped = sorted({o["vats_login"] for o in ops
+                         if (o.get("vats_login") or "") in vlogins})
+        dangling = sorted("op#{}:{}".format(o["id"], o.get("vats_login"))
+                          for o in ops if o.get("vats_login") and
+                          o["vats_login"] not in vlogins)
+        op_logins = {o.get("vats_login") or "" for o in ops}
+        unmapped = sorted(vlogins - op_logins)
+        print("[megafon] синк сотрудников: {} (операторов замаплено: {})".format(
+            upserted, len(mapped)))
+        return {"total": len(users), "upserted": upserted, "mapped": mapped,
+                "dangling": dangling, "unmapped": unmapped}
+
+    def megafon_groups_sync(self):
+        """Снапшот отделов ВАТС → vats_groups (задел под внешние ACD-эндпоинты)."""
+        import json as _json
+        client = self._megafon_client()
+        groups = client.get_groups_all()
+        upserted = 0
+        for g in groups:
+            gid = str((g or {}).get("id") or "").strip()
+            if not gid:
+                continue
+            db.q("INSERT INTO vats_groups(group_id,name,ext,call_order,users_json,updated)"
+                 " VALUES (?,?,?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET "
+                 "name=excluded.name,ext=excluded.ext,call_order=excluded.call_order,"
+                 "users_json=excluded.users_json,updated=excluded.updated",
+                 (gid, str(g.get("name") or "")[:200], str(g.get("ext") or "")[:30],
+                  str(g.get("call_order") or "")[:30],
+                  _json.dumps(g.get("users") or [], ensure_ascii=False)[:8000],
+                  now_iso()))
+            upserted += 1
+        print("[megafon] синк отделов: {}".format(upserted))
+        return {"total": len(groups), "upserted": upserted}
 
     def _duration(self, call):
         st = _iso_to_dt(call.get("answered_at") or call.get("started_at"))

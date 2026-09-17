@@ -574,3 +574,56 @@ def webhook_fingerprint(norm):
              str(n.get("start", "")), str(n.get("duration", "")),
              str(n.get("rating", "")), str(n.get("webhook_type", ""))]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+# ---------- Синк пула номеров (стадия 3): чистый планировщик ----------
+def _canon_digits(v):
+    """Канонические цифры для СРАВНЕНИЯ номеров: 8XXXXXXXXXX → 7XXXXXXXXXX."""
+    d = _digits(v)
+    if len(d) == 11 and d.startswith("8"):
+        d = "7" + d[1:]
+    return d
+
+
+def plan_number_sync(caller_telnums, telnums, local_rows):
+    """План сверки локального пула с ВАТС (pure, без I/O).
+
+    caller_telnums — ответ GET /caller-ids/telnums ([{telnum, enabled}]),
+    telnums — ответ GET /telnums (items, важен флаг disabled),
+    local_rows — строки numbers provider=megafon_vats.
+    Номер пригоден ⟺ enabled==true И telnums.disabled!=true.
+    Всего, чего нет в caller-ids, не существует (fail-closed).
+    Возвращает {"add":[{number,label,carrier,provider_ref}],
+                "enable":[id], "disable":[id]}.
+    """
+    allowed = {}
+    for r in caller_telnums or []:
+        d = _canon_digits((r or {}).get("telnum"))
+        if d:
+            allowed[d] = bool((r or {}).get("enabled") is True)
+    info = {}
+    for t in telnums or []:
+        d = _canon_digits((t or {}).get("telnum"))
+        if d:
+            info[d] = t or {}
+    usable = {d for d, en in allowed.items()
+              if en and not bool((info.get(d) or {}).get("disabled"))}
+    by_digits = {}
+    for row in local_rows or []:
+        d = _canon_digits((row or {}).get("number"))
+        if d and d not in by_digits:
+            by_digits[d] = row
+    add, enable, disable = [], [], []
+    for d in sorted(usable):
+        row = by_digits.get(d)
+        if row is None:
+            t = info.get(d) or {}
+            add.append({"number": d, "label": str(t.get("name") or "")[:200],
+                        "carrier": "megafon",
+                        "provider_ref": str(t.get("telnum") or d)[:64]})
+        elif not row.get("enabled_outgoing"):
+            enable.append(row["id"])
+    for d, row in by_digits.items():
+        if d not in usable and row.get("enabled_outgoing"):
+            disable.append(row["id"])
+    return {"add": add, "enable": sorted(enable), "disable": sorted(disable)}
