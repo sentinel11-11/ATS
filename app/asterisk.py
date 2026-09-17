@@ -120,17 +120,22 @@ class AMIClient:
     def action(self, name, params=None, timeout=None, check=True):
         action_id = None
         with self._cond:
+            payload, action_id = encode_action(name, params)
+            # Регистрируем ожидание ДО отправки: иначе быстрый ответ сервера
+            # придёт раньше и будет потерян (ложный таймаут Originate).
+            result = {"Response": "Error", "Message": "timeout"}
+            waiter = threading.Event()
+            self._pending[action_id] = (waiter, result)
             try:
-                payload, action_id = encode_action(name, params)
                 with self._wlock:
                     if not self.sock:
                         raise AMIError("AMI not connected")
                     self.sock.sendall(payload.encode("utf-8"))
-            except OSError as e:
+            except (OSError, AMIError) as e:
+                self._pending.pop(action_id, None)
+                if isinstance(e, AMIError):
+                    raise
                 raise AMIError("AMI send failed: {}".format(e))
-            result = {"Response": "Error", "Message": "timeout"}
-            waiter = threading.Event()
-            self._pending[action_id] = (waiter, result)
         waiter.wait(timeout or self.timeout)
         with self._cond:
             self._pending.pop(action_id, None)

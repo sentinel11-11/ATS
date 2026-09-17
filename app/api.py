@@ -139,11 +139,11 @@ def route(method, path, body, headers):
         ev = map_uis_webhook(body)
         if not ev:
             return {"ok": False, "error": "unrecognized"}, 422
-        try:
-            ENGINE.handle_event(ev)
-            return OK, 200
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:200]}, 500
+        # Только в очередь — отвечаем мгновенно, обработку делает тик движка.
+        # Иначе провайдер упрётся в HTTP-таймаут и завалит нас ретраями,
+        # а повторная обработка тех же событий даст дубли.
+        ENGINE.push_event(ev)
+        return OK, 200
     if p == ["auth", "me"]:
         sess2, err2, code2 = need_auth(headers)
         if err2:
@@ -302,11 +302,11 @@ def route(method, path, body, headers):
         if p == ["operators", "status"] and method == "POST":
             return _operator_status(body, sess)
         if p == ["acd", "accept"] and method == "POST":
-            return _acd_accept(body)
+            return _acd_accept(body, sess)
         if p == ["calls", "complete"] and method == "POST":
-            return _call_complete(body)
+            return _call_complete(body, sess)
         if p in (["contacts"], ["contacts", "save"]) and method == "POST":
-            return _contact_save(body)
+            return _contact_save(body, sess)
         # оператор может сменить собственный пароль (и только это)
         if p == ["settings", "save"] and method == "POST" and set((body or {}).keys()) <= {"new_password"}:
             return _settings_save(body, sess)
@@ -322,7 +322,7 @@ def route(method, path, body, headers):
         return _user_delete(body, sess)
     # контакты
     if p in (["contacts"], ["contacts", "save"]) and method == "POST":
-        return _contact_save(body)
+        return _contact_save(body, sess)
     if p == ["contacts", "delete"]:
         ids = [str(x) for x in body.get("ids", [])]
         if ids:
@@ -363,11 +363,20 @@ def route(method, path, body, headers):
         cid = int(p[1])
         act = p[2]
         if act == "start":
+            # start = «продолжить»: исчерпавших лимит НЕ трогаем, иначе теряются
+            # причина остановки и счётчики. Для повторного дозвона —
+            # отдельное действие retry-exhausted.
             db.q("UPDATE campaigns SET status='running', updated=? WHERE id=?", (now_iso(), cid))
-            db.q("UPDATE campaign_items SET status='queued', next_attempt_at='' WHERE campaign_id=? AND status IN ('queued','exhausted','canceled')",
+            db.q("UPDATE campaign_items SET status='queued', next_attempt_at='' WHERE campaign_id=? AND status IN ('queued','canceled')",
                  (cid,))
             events.publish("campaign", {"id": cid, "status": "running"})
             return OK, 200
+        if act == "retry-exhausted":
+            db.q("UPDATE campaigns SET status='running', updated=? WHERE id=?", (now_iso(), cid))
+            cur = db.q("UPDATE campaign_items SET status='queued', next_attempt_at='', attempts=0 WHERE campaign_id=? AND status='exhausted'",
+                       (cid,))
+            events.publish("campaign", {"id": cid, "status": "running"})
+            return {"ok": True, "requeued": cur.rowcount}, 200
         if act == "pause":
             db.q("UPDATE campaigns SET status='paused', updated=? WHERE id=?", (now_iso(), cid))
             events.publish("campaign", {"id": cid, "status": "paused"})
@@ -381,6 +390,13 @@ def route(method, path, body, headers):
         if act == "add-contacts":
             return _campaign_add_contacts(cid, body)
         if act == "clear":
+            st = db.fetch1("SELECT status FROM campaigns WHERE id=?", (cid,))
+            if st and st["status"] == "running":
+                return {"ok": False, "error": "campaign_running"}, 400
+            active = db.fetch1("SELECT COUNT(*) c FROM calls WHERE campaign_id=? AND ended_at=''",
+                               (cid,))
+            if active and active["c"]:
+                return {"ok": False, "error": "calls_in_progress"}, 400
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
             return OK, 200
     # шаблоны
@@ -410,9 +426,9 @@ def route(method, path, body, headers):
     if p == ["operators", "status"]:
         return _operator_status(body, sess)
     if p == ["acd", "accept"]:
-        return _acd_accept(body)
+        return _acd_accept(body, sess)
     if p == ["calls", "complete"]:
-        return _call_complete(body)
+        return _call_complete(body, sess)
     if p == ["acd", "miss"] and method == "POST":
         acd_id = int(body.get("id", 0))
         db.q("UPDATE acd SET status='missed', updated=? WHERE id=?", (now_iso(), acd_id))
@@ -450,7 +466,7 @@ def _phone_valid(phone):
     return 10 <= len(digits) <= 15
 
 
-def _contact_save(body):
+def _contact_save(body, sess=None):
     item = dict(body)
     item["phone"] = _clean_phone(item.get("phone"))
     if not item.get("phone"):
@@ -471,6 +487,23 @@ def _contact_save(body):
             "tags": importers_mod.clean_tags(item.get("tags", "")),
             "database_id": database_id,
             "updated": now_iso()}
+    if sess is not None and sess.get("role") != "admin":
+        # Оператор не управляет согласиями и чёрным списком (152-ФЗ):
+        # у существующих контактов значения сохраняем, у новых — «нет».
+        try:
+            cid_int = int(cid) if cid else 0
+        except (TypeError, ValueError):
+            cid_int = 0
+        if cid_int:
+            cur = db.fetch1("SELECT consent, blacklisted FROM contacts WHERE id=?", (cid_int,))
+        else:
+            cur = db.fetch1("SELECT consent, blacklisted FROM contacts WHERE phone=?", (item["phone"],))
+        if cur:
+            data["consent"] = cur["consent"]
+            data["blacklisted"] = cur["blacklisted"]
+        else:
+            data["consent"] = 0
+            data["blacklisted"] = 0
     if cid:
         try:
             db.update("contacts", data, "id=?", (int(cid),))
@@ -534,7 +567,16 @@ def _contacts_import_file(body):
         row = db.fetch1("SELECT id FROM databases WHERE id=?", (database_id,))
         if not row:
             return {"ok": False, "error": "database_not_found"}, 404
-    else:
+    # Сначала парсим файл, и только потом создаём базу — иначе от каждого
+    # битого файла остаётся пустая база-призрак.
+    try:
+        parsed = importers_mod.parse_file(
+            filename, data, consent_default=bool(body.get("consent_default", False)))
+    except ValueError as e:
+        return {"ok": False, "error": "parse_error", "detail": str(e)[:300]}, 400
+    except Exception as e:
+        return {"ok": False, "error": "import_failed", "detail": str(e)[:300]}, 500
+    if not database_id:
         name = str(body.get("database_name", "") or "").strip()[:200]
         if not name:
             # имя базы по умолчанию — из имени файла
@@ -543,10 +585,7 @@ def _contacts_import_file(body):
                                               "notes": str(body.get("notes", ""))[:500],
                                               "created": now_iso(), "updated": now_iso()})
     try:
-        res = importers_mod.import_file(filename, data, database_id=database_id,
-                                        consent_default=bool(body.get("consent_default", False)))
-    except ValueError as e:
-        return {"ok": False, "error": "parse_error", "detail": str(e)[:300]}, 400
+        res = importers_mod.import_parsed(*parsed, database_id=database_id)
     except Exception as e:
         return {"ok": False, "error": "import_failed", "detail": str(e)[:300]}, 500
     res["ok"] = True
@@ -725,6 +764,8 @@ def _number_save(body):
                                      body.get("daily_limit", 100))
     if err == "duplicate":
         return {"ok": False, "error": "number_exists"}, 400
+    if not ok:
+        return {"ok": False, "error": err or "save_failed"}, 400
     return OK, 200
 
 
@@ -887,35 +928,59 @@ def _sim_script(body):
     return OK, 200
 
 
+def _own_operator(sess):
+    """Оператор, привязанный к залогиненному пользователю (users.login -> operators.user_id)."""
+    u = db.fetch1("SELECT id FROM users WHERE login=?", (sess.get("login"),))
+    if not u:
+        return None
+    return db.fetch1("SELECT * FROM operators WHERE user_id=?", (u["id"],))
+
+
 def _operator_status(body, sess):
-    uid = db.fetch1("SELECT id FROM users WHERE login=?", (sess["login"],))["id"]
-    op = db.fetch1("SELECT * FROM operators WHERE user_id=?", (uid,))
+    op = _own_operator(sess)
     if not op:
         return {"ok": False, "error": "operator_not_found"}, 404
     ENGINE.operator_status(op["id"], body.get("status", "free"))
     return OK, 200
 
 
-def _acd_accept(body):
+def _acd_accept(body, sess=None):
     acd_id = int(body.get("id", 0))
-    uid = body.get("operator_id")
-    op = None
-    if uid:
-        op = db.fetch1("SELECT * FROM operators WHERE id=?", (int(uid),))
-    if not op and uid is None:
-        op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
-    if not op:
-        # Production: виртуальных операторов не создаём — звонок ждёт свободного.
-        return {"ok": False, "error": "no_free_operator"}, 400
+    if sess is not None and sess.get("role") != "admin":
+        # Оператор принимает звонок только на себя: чужой operator_id из тела
+        # игнорируется (иначе можно вешать звонки на коллег).
+        op = _own_operator(sess)
+        if not op:
+            return {"ok": False, "error": "operator_not_found"}, 404
+    else:
+        uid = body.get("operator_id")
+        op = None
+        if uid:
+            op = db.fetch1("SELECT * FROM operators WHERE id=?", (int(uid),))
+        if not op and uid is None:
+            op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
+        if not op:
+            # Production: виртуальных операторов не создаём — звонок ждёт свободного.
+            return {"ok": False, "error": "no_free_operator"}, 400
     ok, err = ENGINE.accept_acd(acd_id, op["id"])
     if not ok:
         return {"ok": False, "error": err}, 400
     return {"ok": True, "operator": op["name"], "operator_id": op["id"]}, 200
 
 
-def _call_complete(body):
+def _call_complete(body, sess=None):
     call_id = int(body.get("call_id", 0))
     op_id = int(body.get("operator_id", 0))
+    if sess is not None and sess.get("role") != "admin":
+        # Завершать можно только свой принятый вызов.
+        me = _own_operator(sess)
+        if not me:
+            return {"ok": False, "error": "operator_not_found"}, 404
+        mine = db.fetch1("SELECT id FROM acd WHERE call_id=? AND operator_id=? AND status='accepted'",
+                         (call_id, me["id"]))
+        if not mine:
+            return {"ok": False, "error": "not_your_call"}, 403
+        op_id = me["id"]
     ok, err = ENGINE.complete_operator_call(call_id, op_id or None)
     return (OK, 200) if ok else ({"ok": False, "error": err}, 400)
 # ---------------- отчёты и экспорт журнала ----------------

@@ -41,8 +41,10 @@ def drop_token(token: str):
 
 def drop_sessions_for(login: str):
     """Завершить все активные сессии пользователя (смена/сброс пароля, деактивация)."""
+    want = str(login or "").strip().lower()
     with _lock():
-        for tok in [t for t, s in SESSIONS.items() if s.get("login") == login]:
+        for tok in [t for t, s in SESSIONS.items()
+                    if str(s.get("login") or "").strip().lower() == want]:
             SESSIONS.pop(tok, None)
 
 

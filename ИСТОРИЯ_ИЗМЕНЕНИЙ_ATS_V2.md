@@ -247,5 +247,9 @@ python -m app.run
 python -m unittest discover -s tests
 ```
 
-Состояние: **57/57 проходят** (движок, телефония, watchdog, записи,
-endpoints, чистый старт/clean-demo, базы/импорт Excel, hardening).
+Состояние: **73/73 проходят** (движок, телефония, watchdog, записи,
+endpoints, чистый старт/clean-demo, базы/импорт Excel, hardening,
+P0 внешнего ревью: RBAC владения accept/complete, согласия только админ,
+connect()==False откат, fail-closed провайдер, revoke сессий, вебхук в очередь,
+float-watchdog, свежий SSE-статус, AMI register-before-send, импорт parse-first,
+guard clear, start без сброса exhausted + retry-exhausted, валидация номеров).

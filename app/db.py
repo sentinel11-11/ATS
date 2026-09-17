@@ -388,7 +388,7 @@ def gen_admin_pwd():
 def set_user_password(login: str, password: str) -> bool:
     """Сброс/смена пароля любого пользователя (CLI-восстановление доступа).
     True, если обновлено."""
-    from .security import hash_password
+    from .security import drop_sessions_for, hash_password
     login = str(login or "").strip().lower()
     user = fetch1("SELECT id FROM users WHERE login=?", (login,))
     if not user:
@@ -398,6 +398,8 @@ def set_user_password(login: str, password: str) -> bool:
       (salt, hash_password(password, salt), user["id"]))
     if login == "admin":
         drop_initial_credentials()  # пароль из файла больше недействителен — файл удаляем
+    # Смена пароля инвалидирует ВСЕ сессии: украденный токен умирает мгновенно.
+    drop_sessions_for(login)
     return True
 
 

@@ -437,10 +437,15 @@ class AsteriskAmiProvider(TelephonyProvider):
 
 
 def make_provider(settings: dict) -> TelephonyProvider:
-    name = settings.get("provider", "sim")
+    name = str(settings.get("provider") or "sim").strip().lower()
     if name == "uis":
         return UISCallApiProvider().configure(settings)
     if name == "ami":
         return AsteriskAmiProvider().configure(settings)
-    return SimProvider().configure(settings)
+    if name == "sim":
+        return SimProvider().configure(settings)
+    # Fail-closed: неизвестное имя (опечатка «uis » и т.п.) — громкая ошибка,
+    # а не молчаливый звонок через симулятор.
+    raise ProviderNotConfigured(
+        "unknown provider: {!r} (ожидалось: sim / uis / ami)".format(name))
 

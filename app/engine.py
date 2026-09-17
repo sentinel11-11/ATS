@@ -98,6 +98,14 @@ class Engine:
             time.sleep(0.3 if config.FAST else 1.0)
 
     # ---------- события провайдера ----------
+    def push_event(self, ev):
+        """Положить событие провайдера в очередь движка.
+
+        Единственная точка входа для вебхуков: HTTP-хендлер только кладёт
+        событие и сразу отвечает 200 — обработку делает тик движка.
+        """
+        self._evq.put(ev)
+
     def drain_events(self):
         got = []
         while True:
@@ -273,21 +281,26 @@ class Engine:
         if retry_max < 0:
             retry_max = int(self.settings.get("retry_max", 2))
         if ok:
+            new_status = result
             db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
-                 (result, detail, ended, item["id"]))
+                 (new_status, detail, ended, item["id"]))
         elif retryable and attempts < retry_max:
+            new_status = "queued"
             delay = self._retry_delay(item, campaign, result)
             nxt = (datetime.datetime.now() + datetime.timedelta(minutes=delay)).strftime("%Y-%m-%d %H:%M:%S")
             db.q("UPDATE campaign_items SET status='queued', last_result=?, next_attempt_at=? WHERE id=?",
                  (detail, nxt, item["id"]))
         else:
             final = result if result != "timeout" else "exhausted"
+            new_status = "exhausted" if retryable else final
             db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
-                 ("exhausted" if retryable else final, detail, ended, item["id"]))
+                 (new_status, detail, ended, item["id"]))
         db.insert("attempts", {"call_id": call["id"], "item_id": item["id"], "attempt_no": attempts,
                                "started_at": call.get("started_at", ""), "ended_at": ended,
                                "result": result, "detail": detail[:300]})
-        events.publish("item", {"id": item["id"], "status": item["status"]})
+        # Публикуем НОВЫЙ статус позиции, а не тот, что был на момент чтения
+        # (item["status"] здесь протухший — например, 'dialing').
+        events.publish("item", {"id": item["id"], "status": new_status})
         # CRM: финальные состояния (кроме промежуточных повторов)
         if ok or (not retryable) or attempts >= retry_max:
             self._push_crm(call, result)
@@ -424,7 +437,9 @@ class Engine:
                     pass
 
     def _ago(self, minutes):
-        return (datetime.datetime.now() - datetime.timedelta(minutes=int(minutes))).strftime("%Y-%m-%d %H:%M:%S")
+        # minutes может быть дробным (acd_timeout_sec/60.0) — int() обнулял бы
+        # таймауты < 60 секунд, и watchdog снимал бы вызовы мгновенно.
+        return (datetime.datetime.now() - datetime.timedelta(minutes=float(minutes))).strftime("%Y-%m-%d %H:%M:%S")
 
     # ---------- ACD (операторы) ----------
     def acd_queued(self):
@@ -441,6 +456,8 @@ class Engine:
             op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
             if not op:
                 return False, "operator_not_found"
+            if op.get("status") != "free":
+                return False, "operator_not_free"
         else:
             op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
             if not op:
@@ -448,12 +465,15 @@ class Engine:
         operator_id = op["id"]
         # Сначала реальное соединение (если провайдер умеет бридж), и только
         # потом — статусы «ок». Иначе в базе «успешно», а по факту тишина.
+        # Важно: проверяем и исключение, и возврат False от провайдера.
         connect = getattr(self.provider, "connect_operator", None)
         if connect and op.get("ext"):
             try:
-                connect(acd["call_id"], op["ext"])
+                bridged = connect(acd["call_id"], op["ext"])
             except Exception as e:
+                bridged = False
                 print("[acd] connect_operator failed:", e)
+            if bridged is False:
                 db.q("UPDATE acd SET status='queued', operator_id=0, updated=? WHERE id=?",
                      (now_iso(), acd_id))
                 events.publish("acd", {"id": acd_id, "status": "transfer_failed"})

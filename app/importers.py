@@ -331,8 +331,8 @@ def import_records(records, database_id=0, source="import"):
             "errors_total": len(errors)}
 
 
-def import_file(filename, data: bytes, database_id=0, consent_default=False):
-    """Полный конвейер: файл -> БД. -> результат + info о разборе."""
+def parse_file(filename, data: bytes, consent_default=False):
+    """Только разбор файла -> (records, info, fmt, headers). Без записи в БД."""
     name = str(filename or "").lower()
     if name.endswith(".xlsx"):
         headers, rows = parse_xlsx(data)
@@ -353,6 +353,11 @@ def import_file(filename, data: bytes, database_id=0, consent_default=False):
     if not headers and not rows:
         raise ValueError("файл пуст или не удалось прочитать данные")
     records, info = rows_to_records(headers, rows, consent_default=consent_default)
+    return records, info, fmt, headers
+
+
+def import_parsed(records, info, fmt, headers, database_id=0):
+    """Запись уже разобранных записей в БД -> результат + info о разборе."""
     res = import_records(records, database_id=database_id)
     res["format"] = fmt
     res["headers"] = [str(h) for h in headers]
@@ -360,3 +365,9 @@ def import_file(filename, data: bytes, database_id=0, consent_default=False):
     res["no_header"] = info["no_header"]
     res["total_rows"] = len(records)
     return res
+
+
+def import_file(filename, data: bytes, database_id=0, consent_default=False):
+    """Полный конвейер: файл -> БД. -> результат + info о разборе."""
+    records, info, fmt, headers = parse_file(filename, data, consent_default=consent_default)
+    return import_parsed(records, info, fmt, headers, database_id=database_id)

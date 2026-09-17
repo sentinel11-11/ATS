@@ -30,13 +30,29 @@ def list_numbers(include_disabled=False):
     return db.fetch(sql + " ORDER BY id")
 
 
+NUMBER_PROVIDERS = ("sim", "uis", "ami")
+
+
 def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100):
     number = "".join(ch for ch in str(number).strip() if ch.isdigit() or ch == "+")
     if not number:
         return None, "empty"
+    digits = number.lstrip("+")
+    if not digits.isdigit() or not (3 <= len(digits) <= 16):
+        return None, "bad_number"
+    provider = str(provider or "sim").strip().lower()
+    if provider not in NUMBER_PROVIDERS:
+        return None, "bad_provider"
     try:
-        db.insert("numbers", {"number": number, "label": label, "kind": kind, "provider": provider,
-                              "active": 1, "daily_limit": int(daily_limit), "weight": 1,
+        daily_limit = int(daily_limit)
+    except (TypeError, ValueError):
+        return None, "bad_limit"
+    if daily_limit < 1:
+        return None, "bad_limit"
+    try:
+        db.insert("numbers", {"number": number, "label": str(label or "")[:200],
+                              "kind": str(kind or "mobile")[:50], "provider": provider,
+                              "active": 1, "daily_limit": daily_limit, "weight": 1,
                               "quarantined": 0, "cooldown_until": "", "daily_date": today(),
                               "daily_count": 0, "created": _now_iso()})
         return True, "ok"
@@ -51,6 +67,21 @@ def update_number(nid, fields: dict):
         data["active"] = 1 if data["active"] else 0
     if "quarantined" in data:
         data["quarantined"] = 1 if data["quarantined"] else 0
+    # Некорректные значения при обновлении отбрасываем (не пишем мусор в пул).
+    if "provider" in data:
+        if str(data["provider"] or "").strip().lower() not in NUMBER_PROVIDERS:
+            del data["provider"]
+        else:
+            data["provider"] = str(data["provider"]).strip().lower()
+    for key in ("daily_limit", "weight"):
+        if key in data:
+            try:
+                data[key] = int(data[key])
+            except (TypeError, ValueError):
+                del data[key]
+                continue
+            if data[key] < 1:
+                del data[key]
     if data:
         db.update("numbers", data, "id=?", (nid,))
     return True

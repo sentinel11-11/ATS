@@ -2,13 +2,23 @@
 """Точка входа ATS v2:
     python -m app.run [--host ..] [--port ..] [--provider sim|uis|ami]
                       [--admin-password ..] [--init-only] [--clean-demo]
-                      [--list-users] [--set-password LOGIN PAROL]
+                      [--list-users] [--set-password LOGIN [PAROL]]
 """
 import argparse
+import getpass
 import sys
 
 from . import api, config, db
 from .engine import Engine
+
+
+def _prompt_password(prompt):
+    """Скрытый ввод пароля; без интерактивного терминала — None, а не traceback."""
+    try:
+        return getpass.getpass(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print("[ATS v2] Ввод пароля отменён (нет интерактивного терминала).")
+        return None
 
 
 def _backup_db(keep=12):
@@ -43,14 +53,15 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--provider", default=None, choices=["sim", "uis", "ami"])
     ap.add_argument("--init-only", action="store_true")
-    ap.add_argument("--admin-password", default=None,
-                    help="Сменить пароль администратора (admin) и запустить сервер; с --init-only — только сменить")
+    ap.add_argument("--admin-password", default=None, nargs="?", const="__PROMPT__",
+                    help="Сменить пароль администратора (admin); без значения — спросить скрытно через getpass")
     ap.add_argument("--clean-demo", action="store_true",
                     help="Удалить демо-данные (сид-контакты, «Демо-кампания», демо-оператора) и выйти")
     ap.add_argument("--list-users", action="store_true",
                     help="Показать пользователей (логин, роль, доступ) и выйти")
-    ap.add_argument("--set-password", nargs=2, default=None, metavar=("LOGIN", "PAROL"),
-                    help="Сменить пароль пользователя и выйти: --set-password operator1 NovyjParol123")
+    ap.add_argument("--set-password", nargs="+", default=None, metavar=("LOGIN", "PAROL"),
+                    help="Сменить пароль пользователя и выйти. Без пароля спросит скрытно: "
+                         "--set-password operator1 (пароль в командной строке виден в истории shell!)")
     args = ap.parse_args(argv)
 
     db.init_db()
@@ -62,7 +73,15 @@ def main(argv=None):
               "[ATS v2] Демо-данные удалены: " + ", ".join(parts))
         return 0
     if args.admin_password:
-        if db.set_admin_password(args.admin_password):
+        new_admin_pw = args.admin_password
+        if new_admin_pw == "__PROMPT__":
+            new_admin_pw = _prompt_password("Новый пароль администратора (admin): ")
+            if new_admin_pw is None:
+                return 1
+        if len(new_admin_pw) < 6:
+            print("[ATS v2] Пароль слишком короткий (минимум 6 символов) — не изменён.")
+            return 1
+        if db.set_admin_password(new_admin_pw):
             print("[ATS v2] Пароль администратора (admin) обновлён.")
         else:
             print("[ATS v2] Пользователь admin не найден — пароль не изменён.")
@@ -78,7 +97,19 @@ def main(argv=None):
                 if r["op_name"] else ""))
         return 0
     if args.set_password:
-        login, pwd = args.set_password
+        if len(args.set_password) == 1:
+            pwd = _prompt_password(
+                "Новый пароль пользователя '{}': ".format(args.set_password[0]))
+            if pwd is None:
+                return 1
+            login = args.set_password[0]
+        elif len(args.set_password) == 2:
+            login, pwd = args.set_password
+            print("[ATS v2] Внимание: пароль в командной строке сохраняется в истории shell; "
+                  "в следующий раз вызывайте без пароля — спрошу скрытно.")
+        else:
+            print("[ATS v2] Формат: --set-password LOGIN [PAROL]")
+            return 1
         if len(pwd) < 6:
             print("[ATS v2] Пароль слишком короткий (минимум 6 символов) — не изменён.")
             return 1
