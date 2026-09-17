@@ -1185,7 +1185,7 @@ def _call_complete(body, sess=None):
         me = _own_operator(sess)
         if not me:
             return {"ok": False, "error": "operator_not_found"}, 404
-        mine = db.fetch1("SELECT id FROM acd WHERE call_id=? AND operator_id=? AND status='accepted'",
+        mine = db.fetch1("SELECT id FROM acd WHERE call_id=? AND operator_id=? AND status IN ('accepted','bridged')",
                          (call_id, me["id"]))
         if not mine:
             return {"ok": False, "error": "not_your_call"}, 403

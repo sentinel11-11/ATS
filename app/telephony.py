@@ -27,6 +27,7 @@ class ProviderNotConfigured(RuntimeError):
 class TelephonyProvider:
     name = "base"
     interactive = False  # True, если провайдер умеет «интерактивный канал» (опрос/DTMF/агент)
+    needs_operator_ext = False  # True: для бриджа обязателен ext оператора (иначе accept запрещён)
 
     def __init__(self):
         self._sink = None          # очередь событий движка
@@ -54,6 +55,15 @@ class TelephonyProvider:
 
     def make_channel(self, call_id, phone):
         """Интерактивный канал (для agent-потока). У провайдеров с interactive=False вернёт None."""
+        return None
+
+    def connect_operator(self, call_id, operator_ext, progress=None):
+        """Соединить абонента с оператором (ACD accept). Возвращает True, если
+        голосовой бридж реально состоялся, False — если нет (движок откатит
+        принятие). None = «бридж неприменим» (симуляция/legacy) — движок
+        зафиксирует бридж формально. progress — опциональный колбэк
+        progress("ringing"|"answered"), который провайдер вызывает в РЕАЛЬНЫЕ
+        моменты протокола (не для красоты); движок двигает по нему FSM."""
         return None
 
     def stop(self):
@@ -300,6 +310,7 @@ class AsteriskAmiProvider(TelephonyProvider):
     op_wait_sec=45, op_ring_timeout_ms=30000, acd_answer_timeout=35, bridge_timeout=10.
     """
     name = "ami"
+    needs_operator_ext = True
 
     def __init__(self):
         super().__init__()
@@ -367,11 +378,19 @@ class AsteriskAmiProvider(TelephonyProvider):
             except Exception:
                 pass
 
-    def connect_operator(self, call_id, operator_ext):
+    def connect_operator(self, call_id, operator_ext, progress=None):
         """Соединить абонента с оператором: Originate операторского leg'а,
         ожидание ответа (OriginateResponse), затем AMI Bridge двух каналов.
         True — только если бридж реально состоялся; иначе False и движок откатит
-        принятие (звонок останется в очереди, оператор — свободным)."""
+        принятие (звонок останется в очереди, оператор — свободным).
+        progress("ringing") — после принятого Originate, progress("answered") —
+        после OriginateResponse(success); бридж — только после ответа."""
+        def _pg(phase):
+            if progress:
+                try:
+                    progress(phase)
+                except Exception:
+                    pass
         if not self.client or not operator_ext:
             return False
         with self._lock:
@@ -400,6 +419,7 @@ class AsteriskAmiProvider(TelephonyProvider):
             return False
         if str(resp.get("Response", "")).lower() != "success":
             return False
+        _pg("ringing")  # Originate принят — операторское плечо звонит
         answer_timeout = float(self.cfg.get("acd_answer_timeout", 35))
         ev = self.client.wait_for(
             lambda m: str(m.get("Event", "")).lower() == "originateresponse"
@@ -410,6 +430,7 @@ class AsteriskAmiProvider(TelephonyProvider):
         op_ch = str(ev.get("Channel", ""))
         if not op_ch:
             return False
+        _pg("answered")  # OriginateResponse(success) — оператор снял трубку
         try:
             self.client.action("Bridge", {"Channel1": op_ch, "Channel2": caller_ch},
                                timeout=float(self.cfg.get("bridge_timeout", 10)))

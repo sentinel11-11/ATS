@@ -282,7 +282,7 @@ CREATE TABLE IF NOT EXISTS acd(
   contact_phone TEXT NOT NULL DEFAULT '',
   campaign_id INTEGER NOT NULL DEFAULT 0,
   operator_id INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'queued', -- queued|offered|accepted|missed|completed
+  status TEXT NOT NULL DEFAULT 'queued', -- queued|offered|ringing|answered|bridged|accepted(legacy)|missed|completed
   created TEXT,
   updated TEXT
 );

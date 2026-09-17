@@ -484,7 +484,7 @@ class TestP0RbacHttp(unittest.TestCase):
         self.assertEqual(json.loads(raw)["operator_id"], op1["id"])
         acd = db.fetch1("SELECT * FROM acd WHERE id=?", (acd_id,))
         self.assertEqual(acd["operator_id"], op1["id"])
-        self.assertEqual(acd["status"], "accepted")
+        self.assertEqual(acd["status"], "bridged")
         self.assertEqual(db.fetch1("SELECT status FROM operators WHERE id=?",
                                    (op2["id"],))["status"], "free")
         st, raw = self.call("POST", "/api/v2/calls/complete",

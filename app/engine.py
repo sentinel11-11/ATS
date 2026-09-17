@@ -293,7 +293,7 @@ class Engine:
         flow = (campaign or {}).get("flow") or "message"
         if flow == "operator":
             db.q("UPDATE acd SET status='completed', updated=? "
-                 "WHERE call_id=? AND status IN ('queued','accepted')", (now_iso(), call["id"]))
+                 "WHERE call_id=? AND status IN ('queued','offered','ringing','answered','accepted','bridged')", (now_iso(), call["id"]))
             self._finish_attempt(call, item, "operator_ok", "Разговор завершён (ВАТС)",
                                  ok=True)
         else:
@@ -928,6 +928,24 @@ class Engine:
                 except Exception:
                     pass
 
+        # ACD: accept завис между фазами (обрыв HTTP, падение провайдера) —
+        # возвращаем звонок в очередь, оператора освобождаем (если не на бридже).
+        if acd_timeout_sec > 0:
+            stuck = db.fetch(
+                "SELECT * FROM acd WHERE status IN ('ringing','answered') AND updated<=?",
+                (self._ago(max(1.0, acd_timeout_sec / 60.0)),))
+            for a in stuck:
+                call = db.fetch1("SELECT * FROM calls WHERE id=?", (a["call_id"],))
+                if call and call["status"] in ("operator_ringing", "operator_answered"):
+                    db.q("UPDATE calls SET status='wait_operator' WHERE id=?", (call["id"],))
+                db.q("UPDATE acd SET status='queued', operator_id=0, updated=? WHERE id=?",
+                     (now_iso(), a["id"]))
+                if a["operator_id"] and not self._op_has_live_claim(a["operator_id"], a["id"]):
+                    db.q("UPDATE operators SET status='free', updated=? "
+                         "WHERE id=? AND status='busy'", (now_iso(), a["operator_id"]))
+                events.publish("acd", {"id": a["id"], "status": "requeued"})
+                print("[acd] зависший accept {} возвращён в очередь".format(a["id"]))
+
     def _ago(self, minutes):
         # minutes может быть дробным (acd_timeout_sec/60.0) — int() обнулял бы
         # таймауты < 60 секунд, и watchdog снимал бы вызовы мгновенно.
@@ -941,6 +959,11 @@ class Engine:
         return db.fetch("SELECT * FROM operators ORDER BY id")
 
     def accept_acd(self, acd_id, operator_id=None):
+        """ACD FSM (§36 ТЗ): queued → ringing → answered → bridged.
+
+        Статусы «ок» — только после реального бриджа; провал/исключение —
+        откат в очередь. 'accepted' — legacy-статус старых строк (читается
+        наравне с 'bridged', новым кодом не выставляется)."""
         acd = db.fetch1("SELECT * FROM acd WHERE id=?", (acd_id,))
         if not acd or acd["status"] not in ("queued", "offered"):
             return False, "acd_not_queued"
@@ -955,31 +978,124 @@ class Engine:
             if not op:
                 return False, "no_free_operator"
         operator_id = op["id"]
-        # Сначала реальное соединение (если провайдер умеет бридж), и только
-        # потом — статусы «ок». Иначе в базе «успешно», а по факту тишина.
-        # Важно: проверяем и исключение, и возврат False от провайдера.
-        connect = getattr(self.provider, "connect_operator", None)
-        if connect and op.get("ext"):
-            try:
-                bridged = connect(acd["call_id"], op["ext"])
-            except Exception as e:
-                bridged = False
-                print("[acd] connect_operator failed:", e)
-            if bridged is False:
-                db.q("UPDATE acd SET status='queued', operator_id=0, updated=? WHERE id=?",
+        if getattr(self.provider, "needs_operator_ext", False) \
+                and not (op.get("ext") or "").strip():
+            # Без ext бридж построить не на чем — мгновенный «accept»
+            # был бы ложным успехом.
+            return False, "operator_no_ext"
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (acd["call_id"],))
+        if not call or call.get("ended_at") or call.get("status") == "done":
+            return False, "call_ended"
+        # Резервируем слоты ДО звонка провайдеру (иначе двойной accept).
+        now = now_iso()
+        db.q("UPDATE acd SET status='ringing', operator_id=?, updated=? WHERE id=?",
+             (operator_id, now, acd_id))
+        db.q("UPDATE calls SET status='operator_ringing' WHERE id=?", (call["id"],))
+        db.q("UPDATE operators SET status='busy', updated=? WHERE id=?", (now, operator_id))
+        events.publish("acd", {"id": acd_id, "status": "ringing",
+                               "operator": op.get("name", "")})
+        events.publish("call", {"id": call["id"], "status": "operator_ringing",
+                                "phone": call.get("contact_phone", "")})
+
+        def _progress(phase):
+            if phase == "answered":
+                db.q("UPDATE acd SET status='answered', updated=? WHERE id=?",
                      (now_iso(), acd_id))
-                events.publish("acd", {"id": acd_id, "status": "transfer_failed"})
-                return False, "transfer_failed"
-        db.q("UPDATE acd SET status='accepted', operator_id=?, updated=? WHERE id=?",
-             (operator_id, now_iso(), acd_id))
-        db.q("UPDATE operators SET status='busy', updated=? WHERE id=?", (now_iso(), operator_id))
+                db.q("UPDATE calls SET status='operator_answered' WHERE id=?",
+                     (call["id"],))
+                events.publish("acd", {"id": acd_id, "status": "answered"})
+                events.publish("call", {"id": call["id"], "status": "operator_answered",
+                                        "phone": call.get("contact_phone", "")})
+            elif phase == "ringing":
+                events.publish("acd", {"id": acd_id, "status": "ringing"})
+
+        connect = getattr(self.provider, "connect_operator", None)
+        try:
+            import inspect as _inspect
+            _nparams = len(_inspect.signature(connect).parameters) if connect else 0
+        except (TypeError, ValueError):
+            _nparams = 3
+        try:
+            if not connect:
+                bridged = True  # провайдер без бриджа — формально (sim/legacy)
+            elif _nparams >= 3:
+                bridged = connect(call["id"], op.get("ext") or op.get("vats_login") or "",
+                                  _progress)
+            else:
+                bridged = connect(call["id"], op.get("ext") or "")
+        except Exception as e:
+            bridged = False
+            print("[acd] connect_operator failed:", e)
+        if bridged is False:
+            self._acd_rollback(acd_id, call["id"], operator_id)
+            events.publish("acd", {"id": acd_id, "status": "transfer_failed"})
+            return False, "transfer_failed"
+        now = now_iso()
+        db.q("UPDATE acd SET status='bridged', updated=? WHERE id=?", (now, acd_id))
         db.q("UPDATE calls SET status='operator_connected', result='operator_ok' WHERE id=?",
-             (acd["call_id"],))
+             (call["id"],))
+        if getattr(self.provider, "name", "") == "megafon_vats":
+            vu = (op.get("vats_login") or "").strip()
+            pu = (call.get("provider_user") or "").strip()
+            if vu and pu and vu != pu:
+                db.q("UPDATE calls SET detail=? WHERE id=?",
+                     ((call.get("detail") or "") +
+                       " (ВАТС-бридж на {}; принял {})".format(pu, vu))[:300],
+                      call["id"])
         item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (acd["item_id"],)) if acd["item_id"] else None
         if item:
-            db.q("UPDATE campaign_items SET status='operator_ok', completed_at=? WHERE id=?", (now_iso(), item["id"]))
-        events.publish("acd", {"id": acd_id, "status": "accepted", "operator": op["name"]})
+            db.q("UPDATE campaign_items SET status='operator_ok', completed_at=? WHERE id=?",
+                 (now, item["id"]))
+        self._sync_vats_presence(operator_id)
+        events.publish("acd", {"id": acd_id, "status": "bridged",
+                               "operator": op.get("name", "")})
+        events.publish("call", {"id": call["id"], "status": "operator_connected",
+                                "phone": call.get("contact_phone", "")})
         return True, "ok"
+
+    def _op_has_live_claim(self, operator_id, exclude_acd_id=0):
+        row = db.fetch1("SELECT id FROM acd WHERE operator_id=? AND id<>? "
+                        "AND status IN ('ringing','answered','bridged','accepted') LIMIT 1",
+                        (operator_id, exclude_acd_id))
+        return bool(row)
+
+    def _acd_rollback(self, acd_id, call_id, operator_id):
+        """Откат принятия: только если статусы не ушли дальше (параллельно мог
+        прийти COMPLETED — воскрешать завершённый звонок запрещено)."""
+        now = now_iso()
+        acd = db.fetch1("SELECT * FROM acd WHERE id=?", (acd_id,))
+        if acd and acd["status"] in ("ringing", "answered"):
+            db.q("UPDATE acd SET status='queued', operator_id=0, updated=? WHERE id=?",
+                 (now, acd_id))
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+        if call and call["status"] in ("operator_ringing", "operator_answered"):
+            db.q("UPDATE calls SET status='wait_operator' WHERE id=?", (call_id,))
+        op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
+        if op and op.get("status") == "busy" \
+                and not self._op_has_live_claim(operator_id, acd_id):
+            db.q("UPDATE operators SET status='free', updated=? WHERE id=?",
+                 (now, operator_id))
+
+    def _sync_vats_presence(self, operator_id):
+        """Best-effort presence: статус оператора ATS → приём звонков в ВАТС.
+        free → доступен (POST dnd), остальное → недоступен (DELETE dnd).
+        Только при глобальном провайдере megafon_vats и заданном vats_login.
+        Ошибки ВАТС — в лог; статус в ATS не откатываем."""
+        if not operator_id:
+            return
+        try:
+            if getattr(self.provider, "name", "") != "megafon_vats":
+                return
+            op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
+            login = (op.get("vats_login") or "").strip() if op else ""
+            if not login:
+                return
+            client = getattr(self.provider, "client", None)
+            if client is None:
+                return
+            client.set_dnd(login, (op.get("status") or "") == "free")
+        except Exception as e:
+            print("[megafon] presence sync failed:", e)
 
     def complete_operator_call(self, call_id, operator_id):
         call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
@@ -987,11 +1103,13 @@ class Engine:
             return False, "not_found"
         if call["ended_at"]:
             db.q("UPDATE operators SET status='free', updated=? WHERE id=?", (now_iso(), operator_id))
+            self._sync_vats_presence(operator_id)
             return True, "already_ended"
         ended = now_iso()
         db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result='operator_ok' WHERE id=?",
              (ended, self._duration(call), call_id))
         db.q("UPDATE operators SET status='free', updated=? WHERE id=?", (now_iso(), operator_id))
+        self._sync_vats_presence(operator_id)
         db.q("UPDATE acd SET status='completed', updated=? WHERE call_id=?", (ended, call_id))
         item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (call["item_id"],)) if call["item_id"] else None
         if item and item["status"] != "operator_ok":
@@ -1004,6 +1122,7 @@ class Engine:
     def operator_status(self, operator_id, status):
         st = status if status in ("free", "break", "offline", "busy") else "free"
         db.q("UPDATE operators SET status=?, updated=? WHERE id=?", (st, now_iso(), operator_id))
+        self._sync_vats_presence(operator_id)
 
     # ---------- тик ----------
     def tick_once(self):

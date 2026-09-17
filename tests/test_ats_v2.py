@@ -208,7 +208,7 @@ class TestEngineE2E(unittest.TestCase):
                         time.sleep(0.1)
                         self.engine.complete_operator_call(q[0]["call_id"], op["id"])
                 if self.engine.active_channels() == 0 and not db.fetch(
-                        "SELECT * FROM acd WHERE status IN ('queued','accepted')") \
+                        "SELECT * FROM acd WHERE status IN ('queued','ringing','answered','bridged')") \
                         and db.fetch("SELECT COUNT(*) c FROM campaign_items WHERE status IN "
                                      "('queued','dialing','agent','wait_operator','talk')")[0]["c"] == 0:
                     return

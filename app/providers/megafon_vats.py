@@ -434,6 +434,27 @@ class MegafonVatsProvider(TelephonyProvider):
         # Аудиоканала в REST API нет (§6 ТЗ) — честный None вместо притворства.
         return None
 
+    def connect_operator(self, call_id, operator_ref=None, progress=None):
+        """ACD-принятие на ВАТС: голосовой бридж менеджер↔клиент уже построен
+        самой ВАТС в момент ACCEPTED (callback), строить нечего. True ⟺ звонок
+        реально отвечен и не завершён (проверка по журналу, без звонков к API).
+        progress("answered") — факт из журнала; фазу ringing не эмулируем."""
+        from .. import db as _db
+        try:
+            call_id = int(call_id)
+        except (TypeError, ValueError):
+            return False
+        call = _db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+        if not call or not call.get("answered_at") or call.get("ended_at") \
+                or call.get("status") == "done":
+            return False
+        if progress:
+            try:
+                progress("answered")
+            except Exception:
+                pass
+        return True
+
 
 # ---------- Вебхуки ВАТС → ATS (стадия 2): нормализация ----------
 # ВАТС шлёт POST application/x-www-form-urlencoded с полями cmd/crm_token/...
