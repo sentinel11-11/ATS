@@ -209,7 +209,7 @@ class UISCallApiProvider(TelephonyProvider):
         if not cfg.get("api_url"):
             raise ProviderNotConfigured(
                 "UIS не настроен: заполните settings.uis.api_url (и api_key). "
-                "Данные выдаёт UIS после запроса T01. Пока используется провайдер sim.")
+                "Данные выдаёт UIS после запроса T01.")
         self.cfg = cfg
         return self
 
@@ -307,7 +307,7 @@ class AsteriskAmiProvider(TelephonyProvider):
         cfg = settings.get("ami", {}) or {}
         if not (cfg.get("host") and cfg.get("user") and cfg.get("secret")):
             raise ProviderNotConfigured(
-                "Asterisk AMI не настроен (settings.ami.host/user/secret). Пока используется sim.")
+                "Asterisk AMI не настроен (settings.ami.host/user/secret).")
         self.cfg = cfg
         from . import asterisk as ami_mod
         try:
