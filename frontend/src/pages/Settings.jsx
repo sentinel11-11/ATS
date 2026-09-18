@@ -14,6 +14,12 @@ export default function Settings({ addToast }) {
   const [rawJsonText, setRawJsonText] = useState('');
   const [showRawEditor, setShowRawEditor] = useState(false);
 
+  const isMaskedValue = (val) => {
+    if (!val) return false;
+    const s = String(val).trim();
+    return s === '********' || s === '••••••••' || /^[\*\•]+$/.test(s);
+  };
+
   const loadAll = async () => {
     setLoading(true);
     const [rawRes, basicRes, usersRes] = await Promise.all([
@@ -474,8 +480,13 @@ export default function Settings({ addToast }) {
               type="password"
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={megafon.api_key || ''}
+              onFocus={(e) => {
+                if (isMaskedValue(e.target.value)) {
+                  updateProvider('megafon_vats', 'api_key', '');
+                }
+              }}
               onChange={(e) => updateProvider('megafon_vats', 'api_key', e.target.value)}
-              placeholder="Ключ авторизации ВАТС"
+              placeholder={isMaskedValue(megafon.api_key) ? 'Сохранён (нажмите, чтобы изменить)' : 'Ключ авторизации ВАТС'}
             />
           </div>
           <div>
@@ -484,8 +495,13 @@ export default function Settings({ addToast }) {
               type="password"
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={megafon.crm_token || ''}
+              onFocus={(e) => {
+                if (isMaskedValue(e.target.value)) {
+                  updateProvider('megafon_vats', 'crm_token', '');
+                }
+              }}
               onChange={(e) => updateProvider('megafon_vats', 'crm_token', e.target.value)}
-              placeholder="Токен CRM"
+              placeholder={isMaskedValue(megafon.crm_token) ? 'Сохранён (нажмите, чтобы изменить)' : 'Токен CRM'}
             />
           </div>
         </div>

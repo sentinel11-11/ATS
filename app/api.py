@@ -60,6 +60,18 @@ def now_iso():
 MASK = "********"
 
 
+def _is_masked_value(val):
+    if not val:
+        return False
+    s = str(val).strip()
+    if not s:
+        return False
+    if s == MASK or s == "••••••••":
+        return True
+    chars = set(s)
+    return chars <= {"*"} or chars <= {"•"} or chars <= {"*", "•"}
+
+
 def _is_secret_key(key):
     kl = str(key or "").lower()
     if kl.endswith("_env"):
@@ -334,9 +346,9 @@ def route(method, path, body, headers):
             if isinstance(cfg.get(k), dict):
                 merged = dict(s.get(k) or {})
                 for fk, fv in cfg[k].items():
-                    if fv == MASK and fk in merged:
-                        continue  # плейсхолдер — секрет не менялся, оставить старый
-                    merged[fk] = fv
+                    if _is_masked_value(fv) and fk in merged and merged[fk]:
+                        continue  # плейсхолдер из звездочек/точек — сохраняем реальный секрет
+                    merged[fk] = str(fv if fv is not None else "").strip()
                 s[k] = merged
         db.save_settings(s)
         ENGINE.reload_settings()
@@ -892,9 +904,13 @@ def _megafon_check_route(body=None):
     from .providers.base import ProviderApiError
     from .telephony import ProviderNotConfigured
     b = body or {}
-    mcfg = b.get("megafon_vats") or b
-    base = mcfg.get("base_url")
-    key = mcfg.get("api_key")
+    mcfg = b.get("megafon_vats") if isinstance(b.get("megafon_vats"), dict) else b
+    base = mcfg.get("base_url") if isinstance(mcfg, dict) else None
+    key = mcfg.get("api_key") if isinstance(mcfg, dict) else None
+    if _is_masked_value(base):
+        base = None
+    if _is_masked_value(key):
+        key = None
     try:
         rep = ENGINE.megafon_check(override_base=base, override_key=key)
     except ProviderNotConfigured as e:
