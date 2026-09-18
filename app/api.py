@@ -473,9 +473,11 @@ def route(method, path, body, headers):
             excl_c = "WHERE id NOT IN ({})".format(",".join("?" * len(rids)))
             db.q("DELETE FROM campaign_items " + excl, rids)
             db.q("DELETE FROM campaigns " + excl_c, rids)
+            db.q("UPDATE calls SET campaign_id=0 " + excl, rids)
         else:
             db.q("DELETE FROM campaign_items")
             db.q("DELETE FROM campaigns")
+            db.q("UPDATE calls SET campaign_id=0")
             try:
                 db.q("DELETE FROM sqlite_sequence WHERE name IN ('campaigns', 'campaign_items')")
             except Exception:
@@ -533,6 +535,7 @@ def route(method, path, body, headers):
                 return {"ok": False, "error": "calls_in_progress"}, 400
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
             db.q("DELETE FROM campaigns WHERE id=?", (cid,))
+            db.q("UPDATE calls SET campaign_id=0 WHERE campaign_id=?", (cid,))
             return OK, 200
     # шаблоны
     if p == ["templates", "save"]:
