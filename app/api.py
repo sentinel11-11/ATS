@@ -536,6 +536,7 @@ def route(method, path, body, headers):
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
             db.q("DELETE FROM campaigns WHERE id=?", (cid,))
             db.q("UPDATE calls SET campaign_id=0 WHERE campaign_id=?", (cid,))
+            db.q("UPDATE calls SET campaign_id=0 WHERE campaign_id NOT IN (SELECT id FROM campaigns)")
             return OK, 200
     # шаблоны
     if p == ["templates", "save"]:
