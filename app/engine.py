@@ -616,6 +616,18 @@ class Engine:
         print("[megafon] синк отделов: {}".format(upserted))
         return {"total": len(groups), "upserted": upserted}
 
+    def reload_settings(self):
+        """Перезагрузить настройки из БД в память и пересоздать провайдер/CRM при необходимости."""
+        self.settings = db.get_settings()
+        try:
+            self.provider = make_provider(self.settings)
+        except Exception as e:
+            print("[engine] reload_settings provider update:", e)
+        try:
+            self.crm = make_crm(self.settings)
+        except Exception as e:
+            print("[engine] reload_settings crm update:", e)
+
     def is_running(self):
         t = self._thread
         return bool(t is not None and t.is_alive())

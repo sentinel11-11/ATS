@@ -339,6 +339,7 @@ def route(method, path, body, headers):
                     merged[fk] = fv
                 s[k] = merged
         db.save_settings(s)
+        ENGINE.reload_settings()
         return OK, 200
     if p == ["megafon", "pool-sync"] and method == "POST":
         if sess["role"] != "admin":
@@ -1222,6 +1223,7 @@ def _settings_save(body, sess=None):
         if login == "admin":
             db.drop_initial_credentials()  # стартовый пароль из файла недействителен
     db.save_settings(s)
+    ENGINE.reload_settings()
     return OK, 200
 
 
