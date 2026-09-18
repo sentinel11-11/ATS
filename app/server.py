@@ -90,28 +90,30 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         # запись разговора: файл + content-type по расширению (auth: заголовок или ?token=)
         import re as _re
-        mrec = _re.match(r"^/api/v2/calls/(\d+)/recording$", u.path)
+        mrec = _re.match(r"^(?:/api/v2|/v2)?/calls/(\d+)/recording$", u.path)
         if mrec:
             return self._recording(int(mrec.group(1)), parse_qs(u.query))
-        if u.path == "/api/v2/events":
+        if u.path in ("/api/v2/events", "/v2/events", "/events"):
             return self._sse()
-        if u.path.startswith("/api/"):
-            # self.path (с query) — API сам разбирает параметры (напр. /reports?from=..&to=..)
+
+        if u.path.startswith("/ui/"):
+            self._static(u.path[len("/ui/"):])
+            return
+
+        if u.path.startswith("/api/") or u.path.startswith("/v2/") or u.path.startswith("/export/"):
             payload, status = api.route("GET", self.path, {}, self.headers)
             if payload is None:
                 payload, status = {"ok": False, "error": "not_found"}, 404
             if isinstance(payload, bytes):
                 fname = u.path.rstrip("/").split("/")[-1] or "download.csv"
+                if not fname.endswith(".csv"):
+                    fname += ".csv"
                 return self._send_bytes(payload, "text/csv; charset=utf-8", status,
                                         {"Content-Disposition": "attachment; filename=" + fname})
             return self._send_json(payload, status)
-        if u.path.startswith("/ui/"):
-            self._static(u.path[len("/ui/"):])
-            return
-        if not u.path.startswith("/api/"):
-            rel = u.path.lstrip("/")
-            self._static(rel)
-            return
+
+        rel = u.path.lstrip("/")
+        self._static(rel)
         self._send_json({"ok": False, "error": "not_found"}, 404)
 
     def _recording(self, call_id, query):
@@ -157,14 +159,14 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- POST ----------
     def do_POST(self):
         u = urlparse(self.path)
-        if not u.path.startswith("/api/"):
-            return self._send_json({"ok": False, "error": "not_found"}, 404)
         body = self._body()
         payload, status = api.route("POST", u.path, body, self.headers)
         if payload is None:
-            payload, status = {"ok": False, "error": "not_found"}, 404
+            return self._send_json({"ok": False, "error": "not_found"}, 404)
         if isinstance(payload, bytes):
             fname = u.path.rstrip("/").split("/")[-1] or "download.csv"
+            if not fname.endswith(".csv"):
+                fname += ".csv"
             return self._send_bytes(payload, "text/csv; charset=utf-8", status,
                                     {"Content-Disposition": "attachment; filename=" + fname})
         self._send_json(payload, status)

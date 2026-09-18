@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info, Download } from 'lucide-react';
+import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info, Download, Check, X } from 'lucide-react';
 import { api, getToken } from '../api';
 import Modal from '../components/Modal';
 
@@ -22,11 +22,11 @@ export default function Contacts({ addToast }) {
   const [cardContactData, setCardContactData] = useState(null); // Contact Details Modal
   const [cardLoading, setCardLoading] = useState(false);
 
-  // Import Report Modal
-  const [importReport, setImportReport] = useState(null);
-
+  // Import Options State
+  const [importConsentDefault, setImportConsentDefault] = useState(true);
   const [selectedFile, setSelectedFile] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
+  const [importReport, setImportReport] = useState(null);
 
   const [newContact, setNewContact] = useState({
     phone: '',
@@ -63,6 +63,63 @@ export default function Contacts({ addToast }) {
   const handleExportCSV = () => {
     const token = getToken();
     window.open(`/api/v2/export/contacts.csv?token=${encodeURIComponent(token)}`, '_blank');
+  };
+
+  // Toggle consent for a single contact
+  const handleToggleSingleConsent = async (contact) => {
+    const newConsentStatus = !contact.consent;
+    const res = await api('/contacts/save', {
+      body: {
+        id: contact.id,
+        phone: contact.phone,
+        name: contact.name,
+        group_name: contact.group_name || contact.grp,
+        consent: newConsentStatus,
+      },
+    });
+
+    if (res && res.ok) {
+      addToast(
+        `Согласие 152-ФЗ для ${contact.phone} ${newConsentStatus ? 'ВКЛЮЧЕНО' : 'ОТОЗВАНО'}`,
+        'ok'
+      );
+      loadContacts();
+      if (cardContactData && cardContactData.contact.id === contact.id) {
+        setCardContactData({
+          ...cardContactData,
+          contact: { ...cardContactData.contact, consent: newConsentStatus ? 1 : 0 },
+        });
+      }
+    } else {
+      addToast('Ошибка изменения согласия', 'err');
+    }
+  };
+
+  // Bulk Consent Action
+  const handleBulkConsent = async (consentState) => {
+    if (selectedContactIds.length === 0) return;
+    addToast('Обновление согласий...', 'info');
+
+    const selectedObjs = contacts.filter((c) => selectedContactIds.includes(c.id));
+    await Promise.all(
+      selectedObjs.map((c) =>
+        api('/contacts/save', {
+          body: {
+            id: c.id,
+            phone: c.phone,
+            name: c.name,
+            group_name: c.group_name || c.grp,
+            consent: consentState,
+          },
+        })
+      )
+    );
+
+    addToast(
+      `Согласие 152-ФЗ ${consentState ? 'ВКЛЮЧЕНО' : 'ОТОЗВАНО'} для ${selectedContactIds.length} контактов`,
+      'ok'
+    );
+    loadContacts();
   };
 
   // Filter contacts
@@ -165,14 +222,18 @@ export default function Contacts({ addToast }) {
       });
 
       const res = await api('/contacts/import-file', {
-        body: { filename: selectedFile.name, content_b64: b64 },
+        body: {
+          filename: selectedFile.name,
+          content_b64: b64,
+          consent_default: importConsentDefault, // Explicitly pass 152-FZ consent preference
+        },
       });
 
       setImportLoading(false);
       if (res && res.ok) {
         setShowImportModal(false);
         setSelectedFile(null);
-        setImportReport(res); // Show detailed import report modal with duplicate breakdown
+        setImportReport(res); // Show detailed import report modal
         loadContacts();
       } else {
         addToast('Ошибка импорта: ' + (res?.error || '?'), 'err');
@@ -256,7 +317,20 @@ export default function Contacts({ addToast }) {
           <span className="font-semibold text-xs text-white">
             Выбрано контактов: {selectedContactIds.length}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => handleBulkConsent(true)}
+              className="px-3 py-1.5 rounded-xl bg-ok/20 hover:bg-ok/30 text-ok font-semibold text-xs flex items-center gap-1"
+            >
+              <Check className="w-3.5 h-3.5" /> Включить согласие 152-ФЗ
+            </button>
+            <button
+              onClick={() => handleBulkConsent(false)}
+              className="px-3 py-1.5 rounded-xl bg-warn/20 hover:bg-warn/30 text-warn font-semibold text-xs flex items-center gap-1"
+            >
+              <X className="w-3.5 h-3.5" /> Отозвать согласие
+            </button>
+
             <select
               className="bg-[#0a1628] border border-line rounded-xl px-3 py-1.5 text-xs text-white outline-none"
               value={selectedTargetCampId}
@@ -337,11 +411,16 @@ export default function Contacts({ addToast }) {
                     <td className="py-3 px-3 font-mono text-muted">{c.phone}</td>
                     <td className="py-3 px-3 text-muted">{c.group_name || c.grp || '—'}</td>
                     <td className="py-3 px-3">
-                      <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                        c.consent ? 'bg-ok/20 text-ok' : 'bg-bad/20 text-bad'
-                      }`}>
-                        {c.consent ? 'Есть' : 'Нет'}
-                      </span>
+                      <button
+                        onClick={() => handleToggleSingleConsent(c)}
+                        title="Нажмите для смены статуса согласия 152-ФЗ"
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-all ${
+                          c.consent ? 'bg-ok/20 hover:bg-ok/30 text-ok border border-ok/30' : 'bg-bad/20 hover:bg-bad/30 text-bad border border-bad/30'
+                        }`}
+                      >
+                        {c.consent ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                        {c.consent ? 'Есть (Вкл)' : 'Нет (Выкл)'}
+                      </button>
                     </td>
                     <td className="py-3 px-3 text-right">
                       <button
@@ -395,7 +474,7 @@ export default function Contacts({ addToast }) {
               id="cConsent"
               checked={newContact.consent}
               onChange={(e) => setNewContact({ ...newContact, consent: e.target.checked })}
-              className="accent-acc"
+              className="accent-acc w-4 h-4 cursor-pointer"
             />
             <label htmlFor="cConsent" className="text-white font-medium cursor-pointer">
               Есть согласие на обзвон (152-ФЗ)
@@ -413,7 +492,7 @@ export default function Contacts({ addToast }) {
       </Modal>
 
       {/* Import File Modal */}
-      <Modal isOpen={showImportModal} onClose={() => setShowImportModal(false)} title="Импорт контактов из файла">
+      <Modal isOpen={showImportModal} onClose={() => setShowImportModal(false)} title="Импорт контактов из файла (CSV / Excel)">
         <form onSubmit={handleImportFile} className="flex flex-col gap-4 text-xs">
           <div className="p-6 border-2 border-dashed border-line2 rounded-2xl flex flex-col items-center justify-center gap-2 bg-[#081221]">
             <FileSpreadsheet className="w-8 h-8 text-acc2" />
@@ -425,6 +504,20 @@ export default function Contacts({ addToast }) {
               className="text-muted text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-acc/20 file:text-acc2 hover:file:bg-acc/30 cursor-pointer"
             />
           </div>
+
+          <div className="p-3 rounded-xl bg-ok/10 border border-ok/30 flex items-center gap-3">
+            <input
+              type="checkbox"
+              id="importConsentCheck"
+              checked={importConsentDefault}
+              onChange={(e) => setImportConsentDefault(e.target.checked)}
+              className="accent-ok w-4 h-4 cursor-pointer shrink-0"
+            />
+            <label htmlFor="importConsentCheck" className="text-white font-semibold cursor-pointer text-xs leading-snug">
+              Включить согласие на обзвон (152-ФЗ) по умолчанию для всех загружаемых контактов
+            </label>
+          </div>
+
           <div className="flex items-center justify-end gap-3 mt-2">
             <button type="button" onClick={() => setShowImportModal(false)} className="px-4 py-2 rounded-xl bg-line/50 text-white">
               Отмена
@@ -523,9 +616,14 @@ export default function Contacts({ addToast }) {
               </div>
               <div>
                 <span className="text-dim block">Согласие 152-ФЗ</span>
-                <span className={cardContactData?.contact?.consent ? 'text-ok font-semibold' : 'text-bad font-semibold'}>
-                  {cardContactData?.contact?.consent ? 'Есть' : 'Нет'}
-                </span>
+                <button
+                  onClick={() => handleToggleSingleConsent(cardContactData?.contact)}
+                  className={`mt-0.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold flex items-center gap-1 ${
+                    cardContactData?.contact?.consent ? 'bg-ok/20 text-ok border border-ok/30' : 'bg-bad/20 text-bad border border-bad/30'
+                  }`}
+                >
+                  {cardContactData?.contact?.consent ? 'Есть (Вкл)' : 'Нет (Выкл)'}
+                </button>
               </div>
               <div>
                 <button

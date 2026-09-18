@@ -97,15 +97,17 @@ def need_auth(headers, role=None, query_token=""):
 def parse_path(path):
     u = urlparse(path)
     parts = [p for p in u.path.split("/") if p]
+    if parts and parts[0] == "api":
+        parts = parts[1:]
+    if parts and parts[0] == "v2":
+        parts = parts[1:]
     return parts, u
 
 
 def route(method, path, body, headers):
     """Возвращает (payload_dict, status) или (bytes, status) для файлов."""
     parts, u = parse_path(path)
-    if parts[:2] != ["api", "v2"]:
-        return None
-    p = parts[2:]
+    p = parts
     qparams = parse_qs(u.query)
     qtoken = (qparams.get("token") or [""])[0]
     # ---------- auth ----------
@@ -711,8 +713,13 @@ def _contacts_import_file(body):
     # Сначала парсим файл, и только потом создаём базу — иначе от каждого
     # битого файла остаётся пустая база-призрак.
     try:
+        consent_def = body.get("consent_default")
+        if consent_def is None:
+            consent_def = True
+        else:
+            consent_def = bool(consent_def)
         parsed = importers_mod.parse_file(
-            filename, data, consent_default=bool(body.get("consent_default", False)))
+            filename, data, consent_default=consent_def)
     except ValueError as e:
         return {"ok": False, "error": "parse_error", "detail": str(e)[:300]}, 400
     except Exception as e:
