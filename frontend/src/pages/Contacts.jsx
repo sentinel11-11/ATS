@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info } from 'lucide-react';
-import { api } from '../api';
+import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info, Download } from 'lucide-react';
+import { api, getToken } from '../api';
 import Modal from '../components/Modal';
 
 export default function Contacts({ addToast }) {
@@ -60,12 +60,17 @@ export default function Contacts({ addToast }) {
     setCardLoading(false);
   };
 
+  const handleExportCSV = () => {
+    const token = getToken();
+    window.open(`/api/v2/export/contacts.csv?token=${encodeURIComponent(token)}`, '_blank');
+  };
+
   // Filter contacts
   const availableGroups = Array.from(
-    new Set(contacts.map((c) => c.group_name || c.grp).filter(Boolean))
+    new Set((Array.isArray(contacts) ? contacts : []).map((c) => c.group_name || c.grp).filter(Boolean))
   );
 
-  const filteredContacts = contacts.filter((c) => {
+  const filteredContacts = (Array.isArray(contacts) ? contacts : []).filter((c) => {
     const q = searchQuery.toLowerCase().trim();
     const matchesSearch =
       !q ||
@@ -195,6 +200,12 @@ export default function Contacts({ addToast }) {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={handleExportCSV}
+            className="px-4 py-2 rounded-xl bg-line/60 hover:bg-line font-semibold text-xs text-white flex items-center gap-1.5 transition-all"
+          >
+            <Download className="w-4 h-4" /> Экспорт контактов в CSV
+          </button>
+          <button
             onClick={() => setShowNewModal(true)}
             className="px-4 py-2 rounded-xl bg-line/60 hover:bg-line font-semibold text-xs text-white flex items-center gap-1.5 transition-all"
           >
@@ -252,7 +263,7 @@ export default function Contacts({ addToast }) {
               onChange={(e) => setSelectedTargetCampId(e.target.value)}
             >
               <option value="">-- Добавить в кампанию --</option>
-              {campaigns.map((c) => (
+              {(Array.isArray(campaigns) ? campaigns : []).map((c) => (
                 <option key={c.id} value={c.id}>
                   #{c.id} {c.name}
                 </option>
@@ -467,7 +478,7 @@ export default function Contacts({ addToast }) {
               <div className="flex flex-col gap-2 mt-2">
                 <span className="font-bold text-white text-xs">Детализация замечаний ({importReport.errors.length}):</span>
                 <div className="max-h-40 overflow-y-auto border border-line rounded-xl bg-[#081221] p-2 flex flex-col gap-1">
-                  {importReport.errors.map((err, idx) => (
+                  {(Array.isArray(importReport.errors) ? importReport.errors : []).map((err, idx) => (
                     <div key={idx} className="flex items-center justify-between text-[11px] p-1.5 rounded hover:bg-white/5 border-b border-line/30">
                       <span className="text-muted font-mono">Строка #{err.row}</span>
                       <span className="text-white font-mono">{err.phone || '—'}</span>
@@ -527,7 +538,7 @@ export default function Contacts({ addToast }) {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="font-bold text-white text-sm">История вызовов клиента ({cardContactData?.calls?.length || 0})</span>
+              <span className="font-bold text-white text-sm">История вызовов клиента ({(Array.isArray(cardContactData?.calls) ? cardContactData.calls : []).length})</span>
               <div className="overflow-x-auto border border-line rounded-xl bg-[#081221]">
                 <table className="w-full text-left text-xs">
                   <thead>
@@ -544,7 +555,7 @@ export default function Contacts({ addToast }) {
                         <td colSpan={4} className="py-4 text-center text-dim">История звонков пуста</td>
                       </tr>
                     ) : (
-                      cardContactData.calls.map((cl) => (
+                      (Array.isArray(cardContactData.calls) ? cardContactData.calls : []).map((cl) => (
                         <tr key={cl.id} className="border-b border-line/40">
                           <td className="py-2 px-3 text-muted">{cl.started_at?.slice(0, 16).replace('T', ' ')}</td>
                           <td className="py-2 px-3 text-white">#{cl.campaign_id} {cl.camp_name || ''}</td>

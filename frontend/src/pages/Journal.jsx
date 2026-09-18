@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Phone, Download, Search, Play } from 'lucide-react';
-import { api } from '../api';
+import { api, getToken } from '../api';
 import TimelineModal from '../components/TimelineModal';
 
 export default function Journal({ addToast }) {
@@ -23,7 +23,8 @@ export default function Journal({ addToast }) {
   }, []);
 
   const handleExportCSV = () => {
-    window.open('/api/export/calls.csv', '_blank');
+    const token = getToken();
+    window.open(`/api/v2/export/calls.csv?token=${encodeURIComponent(token)}`, '_blank');
   };
 
   const callsList = Array.isArray(calls) ? calls : [];

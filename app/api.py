@@ -76,8 +76,8 @@ def _mask_secrets(obj):
     return obj
 
 
-def need_auth(headers, role=None):
-    tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or ""
+def need_auth(headers, role=None, query_token=""):
+    tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or query_token or ""
     s = security.get_session(tok)
     if not s:
         return None, {"ok": False, "error": "auth_required"}, 401
@@ -106,6 +106,8 @@ def route(method, path, body, headers):
     if parts[:2] != ["api", "v2"]:
         return None
     p = parts[2:]
+    qparams = parse_qs(u.query)
+    qtoken = (qparams.get("token") or [""])[0]
     # ---------- auth ----------
     if p == ["auth", "login"]:
         # Логины хранятся строчными (см. _user_save) — приводим и при входе,
@@ -188,12 +190,12 @@ def route(method, path, body, headers):
     if p == ["health"] and method == "GET":
         return _health(), 200
     if p == ["auth", "me"]:
-        sess2, err2, code2 = need_auth(headers)
+        sess2, err2, code2 = need_auth(headers, query_token=qtoken)
         if err2:
             return err2, code2
         return {"ok": True, "login": sess2["login"], "role": sess2["role"]}, 200
 
-    sess, err, code = need_auth(headers)
+    sess, err, code = need_auth(headers, query_token=qtoken)
     if err:
         return err, code
 
