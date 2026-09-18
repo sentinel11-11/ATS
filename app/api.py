@@ -581,17 +581,35 @@ def route(method, path, body, headers):
 
 # ---------------- реализации ----------------
 def _export_contacts():
-    out = io.StringIO()
-    w = csv.writer(out, delimiter=";")
-    w.writerow(["id", "name", "phone", "group", "database", "tags", "note",
-                "consent", "blacklisted", "complaints"])
-    dbnames = {d["id"]: d["name"] for d in db.fetch("SELECT id, name FROM databases")}
-    for x in db.fetch("SELECT * FROM contacts"):
-        w.writerow([x["id"], x["name"], x["phone"], x["grp"],
-                    dbnames.get(x.get("database_id") or 0, ""), x.get("tags", ""), x["note"],
-                    "1" if x["consent"] else "0", "1" if x["blacklisted"] else "0", x["complaints"]])
-    raw = ("\ufeff" + out.getvalue()).encode("utf-8")
-    return raw, 200
+    try:
+        out = io.StringIO()
+        w = csv.writer(out, delimiter=";")
+        w.writerow(["id", "name", "phone", "group", "database", "tags", "note",
+                    "consent", "blacklisted", "complaints"])
+        dbnames = {}
+        try:
+            dbnames = {d["id"]: d["name"] for d in db.fetch("SELECT id, name FROM databases")}
+        except Exception:
+            dbnames = {}
+        contacts_rows = db.fetch("SELECT * FROM contacts") or []
+        for x in contacts_rows:
+            w.writerow([
+                x.get("id", ""),
+                x.get("name", ""),
+                x.get("phone", ""),
+                x.get("grp") or x.get("group_name") or "",
+                dbnames.get(x.get("database_id") or 0, ""),
+                x.get("tags", ""),
+                x.get("note", ""),
+                "1" if x.get("consent") else "0",
+                "1" if x.get("blacklisted") else "0",
+                x.get("complaints", 0)
+            ])
+        raw = ("\ufeff" + out.getvalue()).encode("utf-8")
+        return raw, 200
+    except Exception as e:
+        print("[_export_contacts_err]", e)
+        return json_bytes({"ok": False, "error": str(e)}), 500
 
 
 def _clean_phone(v):
@@ -1382,17 +1400,32 @@ def _reports(d_from=None, d_to=None):
 
 
 def _export_calls():
-    rows = db.fetch("SELECT * FROM calls ORDER BY id DESC LIMIT 5000")
-    out = io.StringIO()
-    w = csv.writer(out, delimiter=";")
-    w.writerow(["id", "started_at", "ended_at", "name", "phone", "caller_id", "campaign_id",
-                "direction", "result", "detail", "duration_sec", "recording"])
-    for x in rows:
-        w.writerow([x["id"], x["started_at"], x["ended_at"], x["contact_name"], x["contact_phone"],
-                    x["caller_id"], x["campaign_id"], x["direction"], x["result"], x["detail"],
-                    x["duration_sec"], x["recording"]])
-    raw = ("\ufeff" + out.getvalue()).encode("utf-8")
-    return raw, 200
+    try:
+        rows = db.fetch("SELECT * FROM calls ORDER BY id DESC LIMIT 5000") or []
+        out = io.StringIO()
+        w = csv.writer(out, delimiter=";")
+        w.writerow(["id", "started_at", "ended_at", "name", "phone", "caller_id", "campaign_id",
+                    "direction", "result", "detail", "duration_sec", "recording"])
+        for x in rows:
+            w.writerow([
+                x.get("id", ""),
+                x.get("started_at", ""),
+                x.get("ended_at", ""),
+                x.get("contact_name") or x.get("name") or "",
+                x.get("contact_phone") or x.get("phone") or "",
+                x.get("caller_id", ""),
+                x.get("campaign_id", 0),
+                x.get("direction", ""),
+                x.get("result") or x.get("status") or "",
+                x.get("detail", ""),
+                x.get("duration_sec", 0),
+                x.get("recording", "")
+            ])
+        raw = ("\ufeff" + out.getvalue()).encode("utf-8")
+        return raw, 200
+    except Exception as e:
+        print("[_export_calls_err]", e)
+        return json_bytes({"ok": False, "error": str(e)}), 500
 
 
 # ---------------- записи разговоров ----------------

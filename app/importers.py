@@ -32,6 +32,7 @@ HEADER_ALIASES = {
 }
 
 TRUTHY = {"1", "да", "д", "yes", "y", "true", "+", "есть", "ok", "✓"}
+FALSY = {"0", "0.0", "нет", "н", "no", "n", "false", "-", "отказ", "запрещено"}
 
 
 def normalize_header(h):
@@ -253,6 +254,16 @@ def rows_to_records(headers, rows, consent_default=False):
             if idx is None or idx >= len(r):
                 return ""
             return str(r[idx] if r[idx] is not None else "")
+
+        def get_consent():
+            if "consent" in mapping:
+                c_str = str(cell("consent")).strip().lower()
+                if c_str in FALSY:
+                    return False
+                if c_str in TRUTHY:
+                    return True
+            return bool(consent_default)
+
         records.append({
             "row": i + (1 if no_header else 2),  # человеческий номер строки в файле
             "phone": cell("phone"),
@@ -260,7 +271,7 @@ def rows_to_records(headers, rows, consent_default=False):
             "group": cell("group").strip(),
             "tags": cell("tags"),
             "note": cell("note").strip(),
-            "consent": truthy(cell("consent")) if "consent" in mapping else bool(consent_default),
+            "consent": get_consent(),
         })
     info = {"mapping": {k: (headers[v] if v < len(headers) else "?") for k, v in mapping.items()},
             "no_header": no_header}
