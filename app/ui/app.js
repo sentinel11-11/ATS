@@ -1072,19 +1072,222 @@ async function loadTemplates(silent){
    ||`<tr><td colspan="4">${empty('file','Шаблонов нет','Создайте шаблон озвучки или сценарий ИИ-агента')}</td></tr>`;
   wire($('tplTable'));
 }
+/* ================= конструктор сценариев бота ================= */
+window._currScenario = {};
+
+function initScenarioEditor(scObj) {
+  let sc = {};
+  if (typeof scObj === 'string') {
+    try { sc = JSON.parse(scObj || '{}'); } catch(e) { sc = {}; }
+  } else if (typeof scObj === 'object' && scObj !== null) {
+    sc = scObj;
+  }
+  window._currScenario = JSON.parse(JSON.stringify(sc || {}));
+  if (!window._currScenario.questions) window._currScenario.questions = [];
+  if (!window._currScenario.greeting) window._currScenario.greeting = "Здравствуйте!";
+  if (!window._currScenario.qualified_text) window._currScenario.qualified_text = "Спасибо, передаю ваш звонок специалисту.";
+  if (!window._currScenario.not_qualified_text) window._currScenario.not_qualified_text = "Спасибо, до свидания.";
+  renderVisualFlow();
+}
+
+function renderVisualFlow() {
+  const container = $('scVisualContainer');
+  if (!container) return;
+  const sc = window._currScenario;
+  let html = `<div class="flow-canvas">`;
+  
+  // Node 1: Greeting
+  html += `<div class="flow-card">
+    <div class="flow-card-header">${ico('phone')}Приветствие и Вступление <span class="flow-badge">Старт</span></div>
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">Приветствие</span><input class="input" value="${esc(sc.greeting||'')}" onchange="window._currScenario.greeting=this.value;syncFlowToJSON()"></div>
+      <div class="fld span2"><span class="lbl">Доп. вступительный текст (опционально)</span><input class="input" value="${esc(sc.intro||'')}" onchange="window._currScenario.intro=this.value;syncFlowToJSON()"></div>
+    </div>
+  </div>
+  <div class="flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>`;
+
+  // Questions
+  (sc.questions || []).forEach((q, qIdx) => {
+    const qId = q.id || ('q' + (qIdx + 1));
+    html += `<div class="flow-card">
+      <div class="flow-card-header" style="justify-content:space-between">
+        <span>${ico('help-circle')}Вопрос #${qIdx+1} (${esc(qId)})</span>
+        <button class="btn d sm" onclick="delFlowQuestion(${qIdx})">${ico('trash')}Удалить вопрос</button>
+      </div>
+      <div class="fld" style="margin-bottom:10px"><span class="lbl">Текст вопроса абоненту</span>
+        <input class="input" value="${esc(q.text||'')}" onchange="window._currScenario.questions[${qIdx}].text=this.value;syncFlowToJSON()"></div>
+      <span class="lbl">Варианты ответов и ветвление:</span>
+      <div class="flow-choices">`;
+      
+    const choices = q.choices || {};
+    Object.keys(choices).forEach((chKey) => {
+      const ch = choices[chKey] || {};
+      let nextOpts = `<option value="end" ${ch.next==='end'?'selected':''}>Завершить звонок</option>`;
+      (sc.questions || []).forEach((otherQ, otherIdx) => {
+        const oId = otherQ.id || ('q' + (otherIdx + 1));
+        if (otherIdx !== qIdx) {
+          nextOpts += `<option value="${esc(oId)}" ${ch.next===oId?'selected':''}>Перейти к Вопросу #${otherIdx+1} (${esc(oId)})</option>`;
+        }
+      });
+
+      html += `<div class="flow-choice-item">
+        <span class="badge b" style="min-width:44px">Кнопка ${esc(chKey)}</span>
+        <span class="lbl" style="margin:0">→</span>
+        <select class="select sm" style="width:170px" onchange="updateFlowChoiceNext(${qIdx},'${esc(chKey)}',this.value)">${nextOpts}</select>
+        <span class="lbl" style="margin:0;margin-left:6px">Квалификация:</span>
+        <select class="select sm" style="width:150px" onchange="updateFlowChoiceQual(${qIdx},'${esc(chKey)}',this.value)">
+          <option value="null" ${ch.qualified===null||ch.qualified===undefined?'selected':''}>Без изменений</option>
+          <option value="true" ${ch.qualified===true?'selected':''}>Успешно (Да)</option>
+          <option value="false" ${ch.qualified===false?'selected':''}>Отказ (Нет)</option>
+        </select>
+        <button class="btn x sm" style="margin-left:auto" onclick="delFlowChoice(${qIdx},'${esc(chKey)}')">${ico('trash')}</button>
+      </div>`;
+    });
+    
+    html += `<button class="btn ghost sm" style="margin-top:6px;width:fit-content" onclick="addFlowChoice(${qIdx})">${ico('plus')}Добавить вариант ответа</button>
+    </div></div>
+    <div class="flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>`;
+  });
+
+  html += `<button class="btn g sm" style="width:fit-content" onclick="addFlowQuestion()">${ico('plus')}Добавить новый вопрос</button>`;
+
+  // Final Node
+  html += `<div class="flow-card" style="margin-top:12px">
+    <div class="flow-card-header">${ico('check-circle')}Финальные реплики бота</div>
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">При успехе (Квалифицирован)</span>
+        <input class="input" value="${esc(sc.qualified_text||'')}" onchange="window._currScenario.qualified_text=this.value;syncFlowToJSON()"></div>
+      <div class="fld span2"><span class="lbl">При отказе / завершении</span>
+        <input class="input" value="${esc(sc.not_qualified_text||'')}" onchange="window._currScenario.not_qualified_text=this.value;syncFlowToJSON()"></div>
+    </div>
+  </div></div>`;
+
+  container.innerHTML = html;
+  syncFlowToJSON();
+}
+
+function syncFlowToJSON() {
+  const textarea = $('tSc');
+  if (textarea && window._currScenario) {
+    textarea.value = JSON.stringify(window._currScenario, null, 2);
+  }
+}
+
+function syncJSONToFlow() {
+  const textarea = $('tSc');
+  if (!textarea) return;
+  try {
+    const sc = JSON.parse(textarea.value || '{}');
+    window._currScenario = sc;
+    renderVisualFlow();
+  } catch(e) {
+    // JSON parse error during typing
+  }
+}
+
+function addFlowQuestion() {
+  if (!window._currScenario.questions) window._currScenario.questions = [];
+  const qIdx = window._currScenario.questions.length + 1;
+  const qId = 'q' + qIdx;
+  window._currScenario.questions.push({
+    id: qId,
+    text: "Интересует ли вас предложение? Нажмите 1 — да, 2 — нет.",
+    choices: {
+      "1": { next: "end", qualified: true },
+      "2": { next: "end", qualified: false }
+    }
+  });
+  renderVisualFlow();
+}
+
+function delFlowQuestion(qIdx) {
+  if (!window._currScenario.questions) return;
+  window._currScenario.questions.splice(qIdx, 1);
+  renderVisualFlow();
+}
+
+function addFlowChoice(qIdx) {
+  const q = window._currScenario.questions && window._currScenario.questions[qIdx];
+  if (!q) return;
+  if (!q.choices) q.choices = {};
+  const keys = Object.keys(q.choices);
+  const nextKey = String(keys.length + 1);
+  q.choices[nextKey] = { next: "end", qualified: null };
+  renderVisualFlow();
+}
+
+function delFlowChoice(qIdx, chKey) {
+  const q = window._currScenario.questions && window._currScenario.questions[qIdx];
+  if (q && q.choices) {
+    delete q.choices[chKey];
+    renderVisualFlow();
+  }
+}
+
+function updateFlowChoiceNext(qIdx, chKey, val) {
+  const q = window._currScenario.questions && window._currScenario.questions[qIdx];
+  if (q && q.choices && q.choices[chKey]) {
+    q.choices[chKey].next = val;
+    syncFlowToJSON();
+  }
+}
+
+function updateFlowChoiceQual(qIdx, chKey, val) {
+  const q = window._currScenario.questions && window._currScenario.questions[qIdx];
+  if (q && q.choices && q.choices[chKey]) {
+    q.choices[chKey].qualified = val === 'true' ? true : (val === 'false' ? false : null);
+    syncFlowToJSON();
+  }
+}
+
+function switchFlowMode(mode) {
+  if (mode === 'visual') {
+    $('flowTabVisual').classList.add('active');
+    $('flowTabJSON').classList.remove('active');
+    $('scVisualContainer').style.display = 'block';
+    $('scJSONContainer').style.display = 'none';
+    syncJSONToFlow();
+  } else {
+    $('flowTabVisual').classList.remove('active');
+    $('flowTabJSON').classList.add('active');
+    $('scVisualContainer').style.display = 'none';
+    $('scJSONContainer').style.display = 'block';
+    syncFlowToJSON();
+  }
+}
+
 function editTemplate(id){
   const t=state.templates.find(x=>x.id===id)||{id:0,name:'',text:'',active:true,scenario:{}};
-  const scStr=typeof t.scenario==='string'?t.scenario:JSON.stringify(t.scenario||{},null,1);
+  let scObj=t.scenario;
+  if (typeof scObj === 'string') {
+    try { scObj = JSON.parse(scObj || '{}'); } catch(e) { scObj = {}; }
+  }
+  const scStr=JSON.stringify(scObj||{},null,2);
+
   modal(`<h2>${ico('file')}${id?'Шаблон #'+id:'Новый шаблон'}</h2>
     <div class="formgrid">
-      <div class="fld span2"><span class="lbl">Название</span><input id="tName" class="input ctl" value="${esc(t.name)}"></div>
+      <div class="fld span2"><span class="lbl">Название шаблона</span><input id="tName" class="input ctl" value="${esc(t.name)}"></div>
       <div class="fld span2"><span class="lbl">Текст озвучки — подстановки: {name} {phone} {group} {note}</span>
         <textarea id="tText" class="textarea ctl">${esc(t.text)}</textarea></div>
       <div class="span2"><label class="sw"><input id="tActive" type="checkbox" ${t.active?'checked':''}><span class="trk"></span>шаблон активен</label></div>
-      <div class="fld span2"><span class="lbl">Сценарий ИИ-агента (JSON: вопросы / варианты, ответы 1/2)</span>
-        <textarea id="tSc" class="textarea ctl" style="min-height:230px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px">${esc(scStr)}</textarea></div>
+      
+      <div class="fld span2" style="margin-top:10px">
+        <span class="lbl">Сценарий ИИ-агента / Голосового бота</span>
+        <div class="flow-builder">
+          <div class="flow-tabs">
+            <button id="flowTabVisual" class="flow-tab active" type="button" onclick="switchFlowMode('visual')">${ico('cpu')}Визуальный конструктор (Drag & Drop Flow)</button>
+            <button id="flowTabJSON" class="flow-tab" type="button" onclick="switchFlowMode('json')">${ico('code')}JSON-код</button>
+          </div>
+          <div id="scVisualContainer"></div>
+          <div id="scJSONContainer" style="display:none">
+            <textarea id="tSc" class="textarea ctl" style="min-height:260px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px" oninput="syncJSONToFlow()">${esc(scStr)}</textarea>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="form-actions"><button class="btn" onclick="saveTemplate(${id||0})">${ico('check')}Сохранить</button><button class="btn x" onclick="closeModal()">Отмена</button></div>`);
+    <div class="form-actions"><button class="btn" onclick="saveTemplate(${id||0})">${ico('check')}Сохранить</button><button class="btn x" onclick="closeModal()">Отмена</button></div>`, 'wide');
+
+  setTimeout(()=>initScenarioEditor(scObj), 30);
 }
 async function saveTemplate(id){
   let sc={};
