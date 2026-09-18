@@ -29,6 +29,7 @@ branches, webhook-подписки и т.п.) — следующие стади�
   только case-insensitive (стадия 2).
 """
 import json
+import re
 import socket
 import threading
 import urllib.error
@@ -56,7 +57,10 @@ class MegafonVatsClient:
     """Тонкий HTTP-клиент CRM API ВАТС (X-API-KEY, JSON, stdlib only)."""
 
     def __init__(self, base_url, api_key, timeout_sec=15):
-        base = str(base_url or "").strip().rstrip("/")
+        raw_base = str(base_url or "").strip()
+        m = re.search(r'https?://[^\s\]\)\"\']+', raw_base)
+        base = m.group(0) if m else raw_base
+        base = base.rstrip("/")
         if not base:
             raise MegafonApiError("megafon_vats.base_url пуст — укажите домен ВАТС")
         if not str(api_key or "").strip():
@@ -110,11 +114,13 @@ class MegafonVatsClient:
 
     @staticmethod
     def _http_message(code, raw):
+        detail = (raw or "").strip().replace("\n", " ")[:200]
+        if "Domain disabled" in detail:
+            return "ВАТС МегаФон отключена (Domain disabled): включите интеграцию в кабинете МегаФон и проверьте статус услуги ВАТС"
         hint = {"400": "Validation error — неверные параметры",
                 "401": "авторизация: неверный ключ / CRM выключен / сервис недоступен",
                 "403": "нет прав на эндпоинт",
                 "405": "метод не поддерживается"}.get(str(code), "HTTP " + str(code))
-        detail = (raw or "").strip().replace("\n", " ")[:200]
         return "ВАТС {}: {}".format(hint, detail or "пустой ответ")
 
     @staticmethod
