@@ -286,7 +286,7 @@ function numCard(n){
   return `<div class="numcard"><div class="top">
     <span class="av" style="--h:${AVH(n.number)}">${ico('phone')}</span>
     <div style="min-width:0"><div class="num">${esc(n.number)}</div><div class="lbl">${esc(n.label||'без метки')}</div></div>
-    <span class="acts">${isAdmin()?`<button class="iconbtn sm" style="width:30px;height:30px" data-a="editn" data-id="${n.id}" title="Изменить">${ico('edit')}</button>`:''}</span></div>
+    <span class="acts">${isAdmin()?`<button class="iconbtn sm" style="width:30px;height:30px" data-a="editn" data-id="${n.id}" title="Изменить">${ico('edit')}</button><button class="iconbtn sm" style="width:30px;height:30px;color:var(--bad)" data-a="deln" data-id="${n.id}" title="Удалить номер">${ico('trash')}</button>`:''}</span></div>
     <div class="meta"><span class="badge ${n.active?'g':'b'}">${n.active?'активен':'выключен'}</span>
       <span class="badge b">${esc(n.provider)}</span>${n.quarantined?'<span class="badge r">карантин</span>':''}${n.cooling?'<span class="badge y">остывает</span>':''}${n.enabled_outgoing===false?'<span class="badge r" title="ВАТС запретила исходящие с номера (caller-ids)">исходящие запрещены</span>':''}</div>
     <div>${pbar(n.daily_count,n.daily_limit,barCls)}</div>
@@ -824,6 +824,12 @@ async function saveNum(id){
 }
 async function setQuar(id,on){await safe(()=>api('/numbers/quarantine',{body:{id,on}}));await loadNumbers();safe(loadDash);}
 async function toggleNum(id,active){await safe(()=>api('/numbers/save',{body:{id,active}}));await loadNumbers();safe(loadDash);}
+async function delNum(id){
+  if(!(await ask('Удалить номер из пула','Номер будет полностью удалён из базы. История звонков сохранится.','Удалить')))return;
+  const j=await safe(()=>api('/numbers/delete',{body:{id}}));
+  if(j&&j.ok){toast('Номер удалён из пула');await loadNumbers();safe(loadDash);}
+  else toast('Ошибка при удалении','err');
+}
 async function resetPool(){
   if(!(await ask('Сбросить лимиты и карантин','Суточные счётчики всех номеров будут обнулены, карантин снят.','Сбросить',false)))return;
   const j=await safe(()=>api('/numbers/reset',{body:{}}));
@@ -1335,6 +1341,7 @@ const Actions={
   delc:el=>delContact(parseInt(el.dataset.id)),
   compl:el=>complaint(el.dataset.phone),
   editn:el=>editNum(parseInt(el.dataset.id)),
+  deln:el=>delNum(parseInt(el.dataset.id)),
   quar:el=>setQuar(parseInt(el.dataset.id),parseInt(el.dataset.on)),
   togglen:el=>toggleNum(parseInt(el.dataset.id),parseInt(el.dataset.on)),
   accept:el=>acceptAcd(parseInt(el.dataset.id),parseInt(el.dataset.call||0)),

@@ -95,6 +95,11 @@ def quarantine(nid, on=True):
     db.q("UPDATE numbers SET quarantined=? WHERE id=?", (1 if on else 0, nid))
 
 
+def delete_number(nid):
+    db.q("DELETE FROM numbers WHERE id=?", (nid,))
+    return True
+
+
 def acquire(provider="sim", cooldown_sec=0, exclude_ids=None):
     """Выбрать лучший номер: активный, не в карантине, лимит не исчерпан, остывание прошло.
     Приоритет: больший вес -> меньший дневной счётчик -> меньший id (round-robin по базе)."""

@@ -445,6 +445,12 @@ def route(method, path, body, headers):
     if p == ["numbers", "quarantine"]:
         numbers_mod.quarantine(int(body.get("id", 0)), bool(body.get("on", True)))
         return OK, 200
+    if p == ["numbers", "delete"]:
+        nid = int(body.get("id", 0))
+        if nid:
+            numbers_mod.delete_number(nid)
+            return OK, 200
+        return {"error": "bad_id"}, 400
     if p == ["numbers", "reset"]:
         for n in numbers_mod.list_numbers(include_disabled=True):
             numbers_mod.update_number(n["id"], {"quarantined": False, "daily_count": 0, "cooldown_until": ""})
