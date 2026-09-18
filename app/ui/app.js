@@ -140,7 +140,7 @@ function notifyNewAcd(p){
 document.addEventListener('pointerdown',()=>ensureAudio(),{capture:true});
 document.addEventListener('keydown',()=>ensureAudio());
 
-function ask(title,txt,okLabel,danger){
+function ask(title,txt,okLabel,danger=true){
   return new Promise(res=>{
     modal(`<h2>${ico(danger?'alert':'info')}${esc(title)}</h2>
       <div class="hint" style="font-size:13px;color:#d7e3f3;line-height:1.55;margin-bottom:4px">${esc(txt)}</div>
@@ -787,6 +787,18 @@ async function clearCamp(id){
   if(j&&j.ok){toast('Список очищен');showCamp(id);}
   else toast('Очистить нельзя ('+((j&&j.error)||'?')+'): сначала остановите кампанию и дождитесь конца звонков','err');
 }
+async function delCamp(id){
+  if(!(await ask('Удалить кампанию','Кампания и её очередь звонков будут удалены из базы без возможности восстановления.','Удалить')))return;
+  const j=await safe(()=>api(`/campaigns/${id}/delete`,{body:{}}));
+  if(j&&j.ok){toast('Кампания удалена');$('campDetail').innerHTML='';await loadCamps();safe(loadDash);}
+  else toast('Удалить нельзя ('+((j&&j.error)||'?')+'): сначала остановите кампанию','err');
+}
+async function clearAllCamps(){
+  if(!(await ask('Удалить все кампании','Все остановленные и завершённые кампании будут удалены из базы без возможности восстановления.','Удалить все')))return;
+  const j=await safe(()=>api('/campaigns/clear_all',{body:{}}));
+  if(j&&j.ok){toast('Все кампании удалены');$('campDetail').innerHTML='';await loadCamps();safe(loadDash);}
+  else toast('Ошибка при очистке кампаний','err');
+}
 
 /* ================= пул номеров ================= */
 async function loadNumbers(){
@@ -825,6 +837,18 @@ async function saveNum(id){
 }
 async function setQuar(id,on){await safe(()=>api('/numbers/quarantine',{body:{id,on}}));await loadNumbers();safe(loadDash);}
 async function toggleNum(id,active){await safe(()=>api('/numbers/save',{body:{id,active}}));await loadNumbers();safe(loadDash);}
+async function delNum(id){
+  if(!(await ask('Удалить номер','Номер будет удалён из базы без возможности восстановления.','Удалить')))return;
+  const j=await safe(()=>api('/numbers/delete',{body:{id}}));
+  if(j&&j.ok){toast('Номер удалён из пула');await loadNumbers();safe(loadDash);}
+  else toast('Ошибка при удалении','err');
+}
+async function clearPool(){
+  if(!(await ask('Очистить весь пул номеров','Все номера будут удалены из базы без возможности восстановления.','Очистить пул')))return;
+  const j=await safe(()=>api('/numbers/clear',{body:{}}));
+  if(j&&j.ok){toast('Пул номеров очищен');await loadNumbers();safe(loadDash);}
+  else toast('Ошибка при очистке пула','err');
+}
 async function resetPool(){
   if(!(await ask('Сбросить лимиты и карантин','Суточные счётчики всех номеров будут обнулены, карантин снят.','Сбросить',false)))return;
   const j=await safe(()=>api('/numbers/reset',{body:{}}));
@@ -1336,11 +1360,13 @@ const Actions={
   delc:el=>delContact(parseInt(el.dataset.id)),
   compl:el=>complaint(el.dataset.phone),
   editn:el=>editNum(parseInt(el.dataset.id)),
+  deln:el=>delNum(parseInt(el.dataset.id)),
   quar:el=>setQuar(parseInt(el.dataset.id),parseInt(el.dataset.on)),
   togglen:el=>toggleNum(parseInt(el.dataset.id),parseInt(el.dataset.on)),
   accept:el=>acceptAcd(parseInt(el.dataset.id),parseInt(el.dataset.call||0)),
   addc:el=>addContactsToCamp(parseInt(el.dataset.id)),
   clearc:el=>clearCamp(parseInt(el.dataset.id)),
+  delcamp:el=>delCamp(parseInt(el.dataset.id)),
   editc2:el=>{const c=state.campaigns.find(x=>x.id===parseInt(el.dataset.id));editCampaign(c);},
   uprec:el=>{const campId=parseInt($('campDetail').dataset.cid||'0');upRecording(parseInt(el.dataset.id),campId);},
   delbl:el=>delBlack(parseInt(el.dataset.id)),
