@@ -1,30 +1,42 @@
-// API client & Auth state
-let authToken = localStorage.getItem('ats_token') || '';
-let currentUser = JSON.parse(localStorage.getItem('ats_user') || 'null');
-
+// API client & Auth state with full safety guards
 export function getToken() {
-  return authToken;
+  try {
+    return localStorage.getItem('ats_token') || '';
+  } catch (e) {
+    return '';
+  }
 }
 
 export function getUser() {
-  return currentUser;
+  try {
+    const raw = localStorage.getItem('ats_user');
+    if (raw && raw !== 'undefined') {
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('Invalid ats_user in localStorage:', e);
+  }
+  return null;
 }
 
 export function setSession(token, user) {
-  authToken = token || '';
-  currentUser = user || null;
-  if (token) localStorage.setItem('ats_token', token);
-  else localStorage.removeItem('ats_token');
-  if (user) localStorage.setItem('ats_user', JSON.stringify(user));
-  else localStorage.removeItem('ats_user');
+  try {
+    if (token) localStorage.setItem('ats_token', token);
+    else localStorage.removeItem('ats_token');
+    if (user) localStorage.setItem('ats_user', JSON.stringify(user));
+    else localStorage.removeItem('ats_user');
+  } catch (e) {
+    console.error('Failed to set localStorage session:', e);
+  }
 }
 
 export async function api(path, options = {}) {
   const method = options.method || (options.body ? 'POST' : 'GET');
   const headers = { ...options.headers };
+  const token = getToken();
   
-  if (authToken) {
-    headers['X-Ats-Token'] = authToken;
+  if (token) {
+    headers['X-Ats-Token'] = token;
   }
   
   let body = options.body;
@@ -39,7 +51,9 @@ export async function api(path, options = {}) {
     const res = await fetch(url, { method, headers, body });
     if (res.status === 401) {
       setSession('', null);
-      window.dispatchEvent(new CustomEvent('ats_unauthorized'));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ats_unauthorized'));
+      }
       return { ok: false, error: 'unauthorized' };
     }
     const contentType = res.headers.get('content-type') || '';

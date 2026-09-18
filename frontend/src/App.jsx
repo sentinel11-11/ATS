@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getToken, getUser, setSession } from './api';
 import { useSSE } from './useSSE';
 import Sidebar from './components/Sidebar';
@@ -24,6 +24,15 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [opStatus, setOpStatus] = useState('free');
   const [activeCallsCount, setActiveCallsCount] = useState(0);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setUser(null);
+      setToken('');
+    };
+    window.addEventListener('ats_unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('ats_unauthorized', handleUnauthorized);
+  }, []);
 
   const addToast = useCallback((msg, type = 'info') => {
     const id = Date.now() + Math.random();
