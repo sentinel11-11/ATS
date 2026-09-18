@@ -346,8 +346,12 @@ def route(method, path, body, headers):
             if isinstance(cfg.get(k), dict):
                 merged = dict(s.get(k) or {})
                 for fk, fv in cfg[k].items():
-                    if _is_masked_value(fv) and fk in merged and merged[fk]:
-                        continue  # плейсхолдер из звездочек/точек — сохраняем реальный секрет
+                    if _is_masked_value(fv):
+                        if merged.get(fk):
+                            continue  # Сохраняем ранее сохраненный секрет
+                        else:
+                            return {"ok": False, "error": f"secret_missing_{fk}",
+                                    "detail": f"В поле '{fk}' передана маска звездочек '{fv}', но сохраненный ключ в АТС отсутствует. Вставьте настоящий ключ вместо '{fv}'."}, 400
                     merged[fk] = str(fv if fv is not None else "").strip()
                 s[k] = merged
         db.save_settings(s)
