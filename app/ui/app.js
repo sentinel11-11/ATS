@@ -661,7 +661,8 @@ async function showCamp(id){
       ${isAdmin()?`<button class="btn g sm" data-a="cstart" data-id="${c.id}">${ico('play')}Запустить</button>
       <button class="btn sm" style="background:#35557f" data-a="cpause" data-id="${c.id}">${ico('pause')}Пауза</button>
       <button class="btn d sm" data-a="cstop" data-id="${c.id}">${ico('stop')}Остановить</button>
-      <button class="btn sm" style="background:#6a5acd" data-a="cretry" data-id="${c.id}" title="Вернуть в очередь контакты, исчерпавшие лимит попыток">${ico('refresh')}Дозвонить исчерпанные</button>`:''}
+      <button class="btn sm" style="background:#6a5acd" data-a="cretry" data-id="${c.id}" title="Вернуть в очередь контакты, исчерпавшие лимит попыток">${ico('refresh')}Дозвонить исчерпанные</button>
+      <button class="btn d sm" data-a="delcamp" data-id="${c.id}">${ico('trash')}Удалить кампанию</button>`:''}
     </div>
     <div class="toolbar" style="margin-bottom:14px">
       ${statusPill(c.status)}
@@ -670,7 +671,8 @@ async function showCamp(id){
       <span class="sp grow" style="flex:1"></span>
       ${isAdmin()?`<button class="btn ghost sm" data-a="addc" data-id="${c.id}">${ico('plus')}Контакты</button>
       <button class="btn ghost sm" data-a="clearc" data-id="${c.id}">Очистить</button>
-      <button class="btn ghost sm" data-a="editc2" data-id="${c.id}">${ico('edit')}Настройки</button>`:''}
+      <button class="btn ghost sm" data-a="editc2" data-id="${c.id}">${ico('edit')}Настройки</button>
+      <button class="btn d sm" data-a="delcamp" data-id="${c.id}">${ico('trash')}Удалить кампанию</button>`:''}
     </div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px">
       <div class="metric"><b>${nFmt(items.length)}</b><span class="l">контактов в списке</span></div>

@@ -453,6 +453,10 @@ def route(method, path, body, headers):
         return {"error": "bad_id"}, 400
     if p == ["numbers", "clear"]:
         db.q("DELETE FROM numbers")
+        try:
+            db.q("DELETE FROM sqlite_sequence WHERE name='numbers'")
+        except Exception:
+            pass
         return OK, 200
     if p == ["numbers", "reset"]:
         for n in numbers_mod.list_numbers(include_disabled=True):
@@ -472,6 +476,10 @@ def route(method, path, body, headers):
         else:
             db.q("DELETE FROM campaign_items")
             db.q("DELETE FROM campaigns")
+            try:
+                db.q("DELETE FROM sqlite_sequence WHERE name IN ('campaigns', 'campaign_items')")
+            except Exception:
+                pass
         return OK, 200
     if p and p[0] == "campaigns" and len(p) == 2 and p[1].isdigit() and p[2:] == []:
         return {"campaign": db.fetch1("SELECT * FROM campaigns WHERE id=?", (int(p[1]),))}, 200
