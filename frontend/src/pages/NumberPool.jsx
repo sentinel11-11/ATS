@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PhoneCall, Plus, Trash2, Edit2, ShieldAlert } from 'lucide-react';
+import { PhoneCall, Plus, Trash2, Edit2, ShieldAlert, Power } from 'lucide-react';
 import { api } from '../api';
 import Modal from '../components/Modal';
 
@@ -48,19 +48,32 @@ export default function NumberPool({ addToast }) {
     }
   };
 
+  const handleToggleActive = async (num) => {
+    const updated = { ...num, active: !num.active };
+    const res = await api('/numbers/save', { body: updated });
+    if (res && res.ok) {
+      addToast(num.active ? 'Номер отключён' : 'Номер включён', 'ok');
+      loadNumbers();
+    } else {
+      addToast('Ошибка переключения активности', 'err');
+    }
+  };
+
+  const handleQuarantine = async (id, quarantined) => {
+    const res = await api('/numbers/quarantine', { body: { id, on: quarantined } });
+    if (res && res.ok) {
+      addToast(quarantined ? 'Номер отправлен в карантин' : 'Карантин снят', 'ok');
+      loadNumbers();
+    } else {
+      addToast('Ошибка переключения карантина', 'err');
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!window.confirm('Удалить номер из пула?')) return;
     const res = await api('/numbers/delete', { body: { id } });
     if (res && res.ok) {
       addToast('Номер удалён из пула', 'ok');
-      loadNumbers();
-    }
-  };
-
-  const handleQuarantine = async (id, quarantined) => {
-    const res = await api('/numbers/quarantine', { body: { id, quarantined } });
-    if (res && res.ok) {
-      addToast(quarantined ? 'Номер отправлен в карантин' : 'Карантин снят', 'ok');
       loadNumbers();
     }
   };
@@ -95,28 +108,49 @@ export default function NumberPool({ addToast }) {
                   {n.quarantined ? 'Карантин' : n.active ? 'Активен' : 'Отключен'}
                 </span>
               </div>
+
               <p className="text-xs text-muted">
                 Метка: {n.label || '—'} · Провайдер: <b className="text-white uppercase">{n.provider}</b>
               </p>
-              <div className="text-[11px] text-dim border-t border-line pt-2 flex items-center justify-between">
+
+              <div className="text-[11px] text-dim border-t border-line pt-3 flex items-center justify-between">
                 <span>Лимит: {n.daily_limit || 100} / сут</span>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
+                  {/* Quick Toggle Active / Inactive Button */}
                   <button
-                    onClick={() => handleOpenEdit(n)}
-                    className="p-1 rounded-lg text-muted hover:text-white"
+                    onClick={() => handleToggleActive(n)}
+                    className={`px-2 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition-all ${
+                      n.active ? 'bg-ok/20 text-ok hover:bg-ok/30' : 'bg-line text-muted hover:text-white'
+                    }`}
+                    title={n.active ? 'Отключить номер' : 'Включить номер'}
                   >
-                    <Edit2 className="w-3.5 h-3.5" />
+                    <Power className="w-3.5 h-3.5" />
+                    {n.active ? 'Вкл' : 'Выкл'}
                   </button>
+
+                  {/* Quick Toggle Quarantine */}
                   <button
                     onClick={() => handleQuarantine(n.id, !n.quarantined)}
-                    className={`p-1 rounded-lg ${n.quarantined ? 'text-ok' : 'text-warn'}`}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      n.quarantined ? 'bg-bad/20 text-bad hover:bg-bad/30' : 'bg-line/50 text-muted hover:text-warn'
+                    }`}
                     title={n.quarantined ? 'Снять карантин' : 'В карантин'}
                   >
                     <ShieldAlert className="w-3.5 h-3.5" />
                   </button>
+
+                  <button
+                    onClick={() => handleOpenEdit(n)}
+                    className="p-1.5 rounded-lg bg-line/50 text-muted hover:text-white"
+                    title="Редактировать"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+
                   <button
                     onClick={() => handleDelete(n.id)}
-                    className="p-1 rounded-lg text-muted hover:text-bad"
+                    className="p-1.5 rounded-lg bg-line/50 text-muted hover:text-bad"
+                    title="Удалить"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
