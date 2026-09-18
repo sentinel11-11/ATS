@@ -366,7 +366,7 @@ def route(method, path, body, headers):
     if p == ["megafon", "check"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
-        return _megafon_check_route()
+        return _megafon_check_route(body)
     if p == ["megafon", "simulate-event"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -887,20 +887,27 @@ def _health_details():
                           "window_start", "window_end")}}
 
 
-def _megafon_check_route():
+def _megafon_check_route(body=None):
     from .providers.base import ProviderApiError
     from .telephony import ProviderNotConfigured
+    b = body or {}
+    mcfg = b.get("megafon_vats") or b
+    base = mcfg.get("base_url")
+    key = mcfg.get("api_key")
     try:
-        rep = ENGINE.megafon_check()
+        rep = ENGINE.megafon_check(override_base=base, override_key=key)
     except ProviderNotConfigured as e:
         return {"ok": False, "error": "vats_not_configured",
                 "detail": str(e)[:300]}, 400
     except ProviderApiError as e:
         return {"ok": False, "error": "vats_error",
                 "detail": str(e)[:300]}, 502
+    except Exception as e:
+        return {"ok": False, "error": "vats_error",
+                "detail": str(e)[:300]}, 502
     if rep.get("ok"):
         return {"ok": True, "report": rep}, 200
-    return {"ok": False, "error": "vats_error", "report": rep}, 502
+    return {"ok": False, "error": "vats_error", "detail": rep.get("detail") or rep.get("failed_stage"), "report": rep}, 502
 
 
 def _megafon_simulate_route(body):

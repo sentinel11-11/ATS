@@ -77,12 +77,19 @@ export default function Settings({ addToast }) {
 
   const runMegafonAction = async (endpoint, name) => {
     setActionLoading(true);
-    const res = await api(endpoint, { method: 'POST', body: {} });
+    // Автоматически сохраняем текущие введенные настройки перед проверкой/синхронизацией
+    await Promise.all([
+      api('/settings/raw', { body: { provider_config: providerConfig } }),
+      api('/settings/save', { body: basicSettings }),
+    ]);
+
+    const res = await api(endpoint, { method: 'POST', body: megafon });
     setActionLoading(false);
     if (res && (res.ok || res.connected || res.status === 'ok')) {
       addToast(`Успешно: ${name}`, 'ok');
     } else {
-      addToast(`Ошибка (${name}): ` + (res?.error || res?.detail || 'Не удалось выполнить'), 'err');
+      const detail = res?.detail || res?.error || res?.report?.failed_stage || 'Не удалось выполнить';
+      addToast(`Ошибка (${name}): ${detail}`, 'err');
     }
   };
 

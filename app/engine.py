@@ -509,18 +509,17 @@ class Engine:
         return self._megafon_mark(fp, "done")
 
     # ---------- МегаФон ВАТС: синки пула и справочников (стадия 3) ----------
-    def _megafon_client(self):
+    def _megafon_client(self, override_base=None, override_key=None):
         """Клиент ВАТС из настроек (синки работают независимо от глобального
         провайдера — пул можно готовить до переключения телефонии)."""
         from .providers.base import resolve_secret
         from .providers.megafon_vats import DEFAULT_API_KEY_ENV, MegafonVatsClient
         mcfg = (self.settings or {}).get("megafon_vats") or {}
-        base = str(mcfg.get("base_url") or "").strip()
-        key = resolve_secret(mcfg, "api_key", "api_key_env", DEFAULT_API_KEY_ENV)
+        base = str(override_base or mcfg.get("base_url") or "").strip()
+        key = str(override_key or resolve_secret(mcfg, "api_key", "api_key_env", DEFAULT_API_KEY_ENV) or "").strip()
         if not base or not key:
             raise ProviderNotConfigured(
-                "megafon_vats не настроен: заполните base_url и api_key "
-                "(Настройки → provider_config).")
+                "megafon_vats не настроен: заполните Base URL и API Key в настройках МегаФон ВАТС.")
         return MegafonVatsClient(base, key, mcfg.get("timeout_sec", 15))
 
     def megafon_pool_sync(self, dry_run=False):
@@ -621,12 +620,12 @@ class Engine:
         t = self._thread
         return bool(t is not None and t.is_alive())
 
-    def megafon_check(self):
+    def megafon_check(self, override_base=None, override_key=None):
         """Живая проверка связи с ВАТС (§51 ТЗ): три опорных чтения.
         Возвращает {"ok", "stages", ...}; первое упавшее чтение — в failed_stage
         с конкретным статусом/деталью (401/таймаут/DNS — из клиента)."""
         from .providers.base import ProviderApiError
-        client = self._megafon_client()
+        client = self._megafon_client(override_base, override_key)
         stages = {}
         for name, fn in (("users", lambda: client.get_users(limit=1)),
                          ("telnums", lambda: client.get_telnums(limit=1)),
@@ -636,7 +635,10 @@ class Engine:
             except ProviderApiError as e:
                 stages[name] = {"ok": False, "status": e.status,
                                 "detail": str(e)[:300]}
-                return {"ok": False, "failed_stage": name, "stages": stages}
+                return {"ok": False, "failed_stage": name, "detail": f"Ошибка на этапе '{name}': {str(e)[:200]}", "stages": stages}
+            except Exception as e:
+                stages[name] = {"ok": False, "detail": str(e)[:300]}
+                return {"ok": False, "failed_stage": name, "detail": f"Ошибка соединения на этапе '{name}': {str(e)[:200]}", "stages": stages}
         return {"ok": True, "stages": stages}
 
     def _duration(self, call):
