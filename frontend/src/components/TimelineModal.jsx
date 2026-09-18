@@ -23,6 +23,7 @@ export default function TimelineModal({ callId, onClose }) {
   if (!callId) return null;
 
   const { call = {}, events = [], acd = [] } = data || {};
+  const eventsList = Array.isArray(events) ? events : [];
 
   return (
     <Modal isOpen={!!callId} onClose={onClose} title={`Таймлайн и Хронология ВАТС: Звонок #${callId}`} wide={true}>
@@ -54,13 +55,13 @@ export default function TimelineModal({ callId, onClose }) {
 
           {/* Timeline Events List */}
           <div className="flex flex-col gap-2">
-            <span className="font-bold text-white text-sm mb-1">События ВАТС и Вектор вебхуков ({events.length})</span>
-            {events.length === 0 ? (
+            <span className="font-bold text-white text-sm mb-1">События ВАТС и Вектор вебхуков ({eventsList.length})</span>
+            {eventsList.length === 0 ? (
               <div className="p-4 rounded-xl bg-[#081221] text-dim text-center">
                 Событий ВАТС по этому звонку не зафиксировано
               </div>
             ) : (
-              events.map((ev, idx) => (
+              eventsList.map((ev, idx) => (
                 <div key={idx} className="p-3 rounded-xl bg-[#081221] border border-line flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <span className="p-1.5 rounded-lg bg-acc/20 text-acc2">
@@ -69,7 +70,7 @@ export default function TimelineModal({ callId, onClose }) {
                     <div>
                       <span className="font-bold text-white block">{ev.event_type || 'event'}</span>
                       <span className="text-[11px] text-dim">
-                        Fingerprint: {ev.fingerprint?.slice(0, 16)}...
+                        Fingerprint: {ev.fingerprint?.slice(0, 16) || '—'}...
                       </span>
                     </div>
                   </div>
