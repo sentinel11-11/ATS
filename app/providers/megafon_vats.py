@@ -49,6 +49,18 @@ class MegafonApiError(ProviderApiError):
     pass
 
 
+def _is_masked_value(val):
+    if not val:
+        return False
+    s = str(val).strip()
+    if not s:
+        return False
+    if s == "********" or s == "••••••••":
+        return True
+    chars = set(s)
+    return chars <= {"*"} or chars <= {"•"} or chars <= {"*", "•"}
+
+
 def _digits(phone):
     return "".join(c for c in str(phone or "") if c.isdigit())
 
@@ -63,12 +75,20 @@ class MegafonVatsClient:
         base = base.rstrip("/")
         if not base:
             raise MegafonApiError("megafon_vats.base_url пуст — укажите домен ВАТС")
-        if not str(api_key or "").strip():
-            raise MegafonApiError("API-ключ ВАТС не задан (api_key / ATS_MEGAFON_API_KEY)")
+        
+        key_str = str(api_key or "").strip()
+        if not key_str or _is_masked_value(key_str):
+            raise MegafonApiError("API-ключ ВАТС не задан (укажите ключ авторизации 391f9e70...)")
+        if key_str.startswith(";") or ";" in key_str:
+            raise MegafonApiError(
+                "В поле 'API Key' ошибочно передан CRM Token (начинается с ';'). "
+                "Укажите в 'API Key' UUID-ключ из МегаФон (391f9e70-1b59-41a8-9132-04049a34c65e), "
+                "а токен ';lkld...' — в поле 'CRM Token'."
+            )
         if base.lower().endswith(API_PREFIX):
             base = base[: -len(API_PREFIX)]
         self.base_url = base
-        self.api_key = str(api_key).strip()
+        self.api_key = key_str
         try:
             self.timeout = max(1, int(timeout_sec or 15))
         except (TypeError, ValueError):
