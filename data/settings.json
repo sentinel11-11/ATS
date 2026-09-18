@@ -1,0 +1,15 @@
+{
+  "admin_login": "admin",
+  "admin_password_salt": "15a7178bfb4fa5d52ac97c2085128c09",
+  "admin_password_hash": "e8a87bcadf8d75a282844b777b6db732110dc8f4738ba0d0686f31161fedc570",
+  "host": "0.0.0.0",
+  "port": 9123,
+  "max_parallel": 6,
+  "retry_count": 1,
+  "retry_delay_sec": 60,
+  "line_cooldown_sec": 5,
+  "allowed_hours_start": "08:00",
+  "allowed_hours_end": "20:00",
+  "consent_required": true,
+  "test_mode": true
+}

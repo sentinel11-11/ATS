@@ -1,0 +1,10 @@
+{
+  "exchange_path": "..\\shared",
+  "line_mode": "file_only",
+  "com_port": "COM1",
+  "com_speed": 9600,
+  "operator_phone": "2240",
+  "transfer_prefix": "",
+  "transfer_suffix": "",
+  "poll_seconds": 2
+}
