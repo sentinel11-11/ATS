@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Phone, Clock } from 'lucide-react';
-import { api, getToken } from '../api';
+import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info } from 'lucide-react';
+import { api } from '../api';
 import Modal from '../components/Modal';
 
 export default function Contacts({ addToast }) {
   const [contacts, setContacts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // Search & Filter
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedGroupFilter, setSelectedGroupFilter] = useState('');
 
   // Selection
   const [selectedContactIds, setSelectedContactIds] = useState([]);
@@ -17,6 +21,9 @@ export default function Contacts({ addToast }) {
   const [showNewModal, setShowNewModal] = useState(false);
   const [cardContactData, setCardContactData] = useState(null); // Contact Details Modal
   const [cardLoading, setCardLoading] = useState(false);
+
+  // Import Report Modal
+  const [importReport, setImportReport] = useState(null);
 
   const [selectedFile, setSelectedFile] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
@@ -53,9 +60,28 @@ export default function Contacts({ addToast }) {
     setCardLoading(false);
   };
 
+  // Filter contacts
+  const availableGroups = Array.from(
+    new Set(contacts.map((c) => c.group_name || c.grp).filter(Boolean))
+  );
+
+  const filteredContacts = contacts.filter((c) => {
+    const q = searchQuery.toLowerCase().trim();
+    const matchesSearch =
+      !q ||
+      (c.name && c.name.toLowerCase().includes(q)) ||
+      (c.phone && c.phone.includes(q)) ||
+      (c.group_name && c.group_name.toLowerCase().includes(q));
+
+    const matchesGroup =
+      !selectedGroupFilter || (c.group_name || c.grp) === selectedGroupFilter;
+
+    return matchesSearch && matchesGroup;
+  });
+
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedContactIds(contacts.map((c) => c.id));
+      setSelectedContactIds(filteredContacts.map((c) => c.id));
     } else {
       setSelectedContactIds([]);
     }
@@ -78,7 +104,7 @@ export default function Contacts({ addToast }) {
     });
 
     if (res && res.ok) {
-      addToast(`Добавлено в кампанию: +${res.added || 0}`, 'ok');
+      addToast(`Добавлено в кампанию: +${res.added || 0} (дубли в очереди пропущены)`, 'ok');
       setSelectedContactIds([]);
       setSelectedTargetCampId('');
     } else {
@@ -107,12 +133,16 @@ export default function Contacts({ addToast }) {
     if (!newContact.phone) return addToast('Укажите телефон', 'warn');
     const res = await api('/contacts/save', { body: newContact });
     if (res && res.ok) {
-      addToast('Контакт сохранён', 'ok');
+      if (res.updated_existing) {
+        addToast('Контакт с этим номером уже был в БД — данные обновлены (защита от дублей)', 'ok');
+      } else {
+        addToast('Новый контакт успешно создан', 'ok');
+      }
       setShowNewModal(false);
       setNewContact({ phone: '', name: '', group_name: '', consent: true });
       loadContacts();
     } else {
-      addToast('Ошибка: ' + (res?.error || '?'), 'err');
+      addToast('Ошибка сохранения контакта: ' + (res?.error || '?'), 'err');
     }
   };
 
@@ -135,9 +165,9 @@ export default function Contacts({ addToast }) {
 
       setImportLoading(false);
       if (res && res.ok) {
-        addToast(`Импортировано: +${res.added || 0} контактов`, 'ok');
         setShowImportModal(false);
         setSelectedFile(null);
+        setImportReport(res); // Show detailed import report modal with duplicate breakdown
         loadContacts();
       } else {
         addToast('Ошибка импорта: ' + (res?.error || '?'), 'err');
@@ -158,8 +188,11 @@ export default function Contacts({ addToast }) {
 
   return (
     <div className="flex flex-col gap-6 animate-in fade-in duration-200">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">База контактов и клиенты</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-white">База контактов и клиенты</h1>
+          <p className="text-xs text-muted">Всего в базе: {contacts.length} контактов</p>
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowNewModal(true)}
@@ -173,6 +206,36 @@ export default function Contacts({ addToast }) {
           >
             <Upload className="w-4 h-4" /> Импорт из CSV / Excel
           </button>
+        </div>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="relative md:col-span-2">
+          <Search className="w-4 h-4 text-dim absolute left-3.5 top-3" />
+          <input
+            type="text"
+            className="w-full bg-[#0a1628] border border-line2 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white outline-none focus:border-acc"
+            placeholder="Поиск по имени, номеру телефона или группе..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="relative">
+          <Filter className="w-4 h-4 text-dim absolute left-3.5 top-3" />
+          <select
+            className="w-full bg-[#0a1628] border border-line2 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white outline-none focus:border-acc font-semibold"
+            value={selectedGroupFilter}
+            onChange={(e) => setSelectedGroupFilter(e.target.value)}
+          >
+            <option value="">Все группы и базы ({availableGroups.length})</option>
+            {availableGroups.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -221,7 +284,7 @@ export default function Contacts({ addToast }) {
                 <input
                   type="checkbox"
                   onChange={handleSelectAll}
-                  checked={contacts.length > 0 && selectedContactIds.length === contacts.length}
+                  checked={filteredContacts.length > 0 && selectedContactIds.length === filteredContacts.length}
                   className="accent-acc w-4 h-4 cursor-pointer"
                 />
               </th>
@@ -229,7 +292,7 @@ export default function Contacts({ addToast }) {
               <th className="py-2.5 px-3">Телефон</th>
               <th className="py-2.5 px-3">Группа</th>
               <th className="py-2.5 px-3">Согласие (152-ФЗ)</th>
-              <th className="py-2.5 px-3 text-right">Карточка</th>
+              <th className="py-2.5 px-3 text-right">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -239,14 +302,14 @@ export default function Contacts({ addToast }) {
                   Загрузка контактов...
                 </td>
               </tr>
-            ) : contacts.length === 0 ? (
+            ) : filteredContacts.length === 0 ? (
               <tr>
                 <td colSpan={6} className="py-8 text-center text-dim">
-                  База контактов пуста. Загрузите CSV/XLSX файл или создайте контакт.
+                  Контакты не найдены.
                 </td>
               </tr>
             ) : (
-              contacts.slice(0, 200).map((c) => {
+              filteredContacts.slice(0, 300).map((c) => {
                 const isChecked = selectedContactIds.includes(c.id);
 
                 return (
@@ -261,7 +324,7 @@ export default function Contacts({ addToast }) {
                     </td>
                     <td className="py-3 px-3 font-semibold text-white">{c.name || 'Без имени'}</td>
                     <td className="py-3 px-3 font-mono text-muted">{c.phone}</td>
-                    <td className="py-3 px-3 text-muted">{c.group_name || '—'}</td>
+                    <td className="py-3 px-3 text-muted">{c.group_name || c.grp || '—'}</td>
                     <td className="py-3 px-3">
                       <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
                         c.consent ? 'bg-ok/20 text-ok' : 'bg-bad/20 text-bad'
@@ -364,6 +427,67 @@ export default function Contacts({ addToast }) {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Detailed Import Summary & Duplicate Breakdown Modal */}
+      <Modal
+        isOpen={!!importReport}
+        onClose={() => setImportReport(null)}
+        title="Результаты загрузки и проверки дублей"
+      >
+        {importReport && (
+          <div className="flex flex-col gap-4 text-xs">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-xl bg-ok/10 border border-ok/30 flex flex-col items-center justify-center text-center">
+                <CheckCircle className="w-5 h-5 text-ok mb-1" />
+                <span className="text-dim text-[11px]">Новых добавлено</span>
+                <b className="text-lg text-white font-bold">+{importReport.added || 0}</b>
+              </div>
+
+              <div className="p-3 rounded-xl bg-acc/10 border border-acc/30 flex flex-col items-center justify-center text-center">
+                <Info className="w-5 h-5 text-acc2 mb-1" />
+                <span className="text-dim text-[11px]">Обновлено существующих</span>
+                <b className="text-lg text-white font-bold">{importReport.updated || 0}</b>
+              </div>
+
+              <div className="p-3 rounded-xl bg-warn/10 border border-warn/30 flex flex-col items-center justify-center text-center">
+                <AlertTriangle className="w-5 h-5 text-warn mb-1" />
+                <span className="text-dim text-[11px]">Пропущено (дубли/ошибки)</span>
+                <b className="text-lg text-white font-bold">{importReport.skipped || 0}</b>
+              </div>
+
+              <div className="p-3 rounded-xl bg-line/40 border border-line flex flex-col items-center justify-center text-center">
+                <FileSpreadsheet className="w-5 h-5 text-muted mb-1" />
+                <span className="text-dim text-[11px]">Обработано строк</span>
+                <b className="text-lg text-white font-bold">{importReport.total_rows || 0}</b>
+              </div>
+            </div>
+
+            {importReport.errors && importReport.errors.length > 0 && (
+              <div className="flex flex-col gap-2 mt-2">
+                <span className="font-bold text-white text-xs">Детализация замечаний ({importReport.errors.length}):</span>
+                <div className="max-h-40 overflow-y-auto border border-line rounded-xl bg-[#081221] p-2 flex flex-col gap-1">
+                  {importReport.errors.map((err, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-[11px] p-1.5 rounded hover:bg-white/5 border-b border-line/30">
+                      <span className="text-muted font-mono">Строка #{err.row}</span>
+                      <span className="text-white font-mono">{err.phone || '—'}</span>
+                      <span className="text-warn font-medium">{err.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end mt-4 pt-3 border-t border-line">
+              <button
+                onClick={() => setImportReport(null)}
+                className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] font-bold text-white text-xs shadow-lg"
+              >
+                Закрыть
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Contact Details Card Modal */}
