@@ -376,7 +376,7 @@ body.is-admin .opOnly{display:none!important}
 .badge.pulse-warn { animation: pulseWarn 2s infinite ease-in-out; }
 .badge.pulse-ok { animation: pulseOk 2s infinite ease-in-out; }
 
-/* ============ Визуальный конструктор сценариев (Drag & Drop Flow) ============ */
+/* ============ Визуальный конструктор сценариев (Дерево сценария) ============ */
 .flow-builder {
   background: rgba(6, 13, 24, 0.7);
   border: 1px solid var(--line2);
@@ -385,98 +385,143 @@ body.is-admin .opOnly{display:none!important}
   margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 .flow-tabs {
   display: flex;
+  align-items: center;
   gap: 8px;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 8px;
+  padding-bottom: 10px;
 }
 .flow-tab {
-  background: transparent;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(14, 28, 48, 0.7);
+  border: 1px solid var(--line);
   color: var(--muted);
   font-weight: 600;
   font-size: 13px;
-  padding: 6px 14px;
-  border-radius: 8px;
+  padding: 7px 14px;
+  border-radius: 10px;
   cursor: pointer;
-  transition: background .15s, color .15s;
+  transition: all .15s ease;
+}
+.flow-tab svg, .flow-tab .ic {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.flow-tab:hover {
+  background: rgba(24, 46, 76, 0.8);
+  color: #fff;
 }
 .flow-tab.active {
   background: var(--accGrad);
+  border-color: var(--acc2);
   color: #fff;
+  box-shadow: 0 4px 14px rgba(61, 134, 255, 0.3);
 }
-.flow-canvas {
+
+/* Дерево сценария */
+.tree-canvas {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  max-height: 520px;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 12px;
+  background: radial-gradient(circle at center, rgba(16, 32, 56, 0.4) 0%, rgba(6, 12, 22, 0.8) 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  max-height: 580px;
   overflow-y: auto;
-  padding-right: 6px;
 }
-.flow-card {
-  background: linear-gradient(160deg, rgba(16, 32, 56, 0.9), rgba(9, 18, 32, 0.95));
+
+.tree-node {
+  width: 100%;
+  max-width: 720px;
+  background: linear-gradient(165deg, rgba(16, 32, 56, 0.95), rgba(9, 18, 32, 0.98));
   border: 1px solid var(--line2);
   border-radius: 14px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   position: relative;
-  transition: border-color .15s, box-shadow .15s;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-.flow-card:hover {
+.tree-node:hover {
   border-color: var(--acc2);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4), 0 0 12px rgba(61, 134, 255, 0.15);
 }
-.flow-card-header {
+
+.tree-node.start-node { border-left: 4px solid var(--cy); }
+.tree-node.question-node { border-left: 4px solid var(--acc); }
+.tree-node.success-node { border-left: 4px solid var(--ok); }
+.tree-node.fail-node { border-left: 4px solid var(--bad); }
+
+.tree-node-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
   font-weight: 700;
-  font-size: 13.5px;
-  color: var(--text);
-  margin-bottom: 10px;
+  font-size: 14px;
 }
-.flow-card-header .ic {
+.tree-node-header .title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tree-node-header svg, .tree-node-header .ic {
   width: 17px;
   height: 17px;
   color: var(--acc2);
 }
-.flow-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: rgba(61, 134, 255, 0.18);
-  color: var(--acc2);
-  font-weight: 600;
+
+.tree-branches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line2);
 }
-.flow-connector {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--dim);
-  font-size: 12px;
-  padding: 2px 0;
-}
-.flow-connector svg {
-  width: 18px;
-  height: 18px;
-  color: var(--acc2);
-}
-.flow-choices {
+.tree-branch-card {
+  background: rgba(8, 18, 33, 0.85);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 13px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 10px;
-  padding-left: 12px;
-  border-left: 2px solid var(--line);
+  position: relative;
 }
-.flow-choice-item {
+.tree-branch-card:hover {
+  border-color: var(--acc);
+}
+.tree-branch-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  background: rgba(10, 22, 40, 0.6);
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--acc2);
+}
+
+.tree-connector-v {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--acc2);
+  margin: -2px 0;
+}
+.tree-connector-v .line {
+  width: 2px;
+  height: 16px;
+  background: linear-gradient(180deg, var(--acc), var(--acc2));
+}
+.tree-connector-v .arrow {
+  font-size: 12px;
+  color: var(--acc2);
+  margin-top: -3px;
 }

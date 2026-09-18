@@ -1094,73 +1094,105 @@ function renderVisualFlow() {
   const container = $('scVisualContainer');
   if (!container) return;
   const sc = window._currScenario;
-  let html = `<div class="flow-canvas">`;
+  let html = `<div class="tree-canvas">`;
   
-  // Node 1: Greeting
-  html += `<div class="flow-card">
-    <div class="flow-card-header">${ico('phone')}Приветствие и Вступление <span class="flow-badge">Старт</span></div>
-    <div class="formgrid">
-      <div class="fld span2"><span class="lbl">Приветствие</span><input class="input" value="${esc(sc.greeting||'')}" onchange="window._currScenario.greeting=this.value;syncFlowToJSON()"></div>
-      <div class="fld span2"><span class="lbl">Доп. вступительный текст (опционально)</span><input class="input" value="${esc(sc.intro||'')}" onchange="window._currScenario.intro=this.value;syncFlowToJSON()"></div>
+  // NODE 1: Root Start Node
+  html += `<div class="tree-node start-node">
+    <div class="tree-node-header">
+      <div class="title">${ico('phone')}<span style="color:var(--cy)">1. Старт: Приветствие и Вступление</span> <span class="badge cy">НАЧАЛО ДИАЛОГА</span></div>
     </div>
-  </div>
-  <div class="flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>`;
+    <div class="formgrid">
+      <div class="fld span2"><span class="lbl">Приветствие бота</span>
+        <input class="input" value="${esc(sc.greeting||'')}" placeholder="Здравствуйте!" onchange="window._currScenario.greeting=this.value;syncFlowToJSON()"></div>
+      <div class="fld span2"><span class="lbl">Вступительный текст (необязательно)</span>
+        <input class="input" value="${esc(sc.intro||'')}" placeholder="Служба заботы о клиентах..." onchange="window._currScenario.intro=this.value;syncFlowToJSON()"></div>
+    </div>
+  </div>`;
 
-  // Questions
+  // QUESTIONS NODES
   (sc.questions || []).forEach((q, qIdx) => {
     const qId = q.id || ('q' + (qIdx + 1));
-    html += `<div class="flow-card">
-      <div class="flow-card-header" style="justify-content:space-between">
-        <span>${ico('help-circle')}Вопрос #${qIdx+1} (${esc(qId)})</span>
-        <button class="btn d sm" onclick="delFlowQuestion(${qIdx})">${ico('trash')}Удалить вопрос</button>
+    
+    // Connector down
+    html += `<div class="tree-connector-v"><div class="line"></div><div class="arrow">▼</div></div>`;
+    
+    html += `<div class="tree-node question-node">
+      <div class="tree-node-header">
+        <div class="title">${ico('help-circle')}<span style="color:var(--acc2)">Вопрос #${qIdx+1} (${esc(qId)})</span></div>
+        <button class="btn d sm" type="button" onclick="delFlowQuestion(${qIdx})">${ico('trash')}Удалить вопрос</button>
       </div>
-      <div class="fld" style="margin-bottom:10px"><span class="lbl">Текст вопроса абоненту</span>
-        <input class="input" value="${esc(q.text||'')}" onchange="window._currScenario.questions[${qIdx}].text=this.value;syncFlowToJSON()"></div>
-      <span class="lbl">Варианты ответов и ветвление:</span>
-      <div class="flow-choices">`;
+      <div class="fld" style="margin-bottom:12px"><span class="lbl">Текст вопроса бота клиенту</span>
+        <input class="input" value="${esc(q.text||'')}" placeholder="Вас интересует предложение? Нажмите 1 — да, 2 — нет" onchange="window._currScenario.questions[${qIdx}].text=this.value;syncFlowToJSON()"></div>
+      
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">
+        <span class="lbl" style="margin:0">🌿 Ветки ответов и условия перехода:</span>
+        <button class="btn ghost sm" type="button" onclick="addFlowChoice(${qIdx})">${ico('plus')}Добавить ветку ответа</button>
+      </div>
+      <div class="tree-branches">`;
       
     const choices = q.choices || {};
-    Object.keys(choices).forEach((chKey) => {
+    const choiceKeys = Object.keys(choices);
+    if (choiceKeys.length === 0) {
+      html += `<div class="dim hint" style="grid-column:1/-1;padding:8px">Ветвей нет. Нажмите «Добавить ветку ответа», чтобы задать реакцию на выбор клиента.</div>`;
+    }
+    
+    choiceKeys.forEach((chKey) => {
       const ch = choices[chKey] || {};
-      let nextOpts = `<option value="end" ${ch.next==='end'?'selected':''}>Завершить звонок</option>`;
+      let nextOpts = `<option value="end" ${ch.next==='end'?'selected':''}>🏁 Завершить звонок</option>`;
       (sc.questions || []).forEach((otherQ, otherIdx) => {
         const oId = otherQ.id || ('q' + (otherIdx + 1));
         if (otherIdx !== qIdx) {
-          nextOpts += `<option value="${esc(oId)}" ${ch.next===oId?'selected':''}>Перейти к Вопросу #${otherIdx+1} (${esc(oId)})</option>`;
+          nextOpts += `<option value="${esc(oId)}" ${ch.next===oId?'selected':''}>Переход к Вопросу #${otherIdx+1} (${esc(oId)})</option>`;
         }
       });
 
-      html += `<div class="flow-choice-item">
-        <span class="badge b" style="min-width:44px">Кнопка ${esc(chKey)}</span>
-        <span class="lbl" style="margin:0">→</span>
-        <select class="select sm" style="width:170px" onchange="updateFlowChoiceNext(${qIdx},'${esc(chKey)}',this.value)">${nextOpts}</select>
-        <span class="lbl" style="margin:0;margin-left:6px">Квалификация:</span>
-        <select class="select sm" style="width:150px" onchange="updateFlowChoiceQual(${qIdx},'${esc(chKey)}',this.value)">
-          <option value="null" ${ch.qualified===null||ch.qualified===undefined?'selected':''}>Без изменений</option>
-          <option value="true" ${ch.qualified===true?'selected':''}>Успешно (Да)</option>
-          <option value="false" ${ch.qualified===false?'selected':''}>Отказ (Нет)</option>
-        </select>
-        <button class="btn x sm" style="margin-left:auto" onclick="delFlowChoice(${qIdx},'${esc(chKey)}')">${ico('trash')}</button>
+      html += `<div class="tree-branch-card">
+        <div class="tree-branch-header">
+          <span class="badge b">Кнопка / Ответ: «${esc(chKey)}»</span>
+          <button class="btn x sm" type="button" style="padding:2px 6px" onclick="delFlowChoice(${qIdx},'${esc(chKey)}')">${ico('trash')}</button>
+        </div>
+        <div class="fld"><span class="lbl" style="margin:0">Куда переходить:</span>
+          <select class="select sm" onchange="updateFlowChoiceNext(${qIdx},'${esc(chKey)}',this.value)">${nextOpts}</select>
+        </div>
+        <div class="fld"><span class="lbl" style="margin:0">Результат квалификации:</span>
+          <select class="select sm" onchange="updateFlowChoiceQual(${qIdx},'${esc(chKey)}',this.value)">
+            <option value="null" ${ch.qualified===null||ch.qualified===undefined?'selected':''}>⚪ Без изменений</option>
+            <option value="true" ${ch.qualified===true?'selected':''}>🟢 Успешно (Квалифицирован)</option>
+            <option value="false" ${ch.qualified===false?'selected':''}>🔴 Отказ (Не квалифицирован)</option>
+          </select>
+        </div>
       </div>`;
     });
     
-    html += `<button class="btn ghost sm" style="margin-top:6px;width:fit-content" onclick="addFlowChoice(${qIdx})">${ico('plus')}Добавить вариант ответа</button>
-    </div></div>
-    <div class="flow-connector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>`;
+    html += `</div></div>`;
   });
 
-  html += `<button class="btn g sm" style="width:fit-content" onclick="addFlowQuestion()">${ico('plus')}Добавить новый вопрос</button>`;
+  // Connector down to add question button
+  html += `<div class="tree-connector-v"><div class="line"></div><div class="arrow">▼</div></div>`;
+  
+  html += `<button class="btn g sm" type="button" style="padding:9px 18px;font-size:13px" onclick="addFlowQuestion()">${ico('plus')}Добавить новый шаг-вопрос в дерево</button>`;
+  
+  html += `<div class="tree-connector-v"><div class="line"></div><div class="arrow">▼</div></div>`;
 
-  // Final Node
-  html += `<div class="flow-card" style="margin-top:12px">
-    <div class="flow-card-header">${ico('check-circle')}Финальные реплики бота</div>
-    <div class="formgrid">
-      <div class="fld span2"><span class="lbl">При успехе (Квалифицирован)</span>
-        <input class="input" value="${esc(sc.qualified_text||'')}" onchange="window._currScenario.qualified_text=this.value;syncFlowToJSON()"></div>
-      <div class="fld span2"><span class="lbl">При отказе / завершении</span>
-        <input class="input" value="${esc(sc.not_qualified_text||'')}" onchange="window._currScenario.not_qualified_text=this.value;syncFlowToJSON()"></div>
+  // FINAL NODES: Success & Fail
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;width:100%;max-width:720px">
+    <div class="tree-node success-node">
+      <div class="tree-node-header">
+        <div class="title">${ico('check-circle')}<span style="color:var(--ok)">Успех (Квалифицирован)</span></div>
+      </div>
+      <div class="fld"><span class="lbl">Реплика бота при успехе</span>
+        <input class="input" value="${esc(sc.qualified_text||'')}" placeholder="Спасибо, соединяю со специалистом" onchange="window._currScenario.qualified_text=this.value;syncFlowToJSON()"></div>
     </div>
-  </div></div>`;
+    <div class="tree-node fail-node">
+      <div class="tree-node-header">
+        <div class="title">${ico('alert-circle')}<span style="color:var(--bad)">Отказ / Завершение</span></div>
+      </div>
+      <div class="fld"><span class="lbl">Реплика бота при отказе</span>
+        <input class="input" value="${esc(sc.not_qualified_text||'')}" placeholder="Спасибо за время, до свидания" onchange="window._currScenario.not_qualified_text=this.value;syncFlowToJSON()"></div>
+    </div>
+  </div>`;
+
+  html += `</div>`;
 
   container.innerHTML = html;
   syncFlowToJSON();
