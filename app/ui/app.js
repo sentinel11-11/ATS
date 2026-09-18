@@ -601,6 +601,7 @@ async function loadCamps(){
       <button class="iconbtn sm" style="width:29px;height:29px;color:#7fe7c0" data-a="cstart" data-id="${c.id}" title="Запустить">${ico('play')}</button>
       <button class="iconbtn sm" style="width:29px;height:29px" data-a="cpause" data-id="${c.id}" title="Пауза">${ico('pause')}</button>
       <button class="iconbtn sm" style="width:29px;height:29px;color:#ffa7b4" data-a="cstop" data-id="${c.id}" title="Остановить">${ico('stop')}</button>
+      <button class="iconbtn sm" style="width:29px;height:29px;color:var(--bad)" data-a="delcamp" data-id="${c.id}" title="Удалить кампанию">${ico('trash')}</button>
     </span></td>`:''}</tr>`).join('')
    ||`<tr><td colspan="7">${empty('campaigns','Кампаний пока нет','Создайте первую кампанию и добавьте контакты')}</td></tr>`;
   wire($('campsTable'));
@@ -669,7 +670,8 @@ async function showCamp(id){
       <span class="sp grow" style="flex:1"></span>
       ${isAdmin()?`<button class="btn ghost sm" data-a="addc" data-id="${c.id}">${ico('plus')}Контакты</button>
       <button class="btn ghost sm" data-a="clearc" data-id="${c.id}">Очистить</button>
-      <button class="btn ghost sm" data-a="editc2" data-id="${c.id}">${ico('edit')}Настройки</button>`:''}
+      <button class="btn ghost sm" data-a="editc2" data-id="${c.id}">${ico('edit')}Настройки</button>
+      <button class="btn d sm" data-a="delcamp" data-id="${c.id}">${ico('trash')}Удалить</button>`:''}
     </div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px">
       <div class="metric"><b>${nFmt(items.length)}</b><span class="l">контактов в списке</span></div>
@@ -786,6 +788,12 @@ async function clearCamp(id){
   if(j&&j.ok){toast('Список очищен');showCamp(id);}
   else toast('Очистить нельзя ('+((j&&j.error)||'?')+'): сначала остановите кампанию и дождитесь конца звонков','err');
 }
+async function delCamp(id){
+  if(!(await ask('Удалить кампанию','Кампания и её очередь звонков будут полностью удалены. История совершенных звонков сохранится.','Удалить')))return;
+  const j=await safe(()=>api(`/campaigns/${id}/delete`,{body:{}}));
+  if(j&&j.ok){toast('Кампания удалена');$('campDetail').innerHTML='';await loadCamps();safe(loadDash);}
+  else toast('Удалить нельзя ('+((j&&j.error)||'?')+'): сначала остановите кампанию','err');
+}
 
 /* ================= пул номеров ================= */
 async function loadNumbers(){
@@ -834,6 +842,12 @@ async function resetPool(){
   if(!(await ask('Сбросить лимиты и карантин','Суточные счётчики всех номеров будут обнулены, карантин снят.','Сбросить',false)))return;
   const j=await safe(()=>api('/numbers/reset',{body:{}}));
   if(j&&j.ok){toast('Лимиты и карантин сброшены');await loadNumbers();safe(loadDash);}
+}
+async function clearPool(){
+  if(!(await ask('Очистить весь пул номеров','Все номера будут полностью удалены из пула. История прошлого звонков сохранится.','Очистить пул',false)))return;
+  const j=await safe(()=>api('/numbers/clear',{body:{}}));
+  if(j&&j.ok){toast('Пул номеров очищен');await loadNumbers();safe(loadDash);}
+  else toast('Ошибка при очистке пула','err');
 }
 
 /* ================= ACD ================= */
@@ -1347,6 +1361,7 @@ const Actions={
   accept:el=>acceptAcd(parseInt(el.dataset.id),parseInt(el.dataset.call||0)),
   addc:el=>addContactsToCamp(parseInt(el.dataset.id)),
   clearc:el=>clearCamp(parseInt(el.dataset.id)),
+  delcamp:el=>delCamp(parseInt(el.dataset.id)),
   editc2:el=>{const c=state.campaigns.find(x=>x.id===parseInt(el.dataset.id));editCampaign(c);},
   uprec:el=>{const campId=parseInt($('campDetail').dataset.cid||'0');upRecording(parseInt(el.dataset.id),campId);},
   delbl:el=>delBlack(parseInt(el.dataset.id)),

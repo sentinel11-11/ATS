@@ -1,6 +1,4 @@
 @echo off
-REM LEGACY v1: собирает старый прототип (server.py + xp_bridge), НЕ ATS v2.
-REM Актуальный продукт запускается как: python -m app.run  (см. README_V2.md)
 cd /d "%~dp0"
 where py >nul 2>nul
 if %errorlevel%==0 (

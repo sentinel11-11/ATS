@@ -451,6 +451,9 @@ def route(method, path, body, headers):
             numbers_mod.delete_number(nid)
             return OK, 200
         return {"error": "bad_id"}, 400
+    if p == ["numbers", "clear"]:
+        db.q("DELETE FROM numbers")
+        return OK, 200
     if p == ["numbers", "reset"]:
         for n in numbers_mod.list_numbers(include_disabled=True):
             numbers_mod.update_number(n["id"], {"quarantined": False, "daily_count": 0, "cooldown_until": ""})
@@ -499,6 +502,17 @@ def route(method, path, body, headers):
             if active and active["c"]:
                 return {"ok": False, "error": "calls_in_progress"}, 400
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
+            return OK, 200
+        if act == "delete":
+            st = db.fetch1("SELECT status FROM campaigns WHERE id=?", (cid,))
+            if st and st["status"] == "running":
+                return {"ok": False, "error": "campaign_running"}, 400
+            active = db.fetch1("SELECT COUNT(*) c FROM calls WHERE campaign_id=? AND ended_at=''",
+                               (cid,))
+            if active and active["c"]:
+                return {"ok": False, "error": "calls_in_progress"}, 400
+            db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
+            db.q("DELETE FROM campaigns WHERE id=?", (cid,))
             return OK, 200
     # шаблоны
     if p == ["templates", "save"]:
