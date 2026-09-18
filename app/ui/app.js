@@ -588,6 +588,9 @@ async function loadCamps(){
   if(!j||j.error)return;
   state.campaigns=j.campaigns;
   $('cCnt').textContent='· '+nFmt(j.campaigns.length);
+  const btn=$('btnClearAllCamps');
+  if(btn)btn.classList.toggle('hidden',!j.campaigns.length);
+  if(!j.campaigns.length)$('campDetail').innerHTML='';
   $('campsTable').innerHTML=`<tr><th style="width:52px">ID</th><th>Кампания</th><th>Сценарий</th><th>Прогресс</th><th>Статус</th><th class="num">Успешно / звонков</th>${isAdmin()?'<th class="num">Действия</th>':''}</tr>`+
    j.campaigns.map(c=>`<tr data-cid="${c.id}">
     <td class="dim">#${c.id}</td>
@@ -807,6 +810,8 @@ async function loadNumbers(){
   if(!j||j.error)return;
   state.numbers=j.numbers;
   $('nCnt').textContent='· '+nFmt(j.numbers.length);
+  const btn=$('btnClearPool');
+  if(btn)btn.classList.toggle('hidden',!j.numbers.length);
   const grid=$('poolGrid');
   grid.innerHTML=j.numbers.length?j.numbers.map(n=>numCard(n)).join('')
     :empty('phone','Номеров пока нет','Добавьте первый номер Caller ID — без него звонки не пойдут');
