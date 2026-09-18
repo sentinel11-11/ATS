@@ -286,12 +286,13 @@ function numCard(n){
   return `<div class="numcard"><div class="top">
     <span class="av" style="--h:${AVH(n.number)}">${ico('phone')}</span>
     <div style="min-width:0"><div class="num">${esc(n.number)}</div><div class="lbl">${esc(n.label||'без метки')}</div></div>
-    <span class="acts">${isAdmin()?`<button class="iconbtn sm" style="width:30px;height:30px" data-a="editn" data-id="${n.id}" title="Изменить">${ico('edit')}</button>`:''}</span></div>
+    <span class="acts">${isAdmin()?`<button class="iconbtn sm" style="width:30px;height:30px" data-a="editn" data-id="${n.id}" title="Изменить">${ico('edit')}</button><button class="iconbtn sm" style="width:30px;height:30px;color:var(--bad)" data-a="deln" data-id="${n.id}" title="Удалить номер">${ico('trash')}</button>`:''}</span></div>
     <div class="meta"><span class="badge ${n.active?'g':'b'}">${n.active?'активен':'выключен'}</span>
       <span class="badge b">${esc(n.provider)}</span>${n.quarantined?'<span class="badge r">карантин</span>':''}${n.cooling?'<span class="badge y">остывает</span>':''}${n.enabled_outgoing===false?'<span class="badge r" title="ВАТС запретила исходящие с номера (caller-ids)">исходящие запрещены</span>':''}</div>
     <div>${pbar(n.daily_count,n.daily_limit,barCls)}</div>
     ${isAdmin()?`<div class="toolbar" style="margin:2px 0 0"><button class="btn ghost sm" data-a="quar" data-id="${n.id}" data-on="${n.quarantined?0:1}">${n.quarantined?'Снять карантин':'Карантин'}</button>
-      <button class="btn ghost sm" data-a="togglen" data-id="${n.id}" data-on="${n.active?0:1}">${n.active?'Выключить':'Включить'}</button></div>`:''}
+      <button class="btn ghost sm" data-a="togglen" data-id="${n.id}" data-on="${n.active?0:1}">${n.active?'Выключить':'Включить'}</button>
+      <button class="btn d sm" data-a="deln" data-id="${n.id}">${ico('trash')}Удалить</button></div>`:''}
   </div>`;
 }
 async function saveSim(){

@@ -115,7 +115,8 @@
     <section id="campaigns" class="section">
       <div class="panel">
         <div class="toolbar"><h2 style="margin:0" class="grow">Кампании обзвона <span class="cnt" id="cCnt"></span></h2>
-          <button class="btn admOnly" onclick="editCampaign()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Новая кампания</button></div>
+          <button class="btn admOnly" onclick="editCampaign()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Новая кампания</button>
+          <button class="btn d admOnly" onclick="clearAllCamps()">Очистить все кампании</button></div>
         <div class="tblwrap"><table id="campsTable"></table></div>
       </div>
       <div id="campDetail"></div>
@@ -153,6 +154,7 @@
         <div class="toolbar">
           <h2 style="margin:0" class="grow">Пул номеров <span class="cnt" id="nCnt"></span></h2>
           <button class="btn ghost admOnly" onclick="resetPool()">Сбросить лимиты/карантин</button>
+          <button class="btn d admOnly" onclick="clearPool()">Очистить весь пул</button>
         </div>
         <div class="toolbar admOnly" id="numAddBar" style="margin-bottom:14px;padding:10px 12px;border:1px dashed var(--line2);border-radius:12px">
           <input id="nNumber" class="input" placeholder="Номер E.164, напр. 79000000000" style="width:220px">
