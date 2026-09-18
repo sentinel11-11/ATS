@@ -13,7 +13,7 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
     return {
       greeting: parsed.greeting || 'Здравствуйте!',
       intro: parsed.intro || '',
-      questions: parsed.questions || [],
+      questions: Array.isArray(parsed.questions) ? parsed.questions : [],
       qualified_text: parsed.qualified_text || 'Спасибо, передаю ваш звонок специалисту.',
       not_qualified_text: parsed.not_qualified_text || 'Спасибо, до свидания.',
       ...parsed,
@@ -22,25 +22,35 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
   const [jsonText, setJsonText] = useState(() => JSON.stringify(sc, null, 2));
 
   const updateSc = (newSc) => {
-    setSc(newSc);
-    const text = JSON.stringify(newSc, null, 2);
+    const safeSc = {
+      ...newSc,
+      questions: Array.isArray(newSc?.questions) ? newSc.questions : [],
+    };
+    setSc(safeSc);
+    const text = JSON.stringify(safeSc, null, 2);
     setJsonText(text);
-    if (onChange) onChange(newSc);
+    if (onChange) onChange(safeSc);
   };
 
   const handleJsonChange = (val) => {
     setJsonText(val);
     try {
       const parsed = JSON.parse(val);
-      setSc(parsed);
-      if (onChange) onChange(parsed);
+      const safeParsed = {
+        ...parsed,
+        questions: Array.isArray(parsed?.questions) ? parsed.questions : [],
+      };
+      setSc(safeParsed);
+      if (onChange) onChange(safeParsed);
     } catch (e) {
       // syntax error while typing
     }
   };
 
+  const questionsList = Array.isArray(sc?.questions) ? sc.questions : [];
+
   const addQuestion = () => {
-    const qCount = sc.questions.length + 1;
+    const qCount = questionsList.length + 1;
     const newQ = {
       id: `q${qCount}`,
       text: 'Интересует ли вас предложение? Нажмите 1 — да, 2 — нет.',
@@ -49,23 +59,26 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
         '2': { next: 'end', qualified: false },
       },
     };
-    updateSc({ ...sc, questions: [...sc.questions, newQ] });
+    updateSc({ ...sc, questions: [...questionsList, newQ] });
   };
 
   const removeQuestion = (qIdx) => {
-    const nextQuestions = sc.questions.filter((_, idx) => idx !== qIdx);
+    const nextQuestions = questionsList.filter((_, idx) => idx !== qIdx);
     updateSc({ ...sc, questions: nextQuestions });
   };
 
   const updateQuestionText = (qIdx, text) => {
-    const nextQuestions = [...sc.questions];
-    nextQuestions[qIdx].text = text;
-    updateSc({ ...sc, questions: nextQuestions });
+    const nextQuestions = [...questionsList];
+    if (nextQuestions[qIdx]) {
+      nextQuestions[qIdx].text = text;
+      updateSc({ ...sc, questions: nextQuestions });
+    }
   };
 
   const addBranch = (qIdx) => {
-    const nextQuestions = [...sc.questions];
+    const nextQuestions = [...questionsList];
     const q = nextQuestions[qIdx];
+    if (!q) return;
     const choices = { ...(q.choices || {}) };
     const nextKey = String(Object.keys(choices).length + 1);
     choices[nextKey] = { next: 'end', qualified: null };
@@ -74,7 +87,8 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
   };
 
   const removeBranch = (qIdx, key) => {
-    const nextQuestions = [...sc.questions];
+    const nextQuestions = [...questionsList];
+    if (!nextQuestions[qIdx]) return;
     const choices = { ...(nextQuestions[qIdx].choices || {}) };
     delete choices[key];
     nextQuestions[qIdx].choices = choices;
@@ -82,7 +96,8 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
   };
 
   const updateBranchChoice = (qIdx, key, field, val) => {
-    const nextQuestions = [...sc.questions];
+    const nextQuestions = [...questionsList];
+    if (!nextQuestions[qIdx]) return;
     const choices = { ...(nextQuestions[qIdx].choices || {}) };
     const choice = { ...(choices[key] || {}) };
     
@@ -160,7 +175,7 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
           </div>
 
           {/* Question Nodes */}
-          {sc.questions.map((q, qIdx) => {
+          {questionsList.map((q, qIdx) => {
             const qId = q.id || `q${qIdx + 1}`;
             const choices = q.choices || {};
             const choiceKeys = Object.keys(choices);
@@ -235,7 +250,7 @@ export default function ScenarioDecisionTree({ scenario, onChange }) {
                               onChange={(e) => updateBranchChoice(qIdx, key, 'next', e.target.value)}
                             >
                               <option value="end">🏁 Завершить звонок</option>
-                              {sc.questions.map((otherQ, otherIdx) => {
+                              {questionsList.map((otherQ, otherIdx) => {
                                 const oId = otherQ.id || `q${otherIdx + 1}`;
                                 if (otherIdx === qIdx) return null;
                                 return (
