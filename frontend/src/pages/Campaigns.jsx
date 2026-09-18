@@ -15,7 +15,9 @@ import {
   Radio,
   FileSpreadsheet,
   Database,
-  Users
+  Users,
+  Clock,
+  PhoneCall
 } from 'lucide-react';
 import { api } from '../api';
 import Modal from '../components/Modal';
@@ -32,6 +34,7 @@ export default function Campaigns({ addToast }) {
   const [expandedCampId, setExpandedCampId] = useState(null); // campaign ID expanded
   const [campDetailData, setCampDetailData] = useState(null);
   const [detailLoading, setCampDetailLoading] = useState(false);
+  const [detailTab, setDetailTab] = useState('items'); // 'items' | 'calls'
   const [timelineCallId, setTimelineCallId] = useState(null);
 
   // Add Contacts Picker Modal State
@@ -81,7 +84,12 @@ export default function Campaigns({ addToast }) {
   };
 
   const handleOpenEdit = (camp) => {
-    const c = camp || {
+    let workTime = '08:00-20:00';
+    if (camp?.schedule && typeof camp.schedule === 'object') {
+      workTime = `${camp.schedule.start || '08:00'}-${camp.schedule.end || '20:00'}`;
+    }
+
+    const c = camp ? { ...camp, work_time: workTime } : {
       id: 0,
       name: '',
       flow: 'operator',
@@ -96,8 +104,29 @@ export default function Campaigns({ addToast }) {
 
   const handleSave = async () => {
     if (!editingCamp || !editingCamp.name) return addToast('Укажите название кампании', 'warn');
+
+    let start = '08:00';
+    let end = '20:00';
+    if (editingCamp.work_time && editingCamp.work_time.includes('-')) {
+      const parts = editingCamp.work_time.split('-');
+      start = parts[0].trim() || '08:00';
+      end = parts[1].trim() || '20:00';
+    }
+
+    const payload = {
+      id: editingCamp.id || 0,
+      name: editingCamp.name,
+      flow: editingCamp.flow || 'operator',
+      template_id: parseInt(editingCamp.template_id || 1),
+      schedule: { start, end, days: [0, 1, 2, 3, 4, 5, 6] },
+      retry_delay_min: parseInt(editingCamp.retry_delay_min || 15),
+      retry_max: parseInt(editingCamp.retry_max || 2),
+      max_channels: parseInt(editingCamp.max_channels || 0),
+      connect_on_qualify: editingCamp.connect_on_qualify ?? true,
+    };
+
     const res = await api('/campaigns/save', {
-      body: editingCamp,
+      body: payload,
     });
 
     if (res && res.ok) {
@@ -278,7 +307,7 @@ export default function Campaigns({ addToast }) {
                         </span>
                       </div>
                       <p className="text-xs text-muted mt-0.5">
-                        Сценарий: <b className="text-white uppercase">{c.flow}</b> · Расписание: {c.work_time || '08:00-20:00'} · Контактов в очереди: {c.items_queued || 0}
+                        Сценарий: <b className="text-white uppercase">{c.flow}</b> · Расписание: {c.schedule?.start || '08:00'}–{c.schedule?.end || '20:00'} · В очереди: {c.items_queued || 0}
                       </p>
                     </div>
                   </div>
@@ -364,57 +393,123 @@ export default function Campaigns({ addToast }) {
                       <div className="py-6 text-center text-muted animate-pulse">Загрузка карточки кампании...</div>
                     ) : (
                       <div className="flex flex-col gap-4">
-                        {/* Calls Table for Campaign */}
-                        <div className="overflow-x-auto border border-line rounded-xl bg-[#081221]">
-                          <table className="w-full text-left text-xs">
-                            <thead>
-                              <tr className="border-b border-line text-muted uppercase text-[10px] bg-[#0d1a2e]">
-                                <th className="py-2.5 px-3"># Call ID</th>
-                                <th className="py-2.5 px-3">Время</th>
-                                <th className="py-2.5 px-3">Клиент</th>
-                                <th className="py-2.5 px-3">С номера</th>
-                                <th className="py-2.5 px-3">Длительность</th>
-                                <th className="py-2.5 px-3">Результат</th>
-                                <th className="py-2.5 px-3 text-right">Хронология</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {!campDetailData?.calls || campDetailData.calls.length === 0 ? (
-                                <tr>
-                                  <td colSpan={7} className="py-6 text-center text-dim">
-                                    Звонков по этой кампании пока нет.
-                                  </td>
+                        {/* Detail Tab Switcher: Items Queue vs Calls Journal */}
+                        <div className="flex items-center gap-2 border-b border-line pb-2">
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab('items')}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                              detailTab === 'items'
+                                ? 'bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] text-white shadow'
+                                : 'bg-[#081221] text-muted hover:text-white'
+                            }`}
+                          >
+                            📋 Очередь контактов ({campDetailData?.items?.length || 0})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDetailTab('calls')}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                              detailTab === 'calls'
+                                ? 'bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] text-white shadow'
+                                : 'bg-[#081221] text-muted hover:text-white'
+                            }`}
+                          >
+                            📞 Совершенные звонки ({campDetailData?.calls?.length || 0})
+                          </button>
+                        </div>
+
+                        {detailTab === 'items' ? (
+                          <div className="overflow-x-auto border border-line rounded-xl bg-[#081221]">
+                            <table className="w-full text-left text-xs">
+                              <thead>
+                                <tr className="border-b border-line text-muted uppercase text-[10px] bg-[#0d1a2e]">
+                                  <th className="py-2.5 px-3"># ID</th>
+                                  <th className="py-2.5 px-3">Телефон</th>
+                                  <th className="py-2.5 px-3">Статус</th>
+                                  <th className="py-2.5 px-3">Попыток</th>
+                                  <th className="py-2.5 px-3">След. попытка</th>
                                 </tr>
-                              ) : (
-                                campDetailData.calls.map((call) => (
-                                  <tr key={call.id} className="border-b border-line/40 hover:bg-white/5">
-                                    <td className="py-2.5 px-3 font-mono text-dim">#{call.id}</td>
-                                    <td className="py-2.5 px-3 text-muted">{call.started_at?.slice(0, 16).replace('T', ' ')}</td>
-                                    <td className="py-2.5 px-3 font-semibold text-white">
-                                      {call.contact_name || call.contact_phone}
-                                      <span className="block text-[10px] text-dim font-normal">{call.contact_phone}</span>
-                                    </td>
-                                    <td className="py-2.5 px-3 text-muted">{call.caller_id || '—'}</td>
-                                    <td className="py-2.5 px-3 text-muted">{call.duration_sec ? `${Math.round(call.duration_sec)} с` : '—'}</td>
-                                    <td className="py-2.5 px-3">
-                                      <span className="px-2 py-0.5 rounded-full bg-line text-muted text-[11px]">
-                                        {call.result || call.status}
-                                      </span>
-                                    </td>
-                                    <td className="py-2.5 px-3 text-right">
-                                      <button
-                                        onClick={() => setTimelineCallId(call.id)}
-                                        className="px-2.5 py-1 rounded-lg bg-acc/20 hover:bg-acc/30 text-acc2 text-[11px] font-semibold flex items-center gap-1 ml-auto"
-                                      >
-                                        <Radio className="w-3 h-3" /> ВАТС Таймлайн
-                                      </button>
+                              </thead>
+                              <tbody>
+                                {!campDetailData?.items || campDetailData.items.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={5} className="py-6 text-center text-dim">
+                                      В очереди контактов пока нет.
                                     </td>
                                   </tr>
-                                ))
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
+                                ) : (
+                                  campDetailData.items.map((it) => (
+                                    <tr key={it.id} className="border-b border-line/40 hover:bg-white/5">
+                                      <td className="py-2.5 px-3 font-mono text-dim">#{it.id}</td>
+                                      <td className="py-2.5 px-3 font-mono text-white font-semibold">{it.phone}</td>
+                                      <td className="py-2.5 px-3">
+                                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                                          it.status === 'queued' ? 'bg-acc/20 text-acc2' : it.status === 'exhausted' ? 'bg-bad/20 text-bad' : 'bg-line text-muted'
+                                        }`}>
+                                          {it.status}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 px-3 text-muted">{it.attempts || 0}</td>
+                                      <td className="py-2.5 px-3 text-dim">{it.next_attempt_at?.slice(0, 16) || '—'}</td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <div className="overflow-x-auto border border-line rounded-xl bg-[#081221]">
+                            <table className="w-full text-left text-xs">
+                              <thead>
+                                <tr className="border-b border-line text-muted uppercase text-[10px] bg-[#0d1a2e]">
+                                  <th className="py-2.5 px-3"># Call ID</th>
+                                  <th className="py-2.5 px-3">Время</th>
+                                  <th className="py-2.5 px-3">Клиент</th>
+                                  <th className="py-2.5 px-3">С номера</th>
+                                  <th className="py-2.5 px-3">Длительность</th>
+                                  <th className="py-2.5 px-3">Результат</th>
+                                  <th className="py-2.5 px-3 text-right">Хронология</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {!campDetailData?.calls || campDetailData.calls.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={7} className="py-6 text-center text-dim">
+                                      Звонков по этой кампании пока нет.
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  campDetailData.calls.map((call) => (
+                                    <tr key={call.id} className="border-b border-line/40 hover:bg-white/5">
+                                      <td className="py-2.5 px-3 font-mono text-dim">#{call.id}</td>
+                                      <td className="py-2.5 px-3 text-muted">{call.started_at?.slice(0, 16).replace('T', ' ')}</td>
+                                      <td className="py-2.5 px-3 font-semibold text-white">
+                                        {call.contact_name || call.contact_phone}
+                                        <span className="block text-[10px] text-dim font-normal">{call.contact_phone}</span>
+                                      </td>
+                                      <td className="py-2.5 px-3 text-muted">{call.caller_id || '—'}</td>
+                                      <td className="py-2.5 px-3 text-muted">{call.duration_sec ? `${Math.round(call.duration_sec)} с` : '—'}</td>
+                                      <td className="py-2.5 px-3">
+                                        <span className="px-2 py-0.5 rounded-full bg-line text-muted text-[11px]">
+                                          {call.result || call.status}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 px-3 text-right">
+                                        <button
+                                          onClick={() => setTimelineCallId(call.id)}
+                                          className="px-2.5 py-1 rounded-lg bg-acc/20 hover:bg-acc/30 text-acc2 text-[11px] font-semibold flex items-center gap-1 ml-auto"
+                                        >
+                                          <Radio className="w-3 h-3" /> ВАТС Таймлайн
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -461,10 +556,9 @@ export default function Campaigns({ addToast }) {
                 <label className="font-semibold text-muted block mb-1">Шаблон / сценарий бота</label>
                 <select
                   className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
-                  value={editingCamp.template_id || ''}
-                  onChange={(e) => setEditingCamp({ ...editingCamp, template_id: parseInt(e.target.value) || 0 })}
+                  value={editingCamp.template_id || 1}
+                  onChange={(e) => setEditingCamp({ ...editingCamp, template_id: parseInt(e.target.value) || 1 })}
                 >
-                  <option value={0}>Без шаблона</option>
                   {templates.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
@@ -476,7 +570,7 @@ export default function Campaigns({ addToast }) {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="font-semibold text-muted block mb-1">Рабочее время</label>
+                <label className="font-semibold text-muted block mb-1">Рабочее время (08:00-20:00)</label>
                 <input
                   className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
                   value={editingCamp.work_time || '08:00-20:00'}
@@ -498,12 +592,14 @@ export default function Campaigns({ addToast }) {
 
             <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t border-line">
               <button
+                type="button"
                 onClick={() => setEditingCamp(null)}
                 className="px-4 py-2 rounded-xl bg-line/50 hover:bg-line text-white font-semibold text-xs"
               >
                 Отмена
               </button>
               <button
+                type="button"
                 onClick={handleSave}
                 className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] hover:brightness-110 text-white font-bold text-xs shadow-lg shadow-acc/30"
               >
