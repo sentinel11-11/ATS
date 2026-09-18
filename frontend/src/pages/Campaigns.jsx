@@ -9,13 +9,13 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronUp,
-  Clock,
-  PhoneCall,
-  Users,
+  Search,
   CheckCircle2,
   AlertCircle,
   Radio,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Database,
+  Users
 } from 'lucide-react';
 import { api } from '../api';
 import Modal from '../components/Modal';
@@ -25,26 +25,35 @@ export default function Campaigns({ addToast }) {
   const [campaigns, setCampaigns] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [databases, setDatabases] = useState([]);
+  const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
+  
   const [editingCamp, setEditingCamp] = useState(null); // null = modal closed
   const [expandedCampId, setExpandedCampId] = useState(null); // campaign ID expanded
   const [campDetailData, setCampDetailData] = useState(null);
   const [detailLoading, setCampDetailLoading] = useState(false);
   const [timelineCallId, setTimelineCallId] = useState(null);
+
+  // Add Contacts Picker Modal State
   const [addContactsModalCampId, setAddContactsModalCampId] = useState(null);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [consentOnly, setConsentOnly] = useState(true);
+  const [selectedContactIds, setSelectedContactIds] = useState([]);
   const [selectedDbId, setSelectedDbId] = useState('');
 
   const loadData = async () => {
     setLoading(true);
-    const [cRes, tRes, dRes] = await Promise.all([
+    const [cRes, tRes, dRes, cntRes] = await Promise.all([
       api('/campaigns'),
       api('/templates'),
-      api('/databases')
+      api('/databases'),
+      api('/contacts')
     ]);
 
     if (cRes && cRes.campaigns) setCampaigns(cRes.campaigns);
     if (tRes && tRes.templates) setTemplates(tRes.templates);
     if (dRes && dRes.databases) setDatabases(dRes.databases);
+    if (cntRes && cntRes.contacts) setContacts(cntRes.contacts);
     setLoading(false);
   };
 
@@ -145,7 +154,61 @@ export default function Campaigns({ addToast }) {
     }
   };
 
-  const handleAddContactsToCamp = async () => {
+  // Add Contacts Handlers
+  const handleOpenAddContacts = (cid) => {
+    setAddContactsModalCampId(cid);
+    setSelectedContactIds([]);
+    setPickerSearch('');
+    setConsentOnly(true);
+    setSelectedDbId(databases[0]?.id || '');
+  };
+
+  const toggleSelectContact = (id) => {
+    setSelectedContactIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleAddSelectedContacts = async () => {
+    if (!addContactsModalCampId || selectedContactIds.length === 0) {
+      return addToast('Выберите хотя бы один контакт', 'warn');
+    }
+
+    const res = await api(`/campaigns/${addContactsModalCampId}/add-contacts`, {
+      method: 'POST',
+      body: { contact_ids: selectedContactIds },
+    });
+
+    if (res && res.ok) {
+      addToast(`Добавлено контактов: +${res.added || 0}`, 'ok');
+      setAddContactsModalCampId(null);
+      loadData();
+      if (expandedCampId === addContactsModalCampId) loadCampDetail(addContactsModalCampId);
+    } else {
+      addToast('Ошибка добавления: ' + (res?.error || '?'), 'err');
+    }
+  };
+
+  const handleAddAllConsentContacts = async () => {
+    const validIds = contacts.filter((c) => c.consent).map((c) => c.id);
+    if (validIds.length === 0) return addToast('Нет контактов с согласием', 'warn');
+
+    const res = await api(`/campaigns/${addContactsModalCampId}/add-contacts`, {
+      method: 'POST',
+      body: { contact_ids: validIds },
+    });
+
+    if (res && res.ok) {
+      addToast(`Добавлено контактов с согласием: +${res.added || 0}`, 'ok');
+      setAddContactsModalCampId(null);
+      loadData();
+      if (expandedCampId === addContactsModalCampId) loadCampDetail(addContactsModalCampId);
+    } else {
+      addToast('Ошибка добавления: ' + (res?.error || '?'), 'err');
+    }
+  };
+
+  const handleAddDatabaseToCamp = async () => {
     if (!addContactsModalCampId || !selectedDbId) return addToast('Выберите базу контактов', 'warn');
     const res = await api(`/campaigns/${addContactsModalCampId}/add-contacts`, {
       method: 'POST',
@@ -153,15 +216,26 @@ export default function Campaigns({ addToast }) {
     });
 
     if (res && res.ok) {
-      addToast(`Добавлено контактов: +${res.added || 0}`, 'ok');
+      addToast(`Добавлено контактов из базы: +${res.added || 0}`, 'ok');
       setAddContactsModalCampId(null);
-      setSelectedDbId('');
       loadData();
       if (expandedCampId === addContactsModalCampId) loadCampDetail(addContactsModalCampId);
     } else {
-      addToast('Ошибка добавления контактов: ' + (res?.error || '?'), 'err');
+      addToast('Ошибка добавления базы: ' + (res?.error || '?'), 'err');
     }
   };
+
+  // Filter contacts for picker
+  const filteredContacts = contacts.filter((c) => {
+    if (consentOnly && !c.consent) return false;
+    if (pickerSearch) {
+      const q = pickerSearch.toLowerCase();
+      const matchName = (c.name || '').toLowerCase().includes(q);
+      const matchPhone = (c.phone || '').includes(q);
+      return matchName || matchPhone;
+    }
+    return true;
+  });
 
   return (
     <div className="flex flex-col gap-6 animate-in fade-in duration-200">
@@ -204,7 +278,7 @@ export default function Campaigns({ addToast }) {
                         </span>
                       </div>
                       <p className="text-xs text-muted mt-0.5">
-                        Сценарий: <b className="text-white uppercase">{c.flow}</b> · Расписание: {c.work_time || '08:00-20:00'} · Контактов: {c.items_queued || 0} в очереди
+                        Сценарий: <b className="text-white uppercase">{c.flow}</b> · Расписание: {c.work_time || '08:00-20:00'} · Контактов в очереди: {c.items_queued || 0}
                       </p>
                     </div>
                   </div>
@@ -266,7 +340,7 @@ export default function Campaigns({ addToast }) {
                       </h3>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => setAddContactsModalCampId(c.id)}
+                          onClick={() => handleOpenAddContacts(c.id)}
                           className="px-3 py-1.5 rounded-xl bg-acc/20 hover:bg-acc/30 text-acc2 font-semibold text-xs flex items-center gap-1"
                         >
                           <Plus className="w-3.5 h-3.5" /> Добавить контакты
@@ -440,42 +514,130 @@ export default function Campaigns({ addToast }) {
         )}
       </Modal>
 
-      {/* Add Contacts to Campaign Modal */}
+      {/* Advanced Add Contacts Picker Modal */}
       <Modal
         isOpen={!!addContactsModalCampId}
         onClose={() => setAddContactsModalCampId(null)}
-        title="Добавить базу контактов в кампанию"
+        title={`Добавить контакты в кампанию #${addContactsModalCampId}`}
+        wide={true}
       >
         <div className="flex flex-col gap-4 text-xs">
-          <div>
-            <label className="font-semibold text-muted block mb-1">Выберите базу контактов</label>
-            <select
-              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc text-sm"
-              value={selectedDbId}
-              onChange={(e) => setSelectedDbId(e.target.value)}
-            >
-              <option value="">-- Выберите базу --</option>
-              {databases.map((db) => (
-                <option key={db.id} value={db.id}>
-                  {db.name} ({db.contacts_count || 0} контактов)
-                </option>
-              ))}
-            </select>
+          {/* Section 1: Individual Contacts Picklist */}
+          <div className="flex flex-col gap-3 p-4 rounded-2xl bg-[#081221] border border-line">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="font-bold text-white text-sm flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-acc2" /> Выбор отдельных контактов галочками
+              </span>
+              <label className="flex items-center gap-2 cursor-pointer text-muted font-medium">
+                <input
+                  type="checkbox"
+                  checked={consentOnly}
+                  onChange={(e) => setConsentOnly(e.target.checked)}
+                  className="accent-acc"
+                />
+                <span>Только с согласием (152-ФЗ)</span>
+              </label>
+            </div>
+
+            {/* Filter Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-dim absolute left-3 top-2.5" />
+              <input
+                type="text"
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+                placeholder="Фильтр по имени или телефону..."
+                className="w-full bg-[#0a1628] border border-line2 rounded-xl pl-9 pr-3 py-2 text-xs text-white outline-none focus:border-acc"
+              />
+            </div>
+
+            {/* Contact List */}
+            <div className="max-h-56 overflow-y-auto border border-line rounded-xl p-2 bg-[#060d18] flex flex-col gap-1">
+              {filteredContacts.length === 0 ? (
+                <span className="text-dim p-4 text-center">Контакты не найдены</span>
+              ) : (
+                filteredContacts.map((cnt) => {
+                  const isChecked = selectedContactIds.includes(cnt.id);
+
+                  return (
+                    <label
+                      key={cnt.id}
+                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors ${
+                        isChecked ? 'bg-acc/15 border border-acc/30' : 'hover:bg-white/5'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleSelectContact(cnt.id)}
+                          className="accent-acc w-4 h-4"
+                        />
+                        <span className="font-semibold text-white">{cnt.name || 'Без имени'}</span>
+                        <span className="font-mono text-muted">{cnt.phone}</span>
+                      </div>
+                      {!cnt.consent && (
+                        <span className="px-2 py-0.5 rounded bg-bad/20 text-bad text-[10px] font-semibold">
+                          Нет согласия
+                        </span>
+                      )}
+                    </label>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-dim">
+                Найдено: {filteredContacts.length} · Выбрано: {selectedContactIds.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddSelectedContacts}
+                  disabled={selectedContactIds.length === 0}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] font-bold text-white shadow-lg disabled:opacity-50"
+                >
+                  Добавить выбранные ({selectedContactIds.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddAllConsentContacts}
+                  className="px-4 py-2 rounded-xl bg-line/60 hover:bg-line text-white font-semibold"
+                >
+                  Все с согласием
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t border-line">
-            <button
-              onClick={() => setAddContactsModalCampId(null)}
-              className="px-4 py-2 rounded-xl bg-line/50 hover:bg-line text-white font-semibold text-xs"
-            >
-              Отмена
-            </button>
-            <button
-              onClick={handleAddContactsToCamp}
-              className="px-5 py-2 rounded-xl bg-gradient-to-r from-[#5b8cff] to-[#3d6bff] hover:brightness-110 text-white font-bold text-xs shadow-lg shadow-acc/30"
-            >
-              Добавить контакты
-            </button>
+          {/* Section 2: Add Entire Database Base */}
+          <div className="flex flex-col gap-3 p-4 rounded-2xl bg-[#081221] border border-line">
+            <span className="font-bold text-white text-sm flex items-center gap-1.5">
+              <Database className="w-4 h-4 text-cy" /> Добавить базу целей целиком
+            </span>
+            <div className="flex items-center gap-3">
+              <select
+                className="flex-1 bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc text-xs"
+                value={selectedDbId}
+                onChange={(e) => setSelectedDbId(e.target.value)}
+              >
+                <option value="">-- Выберите зарегистрированную базу --</option>
+                {databases.map((db) => (
+                  <option key={db.id} value={db.id}>
+                    {db.name} ({db.contacts_count || 0} контактов)
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleAddDatabaseToCamp}
+                disabled={!selectedDbId}
+                className="px-4 py-2 rounded-xl bg-line/60 hover:bg-line text-white font-semibold shrink-0 disabled:opacity-50"
+              >
+                Добавить базу целиком
+              </button>
+            </div>
           </div>
         </div>
       </Modal>
