@@ -105,11 +105,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_bytes(payload, "text/csv; charset=utf-8", status,
                                         {"Content-Disposition": "attachment; filename=" + fname})
             return self._send_json(payload, status)
-        if u.path in ("/", "/index.html"):
-            self._static("index.html")
-            return
         if u.path.startswith("/ui/"):
             self._static(u.path[len("/ui/"):])
+            return
+        if not u.path.startswith("/api/"):
+            rel = u.path.lstrip("/")
+            self._static(rel)
             return
         self._send_json({"ok": False, "error": "not_found"}, 404)
 
