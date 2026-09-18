@@ -445,6 +445,15 @@ def route(method, path, body, headers):
     if p == ["numbers", "quarantine"]:
         numbers_mod.quarantine(int(body.get("id", 0)), bool(body.get("on", True)))
         return OK, 200
+    if p == ["numbers", "delete"]:
+        nid = int(body.get("id", 0))
+        if nid:
+            numbers_mod.delete_number(nid)
+            return OK, 200
+        return {"error": "bad_id"}, 400
+    if p == ["numbers", "clear"]:
+        db.q("DELETE FROM numbers")
+        return OK, 200
     if p == ["numbers", "reset"]:
         for n in numbers_mod.list_numbers(include_disabled=True):
             numbers_mod.update_number(n["id"], {"quarantined": False, "daily_count": 0, "cooldown_until": ""})
@@ -452,6 +461,18 @@ def route(method, path, body, headers):
     # кампании
     if p == ["campaigns", "save"]:
         return _campaign_save(body)
+    if p == ["campaigns", "clear_all"]:
+        running = db.fetch("SELECT id FROM campaigns WHERE status='running'")
+        rids = [x["id"] for x in running]
+        if rids:
+            excl = "WHERE campaign_id NOT IN ({})".format(",".join("?" * len(rids)))
+            excl_c = "WHERE id NOT IN ({})".format(",".join("?" * len(rids)))
+            db.q("DELETE FROM campaign_items " + excl, rids)
+            db.q("DELETE FROM campaigns " + excl_c, rids)
+        else:
+            db.q("DELETE FROM campaign_items")
+            db.q("DELETE FROM campaigns")
+        return OK, 200
     if p and p[0] == "campaigns" and len(p) == 2 and p[1].isdigit() and p[2:] == []:
         return {"campaign": db.fetch1("SELECT * FROM campaigns WHERE id=?", (int(p[1]),))}, 200
     if p and len(p) == 3 and p[0] == "campaigns":
@@ -493,6 +514,17 @@ def route(method, path, body, headers):
             if active and active["c"]:
                 return {"ok": False, "error": "calls_in_progress"}, 400
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
+            return OK, 200
+        if act == "delete":
+            st = db.fetch1("SELECT status FROM campaigns WHERE id=?", (cid,))
+            if st and st["status"] == "running":
+                return {"ok": False, "error": "campaign_running"}, 400
+            active = db.fetch1("SELECT COUNT(*) c FROM calls WHERE campaign_id=? AND ended_at=''",
+                               (cid,))
+            if active and active["c"]:
+                return {"ok": False, "error": "calls_in_progress"}, 400
+            db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
+            db.q("DELETE FROM campaigns WHERE id=?", (cid,))
             return OK, 200
     # шаблоны
     if p == ["templates", "save"]:
