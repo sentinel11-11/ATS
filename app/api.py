@@ -523,20 +523,18 @@ def route(method, path, body, headers):
             st = db.fetch1("SELECT status FROM campaigns WHERE id=?", (cid,))
             if st and st["status"] == "running":
                 return {"ok": False, "error": "campaign_running"}, 400
-            active = db.fetch1("SELECT COUNT(*) c FROM calls WHERE campaign_id=? AND ended_at=''",
-                               (cid,))
-            if active and active["c"]:
-                return {"ok": False, "error": "calls_in_progress"}, 400
+            # Завершаем «зависшие» открытые вызовы этой кампании
+            db.q("UPDATE calls SET ended_at=?, result='canceled' WHERE campaign_id=? AND (ended_at='' OR result='dialing')",
+                 (now_iso(), cid))
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
+            db.q("UPDATE campaigns SET updated=? WHERE id=?", (now_iso(), cid))
             return OK, 200
         if act == "delete":
             st = db.fetch1("SELECT status FROM campaigns WHERE id=?", (cid,))
             if st and st["status"] == "running":
                 return {"ok": False, "error": "campaign_running"}, 400
-            active = db.fetch1("SELECT COUNT(*) c FROM calls WHERE campaign_id=? AND ended_at=''",
-                               (cid,))
-            if active and active["c"]:
-                return {"ok": False, "error": "calls_in_progress"}, 400
+            db.q("UPDATE calls SET ended_at=?, result='canceled' WHERE campaign_id=? AND (ended_at='' OR result='dialing')",
+                 (now_iso(), cid))
             db.q("DELETE FROM campaign_items WHERE campaign_id=?", (cid,))
             db.q("DELETE FROM campaigns WHERE id=?", (cid,))
             db.q("UPDATE calls SET campaign_id=0 WHERE campaign_id=?", (cid,))
