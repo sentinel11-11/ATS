@@ -65,12 +65,14 @@ def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100,
 
 
 def update_number(nid, fields: dict):
-    allowed = {"label", "active", "daily_limit", "weight", "quarantined", "provider", "kind"}
+    allowed = {"label", "active", "daily_limit", "weight", "quarantined", "provider", "kind", "enabled_outgoing"}
     data = {k: v for k, v in fields.items() if k in allowed}
     if "active" in data:
         data["active"] = 1 if data["active"] else 0
     if "quarantined" in data:
         data["quarantined"] = 1 if data["quarantined"] else 0
+    if "enabled_outgoing" in data:
+        data["enabled_outgoing"] = 1 if data["enabled_outgoing"] else 0
     # Некорректные значения при обновлении отбрасываем (не пишем мусор в пул).
     if "provider" in data:
         if str(data["provider"] or "").strip().lower() not in NUMBER_PROVIDERS:
