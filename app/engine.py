@@ -466,14 +466,15 @@ class Engine:
             ok_result = "operator_ok" if flow == "operator" else "done_ok"
             self._finish_attempt(call, item, ok_result, detail, ok=True)
         else:
-            _m = MEGAFON_HISTORY_MAP.get(st, ("failed", True))
-            self._finish_attempt(call, item, result, detail, retryable=_m[1])
+            _m = MEGAFON_HISTORY_MAP.get(st) or ("failed", True)
+            retryable = _m[1] if isinstance(_m, (list, tuple)) and len(_m) > 1 else True
+            self._finish_attempt(call, item, result, detail, retryable=retryable)
         return self._megafon_mark(fp, "done")
 
     def _megafon_history_result(self, st, direction, flow):
         from .providers.megafon_vats import MEGAFON_HISTORY_MAP
         mapped = MEGAFON_HISTORY_MAP.get(st)
-        if not mapped:
+        if not mapped or not isinstance(mapped, (list, tuple)) or len(mapped) < 2:
             print("[megafon] неизвестный history-статус {!r} — failed+ретрай".format(st))
             return "failed", "Неизвестный статус history ВАТС: {}".format(st)
         result, _retryable = mapped
