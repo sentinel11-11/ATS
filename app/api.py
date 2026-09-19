@@ -12,7 +12,7 @@ from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 from . import agent as agent_mod
-from . import config, db, events, numbers as numbers_mod, security
+from . import audit, config, db, events, numbers as numbers_mod, security
 
 ENGINE = None  # устанавливается при старте (см. run.py)
 
@@ -116,8 +116,8 @@ def parse_path(path):
     return parts, u
 
 
-def route(method, path, body, headers):
-    """Возвращает (payload_dict, status) или (bytes, status) для файлов."""
+def _route(method, path, body, headers):
+    """Внутренний REST-router. Внешний route дополнительно пишет аудит."""
     parts, u = parse_path(path)
     p = parts
     qparams = parse_qs(u.query)
@@ -220,6 +220,12 @@ def route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return None
+
+    if p == ["audit", "logs"] and method == "GET":
+        denied = admin_only()
+        if denied:
+            return denied
+        return _audit_logs(qparams), 200
 
     # ---------- общедоступные чтения (обе роли) ----------
     if p == ["dashboard"]:
@@ -597,6 +603,78 @@ def route(method, path, body, headers):
         db.q("UPDATE acd SET status='missed', updated=? WHERE id=?", (now_iso(), acd_id))
         return OK, 200
     return {"ok": False, "error": "not_found"}, 404
+
+
+def route(method, path, body, headers):
+    """REST-router с best-effort административным аудитом."""
+    actor_before = audit.actor_from_headers(headers)
+    result = _route(method, path, body, headers)
+    try:
+        payload, status_code = result
+        audit.record_http(method, path, body, headers, payload, status_code, actor_before)
+    except Exception:
+        # Нельзя превратить запись аудита в ошибку API.
+        pass
+    return result
+
+
+# ---------------- аудит ----------------
+def _audit_logs(qparams):
+    """Фильтруемый admin-only API аудита, без выдачи секретов."""
+    qparams = qparams or {}
+    where = ["1=1"]
+    params = []
+
+    def first(name):
+        return str((qparams.get(name) or [""])[0] or "").strip()
+
+    d_from = first("from")
+    d_to = first("to")
+    if d_from:
+        where.append("created >= ?")
+        params.append(d_from + (" 00:00:00" if len(d_from) == 10 else ""))
+    if d_to:
+        where.append("created <= ?")
+        params.append(d_to + (" 23:59:59" if len(d_to) == 10 else ""))
+    for field, name in (("event_type", "event"), ("action", "action"),
+                        ("actor_role", "role"), ("entity_type", "entity"),
+                        ("status", "status")):
+        value = first(name)
+        if value:
+            where.append(field + "=?")
+            params.append(value[:100])
+    actor = first("actor")
+    if actor:
+        where.append("(actor_login LIKE ? OR CAST(actor_user_id AS TEXT)=?)")
+        params.extend(["%" + actor[:120] + "%", actor[:120]])
+    search = first("q")
+    if search:
+        like = "%" + search[:120] + "%"
+        where.append("(actor_login LIKE ? OR action LIKE ? OR entity_id LIKE ? "
+                     "OR error_code LIKE ? OR path LIKE ?)")
+        params.extend([like] * 5)
+    try:
+        limit = max(1, min(int(first("limit") or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        offset = max(0, int(first("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    clause = " AND ".join(where)
+    total_row = db.fetch1("SELECT COUNT(*) AS c FROM audit_logs WHERE " + clause, params)
+    rows = db.fetch(
+        "SELECT id, created, actor_user_id, actor_login, actor_role, event_type, action, "
+        "entity_type, entity_id, status, error_code, ip_address, path, details_json "
+        "FROM audit_logs WHERE " + clause + " ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + [limit, offset])
+    for row in rows:
+        try:
+            row["details"] = json.loads(row.pop("details_json") or "{}")
+        except Exception:
+            row["details"] = {}
+    return {"logs": rows, "total": total_row["c"] if total_row else 0,
+            "limit": limit, "offset": offset}
 
 
 # ---------------- реализации ----------------

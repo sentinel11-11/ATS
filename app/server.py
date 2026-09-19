@@ -30,6 +30,13 @@ class Handler(BaseHTTPRequestHandler):
         return  # тихий режим
 
     # ---------- helpers ----------
+    def _api_headers(self):
+        """Копия заголовков запроса с адресом клиента для аудита."""
+        # Keep the Message object: its lookup is case-insensitive, which is
+        # required for provider headers such as X-UIS-Secret.
+        self.headers["X-Ats-Client-IP"] = self.client_address[0]
+        return self.headers
+
     def _send_bytes(self, data, ctype, status=200, extra=None):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -101,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path.startswith("/api/") or u.path.startswith("/v2/") or u.path.startswith("/export/"):
-            payload, status = api.route("GET", self.path, {}, self.headers)
+            payload, status = api.route("GET", self.path, {}, self._api_headers())
             if payload is None:
                 payload, status = {"ok": False, "error": "not_found"}, 404
             if isinstance(payload, bytes):
@@ -160,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         body = self._body()
-        payload, status = api.route("POST", u.path, body, self.headers)
+        payload, status = api.route("POST", u.path, body, self._api_headers())
         if payload is None:
             return self._send_json({"ok": False, "error": "not_found"}, 404)
         if isinstance(payload, bytes):

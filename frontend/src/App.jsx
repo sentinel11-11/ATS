@@ -16,6 +16,7 @@ import Templates from './pages/Templates';
 import Blacklist from './pages/Blacklist';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import AdminLogs from './pages/AdminLogs';
 
 export default function App() {
   const [user, setUser] = useState(() => getUser());
@@ -163,6 +164,8 @@ export default function App() {
         return <Reports addToast={addToast} refreshKey={refreshKey} />;
       case 'settings':
         return <Settings addToast={addToast} refreshKey={refreshKey} />;
+      case 'admin-logs':
+        return <AdminLogs addToast={addToast} refreshKey={refreshKey} />;
       default:
         return <Dashboard onNavigate={setActiveTab} refreshKey={refreshKey} />;
     }

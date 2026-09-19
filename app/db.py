@@ -309,6 +309,26 @@ CREATE TABLE IF NOT EXISTS events(
   type TEXT,
   payload TEXT
 );
+CREATE TABLE IF NOT EXISTS audit_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created TEXT NOT NULL DEFAULT '',
+  actor_user_id INTEGER,
+  actor_login TEXT NOT NULL DEFAULT '',
+  actor_role TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  entity_type TEXT NOT NULL DEFAULT '',
+  entity_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'success',
+  error_code TEXT NOT NULL DEFAULT '',
+  ip_address TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_created ON audit_logs(created);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_event ON audit_logs(event_type, action);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_actor ON audit_logs(actor_user_id, actor_login);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE TABLE IF NOT EXISTS settings(
   id INTEGER PRIMARY KEY CHECK (id = 1),
   data TEXT NOT NULL

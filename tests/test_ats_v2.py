@@ -321,6 +321,27 @@ class TestHttpApi(unittest.TestCase):
         self.assertEqual(s, 200)
         self.assertEqual(detail["campaign"]["scenario"], scenario)
 
+    def test_admin_audit_logs_and_rbac(self):
+        tok = self._token()
+        self.call("POST", "/api/v2/auth/login",
+                  {"login": "audit-failed-user", "password": "wrong"})
+        s, saved = self.call("POST", "/api/v2/campaigns/save",
+                             {"name": "Аудит кампании", "template_id": 1,
+                              "flow": "message"}, token=tok)
+        self.assertEqual(s, 200)
+        s, audit_response = self.call("GET", "/api/v2/audit/logs?event=campaign&limit=50", token=tok)
+        self.assertEqual(s, 200)
+        self.assertGreaterEqual(audit_response["total"], 1)
+        campaign_events = [row for row in audit_response["logs"] if row["action"] == "save"]
+        self.assertTrue(campaign_events)
+        self.assertEqual(campaign_events[0]["entity_type"], "campaign")
+        self.assertNotIn("TestAdmin123!", json.dumps(campaign_events[0], ensure_ascii=False))
+        auth_logs = self.call("GET", "/api/v2/audit/logs?event=auth&status=failure", token=tok)[1]["logs"]
+        self.assertTrue(any(row["actor_login"] == "audit-failed-user" for row in auth_logs))
+
+        otok = self._token(login="operator", password="operator1234")
+        self.assertEqual(self.call("GET", "/api/v2/audit/logs", token=otok)[0], 403)
+
     def test_admin_flow(self):
         tok = self._token()
         self.assertEqual(self.call("GET", "/api/v2/dashboard", token=tok)[0], 200)

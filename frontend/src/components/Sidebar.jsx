@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   BarChart3,
   Settings,
+  ClipboardList,
   LogOut,
   Phone
 } from 'lucide-react';
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { id: 'blacklist', label: 'Чёрный список', icon: ShieldAlert },
   { id: 'reports', label: 'Отчёты', icon: BarChart3, adminOnly: true },
   { id: 'settings', label: 'Настройки', icon: Settings, adminOnly: true },
+  { id: 'admin-logs', label: 'Админские логи', icon: ClipboardList, adminOnly: true },
 ];
 
 export default function Sidebar({ activeTab, setActiveTab, user, onLogout }) {
