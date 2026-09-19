@@ -4,7 +4,7 @@ import { api } from '../api';
 import Modal from '../components/Modal';
 import ScenarioDecisionTree from '../components/ScenarioDecisionTree';
 
-export default function Templates({ addToast }) {
+export default function Templates({ addToast, refreshKey }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingTemplate, setEditingTemplate] = useState(null);
@@ -20,7 +20,7 @@ export default function Templates({ addToast }) {
 
   useEffect(() => {
     loadTemplates();
-  }, []);
+  }, [refreshKey]);
 
   const handleOpenEdit = (t) => {
     const tmpl = t || {

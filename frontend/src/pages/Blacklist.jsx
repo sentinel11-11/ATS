@@ -3,7 +3,7 @@ import { ShieldAlert, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import Modal from '../components/Modal';
 
-export default function Blacklist({ addToast }) {
+export default function Blacklist({ addToast, refreshKey }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -15,15 +15,15 @@ export default function Blacklist({ addToast }) {
   const loadBlacklist = async () => {
     setLoading(true);
     const res = await api('/blacklist');
-    if (res && res.list) {
-      setList(Array.isArray(res.list) ? res.list : []);
+    if (res && res.blacklist) {
+      setList(Array.isArray(res.blacklist) ? res.blacklist : []);
     }
     setLoading(false);
   };
 
   useEffect(() => {
     loadBlacklist();
-  }, []);
+  }, [refreshKey]);
 
   const handleAdd = async () => {
     if (!newItem.phone) return addToast('Укажите телефон', 'warn');
@@ -91,7 +91,7 @@ export default function Blacklist({ addToast }) {
                 <tr key={item.id} className="border-b border-line/40 hover:bg-white/5 transition-colors">
                   <td className="py-3 px-3 font-mono font-bold text-bad">{item.phone}</td>
                   <td className="py-3 px-3 text-muted">{item.reason || 'Заявка на исключение'}</td>
-                  <td className="py-3 px-3 text-dim">{item.created_at?.slice(0, 16).replace('T', ' ')}</td>
+                  <td className="py-3 px-3 text-dim">{(item.created_at || item.created)?.slice(0, 16).replace('T', ' ')}</td>
                   <td className="py-3 px-3 text-right">
                     <button
                       onClick={() => handleDelete(item.id)}

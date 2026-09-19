@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { getToken, getUser, setSession } from './api';
+import { api, getToken, getUser, setSession } from './api';
 import { useSSE } from './useSSE';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
@@ -23,7 +23,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [toasts, setToasts] = useState([]);
   const [opStatus, setOpStatus] = useState('free');
-  const [activeCallsCount, setActiveCallsCount] = useState(0);
+  const [activeCallIds, setActiveCallIds] = useState(() => new Set());
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const handleUnauthorized = () => {
@@ -33,6 +34,19 @@ export default function App() {
     window.addEventListener('ats_unauthorized', handleUnauthorized);
     return () => window.removeEventListener('ats_unauthorized', handleUnauthorized);
   }, []);
+
+  // Repair sessions created by older builds that stored only the role.
+  useEffect(() => {
+    if (!token || !user || (user.login && user.id != null)) return undefined;
+    let active = true;
+    api('/auth/me').then((res) => {
+      if (!active || !res?.ok) return;
+      const restored = { id: res.user_id, login: res.login, role: res.role };
+      setSession(token, restored);
+      setUser(restored);
+    });
+    return () => { active = false; };
+  }, [token, user]);
 
   const addToast = useCallback((msg, type = 'info') => {
     const id = Date.now() + Math.random();
@@ -46,19 +60,71 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // SSE Realtime Event Handler
+  // SSE Realtime Event Handler. Track call IDs instead of incrementing for
+  // every phase event, otherwise dialing → ringing → talk is counted 3 times.
   const handleSSEEvent = useCallback((evType, data) => {
-    if (evType === 'call') {
-      if (data.status === 'dialing' || data.status === 'ringing' || data.status === 'talk') {
-        setActiveCallsCount((prev) => prev + 1);
-      }
-      if (data.status === 'done' || data.status === 'failed') {
-        setActiveCallsCount((prev) => Math.max(0, prev - 1));
-      }
-    }
+    if (evType !== 'call') return;
+    const callId = data?.id ?? data?.call_id;
+    if (callId === undefined || callId === null) return;
+
+    const terminalStatuses = new Set([
+      'done', 'failed', 'busy', 'no_answer', 'machine', 'blocked',
+      'canceled', 'cancelled', 'timeout', 'no_operator', 'exhausted', 'missed',
+    ]);
+    const key = String(callId);
+    setActiveCallIds((previous) => {
+      const next = new Set(previous);
+      if (terminalStatuses.has(data?.status)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }, []);
 
   useSSE(handleSSEEvent);
+
+  // Seed the counter from the database so calls already in progress are not
+  // invisible until their next SSE event arrives.
+  useEffect(() => {
+    if (!token) return undefined;
+    let active = true;
+    api('/dashboard').then((res) => {
+      if (!active || !Array.isArray(res?.active_calls)) return;
+      const ids = res.active_calls
+        .map((call) => call?.id ?? call?.call_id)
+        .filter((id) => id !== undefined && id !== null)
+        .map(String);
+      setActiveCallIds(new Set(ids));
+    });
+    return () => { active = false; };
+  }, [token, refreshKey]);
+
+  // Load the persisted operator status and write status changes to the API.
+  useEffect(() => {
+    let active = true;
+    if (user?.role !== 'operator') return () => { active = false; };
+
+    api('/operators').then((res) => {
+      if (!active || !Array.isArray(res?.operators)) return;
+      const mine = res.operators.find((op) => String(op.user_id) === String(user.id));
+      if (mine?.status) setOpStatus(mine.status);
+    });
+    return () => { active = false; };
+  }, [user]);
+
+  const handleOperatorStatus = useCallback(async (status) => {
+    const res = await api('/operators/status', { body: { status } });
+    if (res?.ok) {
+      setOpStatus(status);
+      addToast(status === 'free' ? 'Статус: свободен' : 'Статус: перерыв', 'ok');
+    } else {
+      addToast(`Не удалось изменить статус: ${res?.error || '?'}`, 'err');
+    }
+  }, [addToast]);
+
+  const handleRefresh = () => {
+    setRefreshKey((previous) => previous + 1);
+    addToast('Данные обновлены', 'ok');
+  };
 
   const handleLogout = () => {
     setSession('', null);
@@ -78,27 +144,27 @@ export default function App() {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        return <Dashboard onNavigate={setActiveTab} />;
+        return <Dashboard onNavigate={setActiveTab} refreshKey={refreshKey} />;
       case 'campaigns':
-        return <Campaigns addToast={addToast} />;
+        return <Campaigns addToast={addToast} refreshKey={refreshKey} />;
       case 'journal':
-        return <Journal addToast={addToast} />;
+        return <Journal addToast={addToast} refreshKey={refreshKey} />;
       case 'contacts':
-        return <Contacts addToast={addToast} />;
+        return <Contacts addToast={addToast} refreshKey={refreshKey} />;
       case 'numbers':
-        return <NumberPool addToast={addToast} />;
+        return <NumberPool addToast={addToast} refreshKey={refreshKey} />;
       case 'acd':
-        return <Operators addToast={addToast} />;
+        return <Operators addToast={addToast} refreshKey={refreshKey} />;
       case 'templates':
-        return <Templates addToast={addToast} />;
+        return <Templates addToast={addToast} refreshKey={refreshKey} />;
       case 'blacklist':
-        return <Blacklist addToast={addToast} />;
+        return <Blacklist addToast={addToast} refreshKey={refreshKey} />;
       case 'reports':
-        return <Reports addToast={addToast} />;
+        return <Reports addToast={addToast} refreshKey={refreshKey} />;
       case 'settings':
-        return <Settings addToast={addToast} />;
+        return <Settings addToast={addToast} refreshKey={refreshKey} />;
       default:
-        return <Dashboard onNavigate={setActiveTab} />;
+        return <Dashboard onNavigate={setActiveTab} refreshKey={refreshKey} />;
     }
   };
 
@@ -115,9 +181,9 @@ export default function App() {
         <Topbar
           user={user}
           opStatus={opStatus}
-          setOpStatus={setOpStatus}
-          onRefresh={() => addToast('Данные обновлены', 'ok')}
-          activeCallsCount={activeCallsCount}
+          onStatusChange={handleOperatorStatus}
+          onRefresh={handleRefresh}
+          activeCallsCount={activeCallIds.size}
         />
 
         <main className="flex-1 p-6 max-w-[1500px] w-full mx-auto">

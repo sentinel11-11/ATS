@@ -1,7 +1,7 @@
 import React from 'react';
 import { Search, Radio, Headphones, RefreshCw } from 'lucide-react';
 
-export default function Topbar({ user, opStatus, setOpStatus, onRefresh, activeCallsCount }) {
+export default function Topbar({ user, opStatus, onStatusChange, onRefresh, activeCallsCount }) {
   const isOperator = user?.role === 'operator';
 
   return (
@@ -28,7 +28,7 @@ export default function Topbar({ user, opStatus, setOpStatus, onRefresh, activeC
         {isOperator && (
           <div className="flex bg-[#0a1628] border border-line rounded-xl p-1 gap-1">
             <button
-              onClick={() => setOpStatus('free')}
+              onClick={() => onStatusChange?.('free')}
               className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
                 opStatus === 'free' ? 'bg-gradient-to-r from-[#22c68c] to-[#159a6e] text-white shadow-sm' : 'text-muted hover:text-white'
               }`}
@@ -36,7 +36,7 @@ export default function Topbar({ user, opStatus, setOpStatus, onRefresh, activeC
               Свободен
             </button>
             <button
-              onClick={() => setOpStatus('break')}
+              onClick={() => onStatusChange?.('break')}
               className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
                 opStatus === 'break' ? 'bg-gradient-to-r from-[#ffd166] to-[#f0a832] text-[#3a2800] shadow-sm' : 'text-muted hover:text-white'
               }`}

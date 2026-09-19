@@ -5,7 +5,13 @@ import Modal from '../components/Modal';
 import ScenarioDecisionTree from '../components/ScenarioDecisionTree';
 import TimelineModal from '../components/TimelineModal';
 
-export default function Campaigns({ addToast }) {
+const FLOW_LABELS = {
+  operator: 'Перевод на операторов',
+  agent: 'ИИ-бот / квалификация',
+  message: 'Информационное сообщение',
+};
+
+export default function Campaigns({ addToast, refreshKey }) {
   const [campaigns, setCampaigns] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [contacts, setContacts] = useState([]);
@@ -46,7 +52,7 @@ export default function Campaigns({ addToast }) {
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [refreshKey]);
 
   const loadCampDetail = async (cid) => {
     setCampDetailLoading(true);
@@ -302,7 +308,7 @@ export default function Campaigns({ addToast }) {
                         </span>
                       </h3>
                       <p className="text-xs text-muted mt-0.5">
-                        Сценарий: <b className="text-white">{c.flow || 'operator'}</b> · Расписание:{' '}
+                        Сценарий: <b className="text-white">{FLOW_LABELS[c.flow] || c.flow || 'Перевод на операторов'}</b> · Расписание:{' '}
                         <b className="text-white">
                           {c.schedule?.start || '08:00'}–{c.schedule?.end || '20:00'}
                         </b>{' '}
@@ -562,8 +568,8 @@ export default function Campaigns({ addToast }) {
                   onChange={(e) => setEditingCamp({ ...editingCamp, flow: e.target.value })}
                 >
                   <option value="operator">Перевод на операторов (ACD)</option>
-                  <option value="scenario">ИИ-Бот / Квалификационный опрос</option>
-                  <option value="inform">Информатор (Прослушать сообщение)</option>
+                  <option value="agent">ИИ-Бот / Квалификационный опрос</option>
+                  <option value="message">Информатор (Прослушать сообщение)</option>
                 </select>
               </div>
 
@@ -590,7 +596,7 @@ export default function Campaigns({ addToast }) {
             </div>
 
             {/* Visual Scenario Editor when Flow is scenario */}
-            {editingCamp.flow === 'scenario' && (
+            {editingCamp.flow === 'agent' && (
               <div className="flex flex-col gap-2">
                 <span className="font-bold text-white text-xs">Визуальный конструктор ИИ-Сценария:</span>
                 <ScenarioDecisionTree

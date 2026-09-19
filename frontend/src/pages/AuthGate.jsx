@@ -23,7 +23,11 @@ export default function AuthGate({ onLoginSuccess }) {
       setSession(res.token, { id: res.user_id, login: res.login, role: res.role });
       if (onLoginSuccess) onLoginSuccess({ id: res.user_id, login: res.login, role: res.role });
     } else {
-      setError(res.error === 'rate_limit' ? 'Слишком много попыток входа' : 'Неверный логин или пароль');
+      setError(
+        res.error === 'rate_limit' || res.error === 'too_many_attempts'
+          ? `Слишком много попыток входа${res.retry_after_sec ? `, повторите через ${res.retry_after_sec} с` : ''}`
+          : 'Неверный логин или пароль'
+      );
     }
   };
 

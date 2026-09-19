@@ -3,7 +3,7 @@ import { Save, Shield, PhoneCall, Cpu, RefreshCw, Key, CheckCircle, Database, Us
 import { api } from '../api';
 import Modal from '../components/Modal';
 
-export default function Settings({ addToast }) {
+export default function Settings({ addToast, refreshKey }) {
   const [loading, setLoading] = useState(true);
   const [providerConfig, setProviderConfig] = useState({});
   const [basicSettings, setBasicSettings] = useState({});
@@ -43,7 +43,7 @@ export default function Settings({ addToast }) {
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [refreshKey]);
 
   const handleSaveSettings = async () => {
     setActionLoading(true);

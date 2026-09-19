@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Play, PhoneCall, CheckCircle, Users, Radio, Shield, ListFilter, ArrowRight } from 'lucide-react';
 import { api } from '../api';
 
-export default function Dashboard({ onNavigate }) {
+export default function Dashboard({ onNavigate, refreshKey }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -22,7 +22,7 @@ export default function Dashboard({ onNavigate }) {
       isMounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [refreshKey]);
 
   if (loading && !data) {
     return <div className="p-8 text-center text-muted animate-pulse">Загрузка сводки дашборда...</div>;
@@ -32,8 +32,16 @@ export default function Dashboard({ onNavigate }) {
   const campaignsRunning = data?.campaigns_running || 0;
   const callsToday = data?.calls_today || 0;
   const okToday = data?.ok_today || 0;
-  const activeChannels = Array.isArray(data?.active_channels) ? data.active_channels : [];
-  const numbersState = data?.numbers || { active_count: 0, total_count: 0 };
+  const activeChannels = Array.isArray(data?.active_calls)
+    ? data.active_calls
+    : (Array.isArray(data?.active_channels) ? data.active_channels : []);
+  const numbersState = data?.numbers_summary || (() => {
+    const rows = Array.isArray(data?.numbers) ? data.numbers : [];
+    return {
+      active_count: rows.filter((n) => n.active && n.enabled_outgoing && !n.quarantined).length,
+      total_count: rows.length,
+    };
+  })();
   const operatorsList = Array.isArray(data?.operators) ? data.operators : [];
   const freeOperators = operatorsList.filter((o) => o.status === 'free').length;
   const acdQueued = data?.acd_queued || 0;
@@ -126,7 +134,7 @@ export default function Dashboard({ onNavigate }) {
                 {activeChannels.map((c) => (
                   <tr key={c.id || c.call_id} className="border-b border-line/40 hover:bg-white/5">
                     <td className="py-2.5 px-3 font-mono text-dim">#{c.id || c.call_id}</td>
-                    <td className="py-2.5 px-3 font-semibold text-white">{c.phone || c.client_phone}</td>
+                    <td className="py-2.5 px-3 font-semibold text-white">{c.contact_name || c.contact_phone || c.phone || c.client_phone || '—'}</td>
                     <td className="py-2.5 px-3 font-mono text-muted">{c.caller_id || c.clid || '—'}</td>
                     <td className="py-2.5 px-3 text-muted">#{c.campaign_id || 0}</td>
                     <td className="py-2.5 px-3">

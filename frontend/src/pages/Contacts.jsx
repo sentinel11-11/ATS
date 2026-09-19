@@ -3,7 +3,7 @@ import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filt
 import { api, getToken } from '../api';
 import Modal from '../components/Modal';
 
-export default function Contacts({ addToast }) {
+export default function Contacts({ addToast, refreshKey }) {
   const [contacts, setContacts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -49,7 +49,7 @@ export default function Contacts({ addToast }) {
 
   useEffect(() => {
     loadContacts();
-  }, []);
+  }, [refreshKey]);
 
   const loadContactCard = async (cid) => {
     setCardLoading(true);

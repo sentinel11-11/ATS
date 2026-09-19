@@ -719,7 +719,12 @@ class Engine:
                               getattr(self.provider, "name", "?")),
                           "transcript": ""}
             else:
-                result = agent_mod.run_scripted(ch, campaign["template_id"], contact)
+                result = agent_mod.run_scripted(
+                    ch,
+                    campaign["template_id"],
+                    contact,
+                    scenario_override=campaign.get("scenario") or None,
+                )
                 result["engine"] = "scripted_l1"
         db.q("UPDATE calls SET agent_result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), call["id"]))
         db.insert("agent_sessions", {"call_id": call["id"], "scenario": "{}",
@@ -1223,13 +1228,31 @@ class Engine:
                                " FROM calls WHERE started_at>=?", (today,))
         items = db.fetch("SELECT status, COUNT(*) c FROM campaign_items GROUP BY status")
         active_camps = db.fetch("SELECT * FROM campaigns WHERE status='running'")
+        active_calls = db.fetch(
+            "SELECT * FROM calls WHERE (ended_at='' OR ended_at IS NULL) "
+            "AND status NOT IN ('new') ORDER BY id DESC LIMIT 100"
+        )
+        active_channel_count = self.active_channels()
+        number_rows = numbers_mod.pool_state()
+        active_number_count = sum(
+            1 for n in number_rows
+            if n.get("active") and n.get("enabled_outgoing") and not n.get("quarantined")
+        )
         return {
             "campaigns_running": len(active_camps),
             "calls_today": calls_today[0]["c"] if calls_today else 0,
             "ok_today": calls_today[0]["ok"] or 0,
             "items": {r["status"]: r["c"] for r in items},
-            "active_channels": self.active_channels(),
-            "numbers": numbers_mod.pool_state(),
+            # Keep the original numeric counter for API compatibility and add
+            # the actual rows needed by the React dashboard.
+            "active_channels": active_channel_count,
+            "active_channels_count": active_channel_count,
+            "active_calls": active_calls,
+            "numbers": number_rows,
+            "numbers_summary": {
+                "active_count": active_number_count,
+                "total_count": len(number_rows),
+            },
             "operators": self.operators(),
             "acd_queued": len(self.acd_queued()),
         }

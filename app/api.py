@@ -136,7 +136,8 @@ def route(method, path, body, headers):
         if user and security.hash_password(password, user["salt"]) == user["password_hash"]:
             _login_ok(login)
             tok = security.create_token(user["login"], user["role"])
-            return {"ok": True, "token": tok, "role": user["role"]}, 200
+            return {"ok": True, "token": tok, "user_id": user["id"],
+                    "login": user["login"], "role": user["role"]}, 200
         _login_fail(login)
         return {"ok": False, "error": "bad_login"}, 403
     if p == ["auth", "logout"]:
@@ -207,7 +208,9 @@ def route(method, path, body, headers):
         sess2, err2, code2 = need_auth(headers, query_token=qtoken)
         if err2:
             return err2, code2
-        return {"ok": True, "login": sess2["login"], "role": sess2["role"]}, 200
+        user2 = db.fetch1("SELECT id FROM users WHERE login=?", (sess2["login"],))
+        return {"ok": True, "user_id": user2["id"] if user2 else None,
+                "login": sess2["login"], "role": sess2["role"]}, 200
 
     sess, err, code = need_auth(headers, query_token=qtoken)
     if err:
@@ -254,6 +257,7 @@ def route(method, path, body, headers):
             for c in camps:
                 c["schedule"] = json.loads(c.get("schedule") or "{}")
                 c["retry_map"] = json.loads(c.get("retry_map") or "{}")
+                c["scenario"] = json.loads(c.get("scenario") or "{}")
         except Exception:
             pass
         tmpl = {t["id"]: t["name"] for t in db.fetch("SELECT id,name FROM templates")}
@@ -282,6 +286,7 @@ def route(method, path, body, headers):
             try:
                 camp["schedule"] = json.loads(camp.get("schedule") or "{}")
                 camp["retry_map"] = json.loads(camp.get("retry_map") or "{}")
+                camp["scenario"] = json.loads(camp.get("scenario") or "{}")
             except Exception:
                 pass
         return {"campaign": camp, "items": db.fetch("SELECT * FROM campaign_items WHERE campaign_id=? ORDER BY id DESC LIMIT 2000", (cid,)),
@@ -1099,6 +1104,15 @@ def _campaign_save(body):
     cid = body.get("id")
     schedule = body.get("schedule") or {}
     sc = json.dumps(schedule, ensure_ascii=False)
+    scenario = body.get("scenario") or {}
+    if isinstance(scenario, str):
+        try:
+            scenario = json.loads(scenario or "{}")
+        except Exception:
+            scenario = {}
+    if not isinstance(scenario, dict):
+        scenario = {}
+    scenario_json = json.dumps(scenario, ensure_ascii=False)
     data = {"name": str(body.get("name", "Кампания"))[:200],
             "template_id": int(body.get("template_id", 1) or 1),
             "flow": body.get("flow", "agent") if body.get("flow") in ("message", "agent", "operator") else "agent",
@@ -1108,6 +1122,7 @@ def _campaign_save(body):
             "retry_delay_min": int(body.get("retry_delay_min", -1) or -1),
             "connect_on_qualify": 1 if body.get("connect_on_qualify", True) else 0,
             "retry_map": json.dumps(body.get("retry_map") or {}, ensure_ascii=False),
+            "scenario": scenario_json,
             "updated": now_iso()}
     if cid:
         db.update("campaigns", data, "id=?", (int(cid),))

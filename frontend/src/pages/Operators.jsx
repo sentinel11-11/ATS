@@ -2,20 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { Users, PhoneIncoming, Clock } from 'lucide-react';
 import { api } from '../api';
 
-export default function Operators({ addToast }) {
+export default function Operators({ addToast, refreshKey }) {
   const [operators, setOperators] = useState([]);
   const [queue, setQueue] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const loadAcdData = async () => {
     setLoading(true);
-    const [opRes, qRes] = await Promise.all([
-      api('/acd/operators'),
-      api('/acd/queue'),
-    ]);
+    const res = await api('/acd');
 
-    if (opRes && opRes.operators) setOperators(Array.isArray(opRes.operators) ? opRes.operators : []);
-    if (qRes && qRes.queue) setQueue(Array.isArray(qRes.queue) ? qRes.queue : []);
+    if (res && res.operators) {
+      setOperators(Array.isArray(res.operators) ? res.operators : []);
+    }
+    if (res && res.acd) {
+      setQueue(Array.isArray(res.acd) ? res.acd : []);
+    }
     setLoading(false);
   };
 
@@ -23,7 +24,7 @@ export default function Operators({ addToast }) {
     loadAcdData();
     const interval = setInterval(loadAcdData, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshKey]);
 
   const operatorsList = Array.isArray(operators) ? operators : [];
   const queueList = Array.isArray(queue) ? queue : [];
@@ -101,7 +102,7 @@ export default function Operators({ addToast }) {
                   queueList.map((item) => (
                     <tr key={item.id} className="border-b border-line/40">
                       <td className="py-2.5 px-3 font-mono text-dim">#{item.id}</td>
-                      <td className="py-2.5 px-3 font-mono font-semibold text-white">{item.phone}</td>
+                      <td className="py-2.5 px-3 font-mono font-semibold text-white">{item.phone || item.contact_phone || '—'}</td>
                       <td className="py-2.5 px-3 text-muted">{item.wait_sec ? `${item.wait_sec} с` : '0 с'}</td>
                     </tr>
                   ))

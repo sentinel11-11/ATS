@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS campaigns(
   retry_delay_min INTEGER NOT NULL DEFAULT -1,
   retry_map TEXT NOT NULL DEFAULT '{}',  -- {"busy":10,"no_answer":30,...} мин по причинам
   connect_on_qualify INTEGER NOT NULL DEFAULT 1,
+  scenario TEXT NOT NULL DEFAULT '{}',
   created TEXT,
   updated TEXT
 );
@@ -348,6 +349,9 @@ def _migrate(c):
     cols = [r[1] for r in c.execute("PRAGMA table_info(campaigns)").fetchall()]
     if "retry_map" not in cols:
         c.execute("ALTER TABLE campaigns ADD COLUMN retry_map TEXT NOT NULL DEFAULT '{}'")
+        c.commit()
+    if "scenario" not in cols:
+        c.execute("ALTER TABLE campaigns ADD COLUMN scenario TEXT NOT NULL DEFAULT '{}'")
         c.commit()
     ucols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
     if "active" not in ucols:

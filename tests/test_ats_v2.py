@@ -297,6 +297,30 @@ class TestHttpApi(unittest.TestCase):
         s, j = self.call("GET", "/api/v2/dashboard")
         self.assertEqual(s, 401)
 
+    def test_frontend_api_contract(self):
+        """Клиентский контракт: сессия, dashboard и campaign scenario."""
+        s, login = self.call("POST", "/api/v2/auth/login",
+                             {"login": "admin", "password": "TestAdmin123!"})
+        self.assertEqual(s, 200)
+        self.assertEqual(login["login"], "admin")
+        self.assertIsInstance(login["user_id"], int)
+        tok = login["token"]
+
+        s, dashboard = self.call("GET", "/api/v2/dashboard", token=tok)
+        self.assertEqual(s, 200)
+        self.assertIsInstance(dashboard["active_calls"], list)
+        self.assertIn("active_count", dashboard["numbers_summary"])
+
+        scenario = {"questions": [{"id": "contract-q", "text": "Проверка?",
+                                    "choices": {"1": {"next": "end", "qualified": True}}}]}
+        s, saved = self.call("POST", "/api/v2/campaigns/save",
+                             {"name": "Контракт сценария", "template_id": 1,
+                              "flow": "agent", "scenario": scenario}, token=tok)
+        self.assertEqual(s, 200)
+        s, detail = self.call("GET", "/api/v2/campaigns/{}".format(saved["id"]), token=tok)
+        self.assertEqual(s, 200)
+        self.assertEqual(detail["campaign"]["scenario"], scenario)
+
     def test_admin_flow(self):
         tok = self._token()
         self.assertEqual(self.call("GET", "/api/v2/dashboard", token=tok)[0], 200)
@@ -321,6 +345,16 @@ class TestHttpApi(unittest.TestCase):
         self.assertEqual(self.call("GET", "/api/v2/settings", token=otok)[0], 200)
         s, j = self.call("POST", "/api/v2/settings/save", {"max_channels": 9}, token=otok)
         self.assertEqual(s, 403)
+
+    def test_operator_status_persists(self):
+        otok = self._token(login="operator", password="operator1234")
+        s, j = self.call("POST", "/api/v2/operators/status", {"status": "break"}, token=otok)
+        self.assertEqual(s, 200)
+        operators = self.call("GET", "/api/v2/operators", token=otok)[1]["operators"]
+        operator = db.fetch1("SELECT id FROM users WHERE login='operator'")
+        mine = next(row for row in operators if row["user_id"] == operator["id"])
+        self.assertEqual(mine["status"], "break")
+        self.call("POST", "/api/v2/operators/status", {"status": "free"}, token=otok)
 
     def test_numbers_and_blacklist(self):
         tok = self._token()

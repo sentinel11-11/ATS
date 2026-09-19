@@ -3,7 +3,7 @@ import { Plus, Shield, Power, Trash2, Edit2, ShieldAlert, PhoneCall, RefreshCw, 
 import { api } from '../api';
 import Modal from '../components/Modal';
 
-export default function NumberPool({ addToast }) {
+export default function NumberPool({ addToast, refreshKey }) {
   const [numbers, setNumbers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -31,7 +31,7 @@ export default function NumberPool({ addToast }) {
 
   useEffect(() => {
     loadNumbers();
-  }, []);
+  }, [refreshKey]);
 
   const handleToggleActive = async (id, currentActive) => {
     const res = await api('/numbers/save', {

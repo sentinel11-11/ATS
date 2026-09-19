@@ -35,9 +35,21 @@ def default_scenario():
     return dict(db.DEFAULT_SCENARIO)
 
 
-def run_scripted(channel, template_id, contact=None):
-    """Прогон сценарного диалога. Возвращает dict: qualified, answers, summary, transcript."""
-    scenario = load_scenario(template_id) or default_scenario()
+def run_scripted(channel, template_id, contact=None, scenario_override=None):
+    """Прогон сценарного диалога. Возвращает dict: qualified, answers, summary, transcript.
+
+    A campaign may override the template scenario. If it does not, the
+    template-level scenario remains the source of truth for backwards
+    compatibility.
+    """
+    scenario = scenario_override
+    if isinstance(scenario, str):
+        try:
+            scenario = json.loads(scenario or "{}")
+        except Exception:
+            scenario = {}
+    scenario = scenario if isinstance(scenario, dict) and scenario else load_scenario(template_id)
+    scenario = scenario or default_scenario()
     answers = []
     transcript = []
     contact = contact or {}

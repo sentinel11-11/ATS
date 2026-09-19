@@ -3,7 +3,7 @@ import { Phone, Download, Search, Play } from 'lucide-react';
 import { api, getToken } from '../api';
 import TimelineModal from '../components/TimelineModal';
 
-export default function Journal({ addToast }) {
+export default function Journal({ addToast, refreshKey }) {
   const [calls, setCalls] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -20,7 +20,7 @@ export default function Journal({ addToast }) {
 
   useEffect(() => {
     loadCalls();
-  }, []);
+  }, [refreshKey]);
 
   const handleExportCSV = () => {
     const token = getToken();
