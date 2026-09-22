@@ -57,9 +57,33 @@ DEFAULT_SETTINGS = {
         "subdomain": "",
         "access_token": "",
         "access_token_env": "ATS_AMOCRM_TOKEN",
+        # OAuth-интеграция (опционально): при заданных client_id/secret/refresh_token
+        # клиент сам обновляет пару токенов по 401 и атомарно сохраняет новую в настройки.
+        # Для долгосрочного токена (вкладка «Ключи» приватной интеграции) эти поля не нужны.
+        "client_id": "",
+        "client_secret": "",
+        "client_secret_env": "ATS_AMOCRM_CLIENT_SECRET",
+        "refresh_token": "",
+        "refresh_token_env": "ATS_AMOCRM_REFRESH_TOKEN",
+        "redirect_uri": "",
+        # Вебхук (клик-дозвон/события из amoCRM): fail-closed без токена.
+        "webhook_token": "",
+        "webhook_token_env": "ATS_AMOCRM_WEBHOOK_TOKEN",
         "responsible_user_id": 1,
+        # Карта операторов ATS -> пользователи amoCRM:
+        # {"vats_login|ext": amo_user_id} — звонок вешается на реального сотрудника.
+        "operator_user_map": {},
+        # Брать ответственного из найденного контакта (когда карта операторов не сработала).
+        "use_contact_responsible": True,
+        "task_type_id": 1,
         "auto_create_contacts": True,
         "auto_create_tasks": True,
+        "auto_task_results": ["busy", "no_answer", "timeout", "missed",
+                              "machine", "no_operator", "rejected", "declined"],
+        # Переопределение маппинга результатов АТС -> код call_status amoCRM:
+        # call_status_map = {"result_ats": 4|7|6|5|3|2|1}
+        "call_status_map": {},
+        "rate_limit_rps": 7,
         "unsorted_on_new": False,
         "timeout_sec": 15
     },

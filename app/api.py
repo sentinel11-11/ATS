@@ -208,6 +208,11 @@ def _route(method, path, body, headers):
         if ev and ENGINE:
             ENGINE.push_event(ev)
         return OK, 200
+    if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
+        # Вебхук amoCRM — внешний (у amoCRM нет нашей сессии): роутим ДО need_auth.
+        # Защита — fail-closed: без настроенного webhook_token (POST) или
+        # client_secret (GET-хук отключения) маршрут выключен.
+        return _amocrm_webhook_route(body, headers=headers, qparams=qparams)
     if p == ["health"] and method == "GET":
         return _health(), 200
     if p == ["auth", "me"]:
@@ -425,8 +430,6 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _amocrm_users_sync_route(body)
-    if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
-        return _amocrm_webhook_route(body)
     if p == ["megafon", "simulate-event"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -1019,50 +1022,175 @@ def _health_details():
                           "window_start", "window_end")}}
 
 
-def _amocrm_check_route(body=None):
-    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV
+def _amocrm_make_client(mcfg):
+    """Клиент amoCRM из конфигурации роутов (check/users-sync).
+
+    UI присылает маскированные секреты («********») — в этом случае берём
+    ранее сохранённые в настройках (UI уже сделал /settings/raw перед этим).
+    """
+    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV, _is_masked_value
     from .providers.base import resolve_secret
+    mcfg = dict(mcfg or {})
+    saved = (db.get_settings().get("amocrm") or {})
+    for key in ("access_token", "client_secret", "refresh_token"):
+        v = mcfg.get(key)
+        if v is None or _is_masked_value(v):
+            if saved.get(key):
+                mcfg[key] = saved[key]
+            elif key in mcfg:
+                del mcfg[key]
+    subdomain = str(mcfg.get("subdomain") or saved.get("subdomain") or "").strip()
+    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
+    return AmoCrmClient(
+        subdomain=subdomain, access_token=token,
+        client_id=str(mcfg.get("client_id") or saved.get("client_id") or ""),
+        client_secret=resolve_secret(mcfg, "client_secret", "client_secret_env",
+                                     "ATS_AMOCRM_CLIENT_SECRET"),
+        refresh_token=resolve_secret(mcfg, "refresh_token", "refresh_token_env",
+                                     "ATS_AMOCRM_REFRESH_TOKEN"),
+        redirect_uri=str(mcfg.get("redirect_uri") or saved.get("redirect_uri") or ""))
+
+
+def _amocrm_check_route(body=None):
+    from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
     if not mcfg or not mcfg.get("subdomain"):
         s = db.get_settings()
         mcfg = s.get("amocrm") or {}
-    subdomain = str(mcfg.get("subdomain") or "").strip()
-    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
     try:
-        client = AmoCrmClient(subdomain=subdomain, access_token=token)
+        client = _amocrm_make_client(mcfg)
+        # Чистый GET /api/v4/account — документированная проверка связи и
+        # прав токена (недокументированный with=users,pipelines amoCRM v4
+        # молча игнорирует, делая проверку ложно-«успешной»).
         account = client.get_account_info()
-        return {"ok": True, "account": account}, 200
+        summary = {"id": account.get("id"), "name": account.get("name"),
+                   "subdomain": account.get("subdomain"),
+                   "current_user_id": account.get("current_user_id")}
+        return {"ok": True, "account": summary}, 200
+    except AmoCrmApiError as e:
+        code = 502
+        if getattr(e, "status", None) == 401:
+            code = 401
+        return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300]}, code
     except Exception as e:
         return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300]}, 502
 
 
 def _amocrm_users_sync_route(body=None):
-    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV
-    from .providers.base import resolve_secret
+    from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
     if not mcfg or not mcfg.get("subdomain"):
         s = db.get_settings()
         mcfg = s.get("amocrm") or {}
-    subdomain = str(mcfg.get("subdomain") or "").strip()
-    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
     try:
-        client = AmoCrmClient(subdomain=subdomain, access_token=token)
-        users = client.get_users()
-        return {"ok": True, "users": users, "count": len(users)}, 200
+        client = _amocrm_make_client(mcfg)
+        users = client.get_users()  # ошибки не проглатываются — 401/429 = сбой
+        # Персистим справочник: по нему работает operator_user_map и UI.
+        db.amo_users_replace(users)
+        slim = [{"id": u.get("id"), "name": u.get("name"), "email": u.get("email")}
+                for u in users]
+        return {"ok": True, "users": slim, "count": len(slim)}, 200
+    except AmoCrmApiError as e:
+        return {"ok": False, "error": "amocrm_sync_failed", "detail": str(e)[:300],
+                "http_status": getattr(e, "status", None)}, 502
     except Exception as e:
         return {"ok": False, "error": "amocrm_sync_failed", "detail": str(e)[:300]}, 502
 
 
-def _amocrm_webhook_route(body=None):
+def _amocrm_verify_disconnect_signature(client_uuid, account_id, signature, client_secret):
+    """Проверка подлинности хука отключения интеграции amoCRM.
+
+    По документации amoCRM (OAuth → «Хук об отключении интеграции»):
+    signature = HMAC-SHA256(message = client_uuid + account_id, key = client_secret).
+    Принимаем также вариант с разделителем «.» — оба всё равно считаются
+    от секрета интеграции (строгая HMAC-проверка сохраняется).
+    """
+    import hashlib
+    import hmac as hmac_mod
+    secret = str(client_secret or "").encode()
+    sig = str(signature or "").strip().lower()
+    if not secret or not sig:
+        return False
+    msgs = (f"{client_uuid}{account_id}".encode(),
+            f"{client_uuid}.{account_id}".encode())
+    for m in msgs:
+        calc = hmac_mod.new(secret, m, hashlib.sha256).hexdigest()
+        if hmac_mod.compare_digest(calc, sig):
+            return True
+    return False
+
+
+def _amocrm_webhook_route(body=None, headers=None, qparams=None):
+    """Внешний вебхук amoCRM (без X-ATS-сессии):
+
+    GET  — хук отключения интеграции (client_uuid, account_id, signature):
+           проверяем HMAC-подпись от client_secret и выключаем интеграцию.
+    POST — события/клик-дозвон из amoCRM-виджета: защита webhook_token
+           (query ?token= или заголовок X-Amo-Token). Click-to-call пока
+           не реализован в движке — отвечаем явно, а не AttributeError.
+    """
+    from .providers.base import resolve_secret
+    headers = headers or {}
+    qparams = qparams or {}
+    s = db.get_settings()
+    mcfg = s.get("amocrm") or {}
+
+    def _q(name):
+        return str((qparams.get(name) or [""])[0] or "").strip()
+
+    # ---------- GET: хук отключения интеграции ----------
+    client_uuid = _q("client_uuid")
+    account_id = _q("account_id")
+    signature = _q("signature")
+    if client_uuid or account_id or signature:
+        client_secret = resolve_secret(mcfg, "client_secret", "client_secret_env",
+                                       "ATS_AMOCRM_CLIENT_SECRET")
+        if not client_secret:
+            # Fail-closed: без секрета подлинность проверить нельзя.
+            return {"ok": False, "error": "webhook_disabled",
+                    "detail": "Задайте client_secret интеграции для проверки подписи"}, 403
+        if not _amocrm_verify_disconnect_signature(client_uuid, account_id,
+                                                   signature, client_secret):
+            return {"ok": False, "error": "bad_signature"}, 403
+        amo = dict(mcfg)
+        amo["disabled"] = True
+        amo["disabled_reason"] = f"Интеграция отключена в amoCRM (account_id={account_id})"
+        s["amocrm"] = amo
+        db.save_settings(s)
+        try:
+            ENGINE.reload_settings()
+        except Exception:
+            pass
+        print(f"[amocrm] disconnect hook: интеграция выключена (account_id={account_id})")
+        return {"ok": True, "status": "integration_disabled"}, 200
+
+    # ---------- POST: события / клик-дозвон ----------
+    expected = resolve_secret(mcfg, "webhook_token", "webhook_token_env",
+                              "ATS_AMOCRM_WEBHOOK_TOKEN")
+    if not expected:
+        # Fail-closed (как у UIS/МегаФона): вебхук без секрета отключён.
+        return {"ok": False, "error": "webhook_disabled",
+                "detail": "Задайте amocrm.webhook_token"}, 403
+    provided = _q("token") or str(headers.get("X-Amo-Token") or "").strip()
+    import hmac as hmac_mod
+    if not provided or not hmac_mod.compare_digest(provided, expected):
+        return {"ok": False, "error": "bad_secret"}, 403
+
     b = body or {}
     if "call" in b or "phone" in b:
         phone = str(b.get("phone") or (b.get("call") or {}).get("phone") or "").strip()
-        ext = str(b.get("user") or b.get("ext") or "admin").strip()
+        ext = str(b.get("user") or b.get("ext") or "").strip()
         if phone:
-            res = ENGINE.dial(phone=phone, user=ext)
-            return {"ok": True, "result": res}, 200
+            dial = getattr(ENGINE, "dial", None) or getattr(ENGINE, "dial_click", None)
+            if callable(dial):
+                res = dial(phone=phone, user=ext or None)
+                return {"ok": True, "result": res}, 200
+            # Click-to-call в движке не реализован — честный ответ вместо 500.
+            return {"ok": False, "error": "click2call_not_supported",
+                    "detail": "ATS принимает события amoCRM, но click-to-call "
+                              "пока не реализован"}, 501
     return {"ok": True, "status": "received"}, 200
 
 

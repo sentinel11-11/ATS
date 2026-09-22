@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Хранилище ATS v2: SQLite (одна БД, WAL), схема, миграции, импорт из legacy-JSON, настройки."""
+import datetime
 import json
 import os
 import sqlite3
@@ -333,6 +334,31 @@ CREATE TABLE IF NOT EXISTS settings(
   id INTEGER PRIMARY KEY CHECK (id = 1),
   data TEXT NOT NULL
 );
+-- Справочник пользователей amoCRM (синхронизируется из /api/v4/users):
+-- нужен для связывания операторов ATS с ответственными в amoCRM.
+CREATE TABLE IF NOT EXISTS amo_users(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  lang TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  updated TEXT NOT NULL DEFAULT ''
+);
+-- Исходящая очередь CRM (outbox): результат звонка НЕ теряется при сбое
+-- amoCRM — движок повторяет доставку с экспоненциальным backoff.
+CREATE TABLE IF NOT EXISTS crm_outbox(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL DEFAULT 'push_result',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  created TEXT NOT NULL DEFAULT '',
+  updated TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_crm_outbox_due ON crm_outbox(status, next_attempt_at);
 """
 
 DEFAULT_SCENARIO = {
@@ -697,3 +723,77 @@ def update_setting(key, value):
     s = get_settings()
     s[key] = value
     save_settings(s)
+
+
+# ---------------- amoCRM: справочник пользователей ----------------
+def amo_users_replace(users):
+    """Полная перезапись справочника пользователей amoCRM (снимок синхронизации).
+
+    Не удаляем тех, кого amoCRM не вернула в этот раз? — нет: users-sync даёт
+    полный список аккаунта, снимок должен быть точным. Записи помечаются
+    updated=now; отсутствующих amoCRM считает удалёнными из аккаунта.
+    """
+    now = config.now_iso()
+    with _lock:
+        q("DELETE FROM amo_users")
+        for u in users or []:
+            try:
+                uid = int(u.get("id"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            insert("amo_users", {
+                "id": uid,
+                "name": str(u.get("name") or "")[:200],
+                "email": str(u.get("email") or "")[:200],
+                "lang": str(u.get("lang") or "")[:10],
+                "active": 1,
+                "raw_json": json.dumps(u, ensure_ascii=False),
+                "updated": now})
+
+
+def amo_users_list():
+    return fetch("SELECT id, name, email, active, updated FROM amo_users ORDER BY name")
+
+
+# ---------------- CRM outbox (надёжная доставка результатов) ----------------
+def crm_outbox_enqueue(kind, payload, error=""):
+    now = config.now_iso()
+    insert("crm_outbox", {
+        "kind": str(kind or "push_result")[:40],
+        "payload_json": json.dumps(payload or {}, ensure_ascii=False),
+        "status": "pending",
+        "attempts": 0,
+        "next_attempt_at": now,  # первая повторная — ближайшим тиком движка
+        "last_error": str(error or "")[:500],
+        "created": now, "updated": now})
+
+
+def crm_outbox_due(limit=5):
+    return fetch(
+        "SELECT * FROM crm_outbox WHERE status='pending' AND next_attempt_at<=? "
+        "ORDER BY id LIMIT ?", (config.now_iso(), int(limit)))
+
+
+def crm_outbox_mark_done(row_id):
+    q("UPDATE crm_outbox SET status='done', updated=? WHERE id=?",
+      (config.now_iso(), int(row_id)))
+
+
+def crm_outbox_mark_retry(row_id, attempts, error, max_attempts=8):
+    """Backoff: 2^attempts минут (потолок 2 часа). После max_attempts — failed."""
+    attempts = int(attempts)
+    now = config.now_iso()
+    if attempts >= max_attempts:
+        q("UPDATE crm_outbox SET status='failed', attempts=?, last_error=?, updated=? WHERE id=?",
+          (attempts, str(error or "")[:500], now, int(row_id)))
+        return False
+    delay_min = min(120, 2 ** attempts)
+    nxt = (datetime.datetime.now() + datetime.timedelta(minutes=delay_min)).strftime("%Y-%m-%d %H:%M:%S")
+    q("UPDATE crm_outbox SET attempts=?, next_attempt_at=?, last_error=?, updated=? WHERE id=?",
+      (attempts, nxt, str(error or "")[:500], now, int(row_id)))
+    return True
+
+
+def crm_outbox_stats():
+    rows = fetch("SELECT status, COUNT(*) c FROM crm_outbox GROUP BY status")
+    return {r["status"]: r["c"] for r in rows}
