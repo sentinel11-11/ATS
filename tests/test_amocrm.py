@@ -30,8 +30,9 @@ os.environ["ATS_DATA_DIR"] = _TMP
 os.environ["ATS_ADMIN_PASSWORD"] = "TestAdmin123!"
 os.environ["ATS_DEV_SEED"] = "1"
 
-from app import api, config, db  # noqa: E402
-from app.crm import AMO_DEFAULT_RESULT_MAP, AmoCrm, make_crm  # noqa: E402
+from app import api, config, db, security  # noqa: E402
+from app.crm import (  # noqa: E402
+    AMO_DEFAULT_RESULT_MAP, AmoCrm, _amo_flag, make_crm)
 from app.engine import Engine  # noqa: E402
 from app.providers.amocrm import (  # noqa: E402
     AMO_CALL_CONVERSATION, AmoCrmApiError, AmoCrmAuthError, AmoCrmClient,
@@ -697,6 +698,107 @@ class TestCrmOutbox(unittest.TestCase):
         row = db.fetch1("SELECT * FROM crm_outbox")
         self.assertEqual(row["status"], "failed")
         self.assertGreaterEqual(row["attempts"], 8)
+
+
+class TestApiIntegrationFixes(unittest.TestCase):
+    """Баг-фиксы интеграции API/UI: 401 не проксируем, raw не портит типы,
+    legacy-флаги, справочник пользователей для editor'а соответствий."""
+
+    def setUp(self):
+        self._saved = db.get_settings()
+        self._orig_engine = api.ENGINE
+        self._orig_make_client = api._amocrm_make_client
+
+    def tearDown(self):
+        db.save_settings(self._saved)
+        api.ENGINE = self._orig_engine
+        api._amocrm_make_client = self._orig_make_client
+
+    def _admin_headers(self):
+        # need_auth сверяет login с users в БД — admin сидится в init_db.
+        if not db.fetch1("SELECT id FROM users WHERE login='admin'"):
+            from app import security as _sec
+            salt = _sec.new_salt()
+            db.insert("users", {"login": "admin", "role": "admin", "salt": salt,
+                                "password_hash": _sec.hash_password(
+                                    "TestAdmin123!", salt),
+                                "active": 1, "created": config.now_iso()})
+        else:
+            db.q("UPDATE users SET role='admin', active=1 WHERE login='admin'")
+        return {"X-Ats-Token": security.create_token("admin", "admin")}
+
+    def test_check_upstream_401_returns_502_not_401(self):
+        # БАГ А: 401 от amoCRM возвращался наружу как HTTP 401 → frontend
+        # сбрасывал ATS-сессию (окно логина). Теперь: HTTP 502 + http_status.
+        class _Fake401:
+            def get_account_info(self):
+                raise AmoCrmAuthError("amoCRM HTTP 401: доступ запрещён",
+                                      status=401)
+
+        api._amocrm_make_client = lambda mcfg: _Fake401()
+        payload, code = api._amocrm_check_route({"subdomain": "test"})
+        self.assertEqual(code, 502, "upstream 401 не должен быть наружным 401")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["http_status"], 401)
+
+    def test_users_sync_upstream_401_returns_502(self):
+        class _Fake401:
+            def get_users(self):
+                raise AmoCrmAuthError("amoCRM HTTP 401: доступ запрещён",
+                                      status=401)
+
+        api._amocrm_make_client = lambda mcfg: _Fake401()
+        payload, code = api._amocrm_users_sync_route({"subdomain": "test"})
+        self.assertEqual(code, 502)
+        self.assertEqual(payload["http_status"], 401)
+
+    def test_settings_raw_preserves_complex_types(self):
+        # БАГ B: raw делал str() для ВСЕХ значений — "False" (truthy!) и
+        # "{'100': 555}" ломали флаги и карты. Сложные типы храним как есть.
+        class _Eng:
+            def reload_settings(self):
+                pass
+
+        api.ENGINE = _Eng()
+        headers = self._admin_headers()
+        payload, code = api.route(
+            "POST", "/api/v2/settings/raw",
+            {"provider_config": {"amocrm": {
+                "operator_user_map": {"100": 555},
+                "auto_create_contacts": False,
+                "auto_task_results": ["busy", "no_answer"],
+                "responsible_user_id": 2}}}, headers)
+        self.assertEqual(code, 200)
+        amo = db.get_settings()["amocrm"]
+        self.assertIsInstance(amo["operator_user_map"], dict)
+        self.assertEqual(amo["operator_user_map"], {"100": 555})
+        self.assertIs(amo["auto_create_contacts"], False)
+        self.assertIsInstance(amo["auto_task_results"], list)
+        self.assertEqual(amo["auto_task_results"], ["busy", "no_answer"])
+        self.assertEqual(amo["responsible_user_id"], 2)
+        self.assertIsInstance(amo["responsible_user_id"], int)
+
+    def test_amo_flag_legacy_strings(self):
+        for v in ("False", "false", "0", "нет", "no", "off", ""):
+            self.assertFalse(_amo_flag(v, default=True), msg=repr(v))
+        self.assertTrue(_amo_flag("True", default=True))
+        self.assertTrue(_amo_flag(True, default=True))
+        self.assertTrue(_amo_flag(True, default=False))
+        self.assertFalse(_amo_flag(False, default=True))
+        self.assertFalse(_amo_flag("False", default=False))
+
+    def test_amocrm_users_list_auth(self):
+        db.amo_users_replace([
+            {"id": 2, "name": "Менеджер Один", "email": "m1@x.ru"}])
+        payload, code = api.route("GET", "/api/v2/amocrm/users", {},
+                                  self._admin_headers())
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertIsInstance(payload["users"], list)
+        self.assertGreaterEqual(len(payload["users"]), 1)
+        # Без токена — 401 (истёкшая/отсутствующая ATS-сессия).
+        payload2, code2 = api.route("GET", "/api/v2/amocrm/users", {}, {})
+        self.assertEqual(code2, 401)
 
 
 if __name__ == "__main__":

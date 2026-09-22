@@ -13,6 +13,9 @@ export default function Settings({ addToast, refreshKey }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [rawJsonText, setRawJsonText] = useState('');
   const [showRawEditor, setShowRawEditor] = useState(false);
+  const [amoUsers, setAmoUsers] = useState([]);
+  const [newOpKey, setNewOpKey] = useState('');
+  const [newAmoId, setNewAmoId] = useState('');
 
   const isMaskedValue = (val) => {
     if (!val) return false;
@@ -22,10 +25,11 @@ export default function Settings({ addToast, refreshKey }) {
 
   const loadAll = async () => {
     setLoading(true);
-    const [rawRes, basicRes, usersRes] = await Promise.all([
+    const [rawRes, basicRes, usersRes, amoUsersRes] = await Promise.all([
       api('/settings/raw'),
       api('/settings'),
-      api('/users')
+      api('/users'),
+      api('/amocrm/users')
     ]);
 
     if (rawRes && rawRes.provider_config) {
@@ -37,6 +41,11 @@ export default function Settings({ addToast, refreshKey }) {
     }
     if (usersRes && usersRes.users) {
       setUsers(usersRes.users);
+    }
+    if (amoUsersRes && Array.isArray(amoUsersRes.users)) {
+      setAmoUsers(amoUsersRes.users);
+    } else {
+      setAmoUsers([]);
     }
     setLoading(false);
   };
@@ -151,6 +160,13 @@ export default function Settings({ addToast, refreshKey }) {
     setActionLoading(false);
     if (res && (res.ok || res.connected || res.status === 'ok')) {
       addToast(`Успешно: ${name}`, 'ok');
+      // После users-sync обновляем справочник для редактора соответствий
+      if (endpoint.includes('users-sync')) {
+        const amoRes = await api('/amocrm/users');
+        if (amoRes && Array.isArray(amoRes.users)) {
+          setAmoUsers(amoRes.users);
+        }
+      }
     } else {
       const detail = res?.detail || res?.error || 'Не удалось выполнить';
       addToast(`Ошибка (${name}): ${detail}`, 'err');
@@ -240,6 +256,30 @@ export default function Settings({ addToast, refreshKey }) {
   const llm = providerConfig.llm || {};
   const crm = providerConfig.crm || {};
   const bitrix24 = providerConfig.bitrix24 || {};
+
+  // --- Соответствие операторов ATS → пользователей amoCRM (operator_user_map) ---
+  const atsOpKey = (u) => String(u.op_vats || u.ext || u.login || '').trim();
+  const amoOpMap = (amocrm.operator_user_map && typeof amocrm.operator_user_map === 'object' && !Array.isArray(amocrm.operator_user_map))
+    ? amocrm.operator_user_map
+    : {};
+  const amoOpMapEntries = Object.entries(amoOpMap);
+  const availableOps = users.filter((u) => {
+    const k = atsOpKey(u);
+    return k && !(k in amoOpMap);
+  });
+  const handleAddOpMap = () => {
+    if (!newOpKey || !newAmoId) {
+      return addToast('Выберите оператора ATS и пользователя amoCRM', 'warn');
+    }
+    updateProvider('amocrm', 'operator_user_map', { ...amoOpMap, [newOpKey]: parseInt(newAmoId, 10) });
+    setNewOpKey('');
+    setNewAmoId('');
+  };
+  const handleDelOpMap = (k) => {
+    const cur = { ...amoOpMap };
+    delete cur[k];
+    updateProvider('amocrm', 'operator_user_map', cur);
+  };
 
   return (
     <div className="flex flex-col gap-6 animate-in fade-in duration-200 pb-12">
@@ -882,6 +922,77 @@ export default function Settings({ addToast, refreshKey }) {
                     onChange={(e) => updateProvider('amocrm', 'responsible_user_id', parseInt(e.target.value) || 1)}
                     placeholder="1"
                   />
+                </div>
+                <div className="flex flex-col gap-2 pt-2 border-t border-line2/40">
+                  <label className="text-muted font-semibold">Соответствие операторов ATS → пользователей amoCRM</label>
+                  {amoUsers.length === 0 ? (
+                    <p className="text-warn text-xs">Список пользователей amoCRM пуст — сначала нажмите «Синхронизировать пользователей».</p>
+                  ) : (
+                    <>
+                      {amoOpMapEntries.length === 0 ? (
+                        <p className="text-dim text-xs">Соответствий пока нет — добавьте ниже.</p>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          {amoOpMapEntries.map(([atsKey, amoId]) => {
+                            const au = amoUsers.find((x) => String(x.id) === String(amoId));
+                            return (
+                              <div key={atsKey} className="flex items-center justify-between bg-[#0a1628] border border-line2 rounded-xl px-3 py-1.5">
+                                <span className="text-white text-xs font-mono truncate">
+                                  {atsKey} <span className="text-muted">→</span>{' '}
+                                  {au ? `${au.name || 'Без имени'}${au.email ? ` (${au.email})` : ''} [${au.id}]` : `id ${amoId}`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelOpMap(atsKey)}
+                                  className="p-1 rounded-lg text-muted hover:text-bad shrink-0"
+                                  title="Удалить соответствие"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div className="flex gap-2 flex-wrap">
+                        <select
+                          className="flex-1 min-w-[140px] bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+                          value={newOpKey}
+                          onChange={(e) => setNewOpKey(e.target.value)}
+                        >
+                          <option value="">Оператор ATS…</option>
+                          {availableOps.map((u) => {
+                            const k = atsOpKey(u);
+                            return (
+                              <option key={u.id} value={k}>
+                                {u.op_name || u.login} ({k})
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <select
+                          className="flex-1 min-w-[140px] bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+                          value={newAmoId}
+                          onChange={(e) => setNewAmoId(e.target.value)}
+                        >
+                          <option value="">Пользователь amoCRM…</option>
+                          {amoUsers.map((au) => (
+                            <option key={au.id} value={au.id}>
+                              {au.name || 'Без имени'}{au.email ? ` (${au.email})` : ''} [{au.id}]
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleAddOpMap}
+                          className="px-4 py-2 rounded-xl bg-acc text-white font-semibold text-xs hover:brightness-110 whitespace-nowrap"
+                        >
+                          Добавить
+                        </button>
+                      </div>
+                      <p className="text-dim text-[11px]">Звонки и задачи операторов будут регистрироваться в amoCRM на выбранных сотрудников. Сохранение — общей кнопкой «Сохранить все настройки».</p>
+                    </>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 pt-2 border-t border-line2/40">
                   <label className="flex items-center gap-2 text-white font-medium cursor-pointer">
