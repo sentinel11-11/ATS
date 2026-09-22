@@ -129,6 +129,34 @@ AMO_DEFAULT_TASK_RESULTS = ("busy", "no_answer", "timeout", "missed",
                             "machine", "no_operator", "rejected", "declined")
 
 
+_AMO_FALSE_STRINGS = frozenset(
+    {"", "false", "0", "нет", "no", "off", "n", "f", "не", "ложь", "нету"})
+_AMO_TRUE_STRINGS = frozenset(
+    {"true", "1", "да", "yes", "on", "y", "t", "д", "правда"})
+
+
+def _amo_flag(v, default=True):
+    """Булев флаг amoCRM с толерантностью к legacy-строкам.
+
+    POST /settings/raw раньше делал str() для ВСЕХ значений, поэтому в БД
+    могли осесть строки "False"/"True" (а "False" truthy в Python — снятие
+    галочки «автосоздание контакта/задачи» не работало). Лечим на чтении:
+    legacy-строки "false"/"0"/"нет"/"no"/"off"/"" → False.
+    """
+    if v is None:
+        return bool(default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in _AMO_FALSE_STRINGS:
+        return False
+    if s in _AMO_TRUE_STRINGS:
+        return True
+    return bool(default)
+
+
 class AmoCrm(CrmDriver):
     """Официальный драйвер amoCRM (REST API v4): фиксация звонков через POST /api/v4/calls
     (идемпотентно по uniq), автосоздание контактов, примечаний и задач.
@@ -186,7 +214,7 @@ class AmoCrm(CrmDriver):
 
     def _configured(self):
         mcfg = self._mcfg()
-        if mcfg.get("disabled"):
+        if _amo_flag(mcfg.get("disabled"), default=False):
             # Интеграция выключена (напр. хуком отключения amoCRM) — fail-closed.
             return False
         subdomain = str(mcfg.get("subdomain") or "").strip()
@@ -228,7 +256,7 @@ class AmoCrm(CrmDriver):
                         return int(op_map[k])
                     except (TypeError, ValueError):
                         pass
-        if mcfg.get("use_contact_responsible", True) and contact:
+        if _amo_flag(mcfg.get("use_contact_responsible", True), default=True) and contact:
             try:
                 if contact.get("responsible_user_id"):
                     return int(contact["responsible_user_id"])
@@ -315,7 +343,7 @@ class AmoCrm(CrmDriver):
                           f"выбран id={contact.get('id')}, требуется зачистка в amoCRM")
                 if contact:
                     contact_id = contact.get("id")
-                elif mcfg.get("auto_create_contacts", True):
+                elif _amo_flag(mcfg.get("auto_create_contacts", True), default=True):
                     try:
                         created = client.create_contact(name=cname, phone=phone,
                                                         responsible_user_id=responsible_id)
@@ -347,7 +375,8 @@ class AmoCrm(CrmDriver):
         task_results = mcfg.get("auto_task_results")
         if not (isinstance(task_results, (list, tuple)) and task_results):
             task_results = AMO_DEFAULT_TASK_RESULTS
-        if (mcfg.get("auto_create_tasks", True) and phone and result in task_results):
+        if (_amo_flag(mcfg.get("auto_create_tasks", True), default=True)
+                and phone and result in task_results):
             task_text = (f"Перезвонить клиенту: {phone} ({cname}). "
                          f"Результат звонка АТС: {result_text or result}.")
             try:

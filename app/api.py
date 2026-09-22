@@ -382,7 +382,15 @@ def _route(method, path, body, headers):
                         else:
                             return {"ok": False, "error": f"secret_missing_{fk}",
                                     "detail": f"В поле '{fk}' передана маска звездочек '{fv}', но сохраненный ключ в АТС отсутствует. Вставьте настоящий ключ вместо '{fv}'."}, 400
-                    merged[fk] = str(fv if fv is not None else "").strip()
+                    # Сложные типы храним как есть: dict/list (operator_user_map,
+                    # call_status_map, auto_task_results), bool/int/float флаги.
+                    # str() здесь ломал всё: "False" truthy в Python (галочка не
+                    # снималась), а dict превращался в строку "{'100': 555}".
+                    if isinstance(fv, (dict, list)) or fv is None \
+                            or isinstance(fv, (bool, int, float)):
+                        merged[fk] = fv
+                    else:
+                        merged[fk] = str(fv).strip()
                 s[k] = merged
         db.save_settings(s)
         ENGINE.reload_settings()
@@ -430,6 +438,10 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _amocrm_users_sync_route(body)
+    if p == ["amocrm", "users"] and method == "GET":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _amocrm_users_list_route()
     if p == ["megafon", "simulate-event"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -1052,6 +1064,12 @@ def _amocrm_make_client(mcfg):
 
 
 def _amocrm_check_route(body=None):
+    # ПРИНЦИП: наружный HTTP 401 означает ТОЛЬКО истёкшую ATS-сессию
+    # (need_auth). Ошибки upstream-провайдеров (в т.ч. 401 от amoCRM —
+    # неверный токен) НИКОГДА не проксируются как HTTP 401 наружу:
+    # frontend/src/api.js при любом 401 сбрасывает сессию и показывает окно
+    # логина. Поэтому AmoCrmApiError всегда отдаём как HTTP 502, а код
+    # amoCRM кладём в поле "http_status" payload'а.
     from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
@@ -1069,15 +1087,21 @@ def _amocrm_check_route(body=None):
                    "current_user_id": account.get("current_user_id")}
         return {"ok": True, "account": summary}, 200
     except AmoCrmApiError as e:
-        code = 502
-        if getattr(e, "status", None) == 401:
-            code = 401
-        return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300]}, code
+        return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300],
+                "http_status": getattr(e, "status", None)}, 502
     except Exception as e:
         return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300]}, 502
 
 
+def _amocrm_users_list_route():
+    """Снимок пользователей amoCRM из таблицы amo_users (наполняется users-sync)."""
+    return {"ok": True, "users": db.amo_users_list()}, 200
+
+
 def _amocrm_users_sync_route(body=None):
+    # Тот же принцип, что и в _amocrm_check_route: upstream-ошибки amoCRM
+    # отдаём как HTTP 502 + http_status в payload, никогда как HTTP 401
+    # (401 наружу = только истёкшая ATS-сессия, иначе UI выкинет из сессии).
     from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
