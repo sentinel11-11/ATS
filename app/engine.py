@@ -842,12 +842,54 @@ class Engine:
         events.publish("call", {"id": call["id"], "status": "no_operator"})
 
     def _push_crm(self, call, final_status):
+        row = None
         try:
             row = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
             if row:
                 self.crm.push_result(row)
         except Exception as e:
+            # Результат НЕ теряем: кладём в CRM outbox — движок повторит
+            # доставку с backoff (_crm_outbox_tick). Для amoCRM это защита
+            # от 401/429/5xx/сетевых сбоев и рестартов.
             print("[crm] push_result:", e)
+            try:
+                if row is None and call and call.get("id"):
+                    row = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+                if row:
+                    db.crm_outbox_enqueue("push_result", row, error=e)
+            except Exception as e2:
+                print("[crm] outbox enqueue failed:", e2)
+
+    # ---------- CRM outbox: повторная доставка результатов ----------
+    def _crm_outbox_tick(self, limit=5):
+        """Отправить созревшие записи CRM outbox (вызывается тиком движка).
+
+        kind=push_result: payload — снапшот записи calls на момент сбоя.
+        uniq звонка (ats-call-<id>) делает повтор идемпотентным на стороне
+        amoCRM: дубль не создастся, даже если первый POST дошёл, а ответ
+        потерялся по сети.
+        """
+        rows = db.crm_outbox_due(limit=limit)
+        if not rows:
+            return
+        for row in rows:
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except Exception as e:
+                db.crm_outbox_mark_retry(row["id"], int(row.get("attempts") or 0) + 1,
+                                         f"bad payload json: {e}")
+                continue
+            try:
+                self.crm.push_result(payload)
+                db.crm_outbox_mark_done(row["id"])
+                print(f"[crm] outbox #{row['id']} доставлен после "
+                      f"{row.get('attempts', 0)} повторов")
+            except Exception as e:
+                ok = db.crm_outbox_mark_retry(
+                    row["id"], int(row.get("attempts") or 0) + 1, e)
+                if not ok:
+                    print(f"[crm] outbox #{row['id']} НЕ доставлен "
+                          f"(превышены повторы): {e}")
 
     # ---------- завершение попытки / автодозвон ----------
     def _finish_attempt(self, call, item, result, detail, ok=False, retryable=False):
@@ -1256,6 +1298,10 @@ class Engine:
             self.handle_event(ev)
         self._allocate()
         self._watchdog()
+        try:
+            self._crm_outbox_tick()
+        except Exception as e:
+            print("[crm] outbox tick:", e)
 
     def run_until_idle(self, max_seconds=10, idle_ticks=5):
         """Для тестов: крутить тики, пока не завершатся активные звонки."""
