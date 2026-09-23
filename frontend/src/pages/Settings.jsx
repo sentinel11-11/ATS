@@ -712,6 +712,50 @@ export default function Settings({ addToast, refreshKey }) {
               placeholder={isMaskedValue(multicom.sip_secret) ? 'Сохранён (нажмите, чтобы изменить)' : 'Пароль SIP'}
             />
           </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Сотрудник ATS по умолчанию (user)</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.default_user || ''}
+              onChange={(e) => updateProvider('multicom', 'default_user', e.target.value)}
+              placeholder="ats"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Секрет вебхука (X-Multicom-Secret)</label>
+            <input
+              type="password"
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.webhook_secret || ''}
+              onFocus={(e) => {
+                if (isMaskedValue(e.target.value)) {
+                  updateProvider('multicom', 'webhook_secret', '');
+                }
+              }}
+              onChange={(e) => updateProvider('multicom', 'webhook_secret', e.target.value)}
+              placeholder={isMaskedValue(multicom.webhook_secret) ? 'Сохранён (нажмите, чтобы изменить)' : 'Без него вебхук закрыт (403)'}
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Записывать разговоры на стороне оператора</label>
+            <select
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.record === false ? '0' : '1'}
+              onChange={(e) => updateProvider('multicom', 'record', e.target.value === '1')}
+            >
+              <option value="1">Да — просить запись в makecall</option>
+              <option value="0">Нет</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-line2 bg-[#0a1628]/60 p-3 text-[11px] text-muted leading-relaxed">
+          <div className="font-semibold text-white mb-1">URL вебхука для Мультикома</div>
+          Отдайте агрегатору адрес{' '}
+          <code className="text-acc2 break-all">{`${window.location.origin}/api/v2/webhooks/multicom`}</code>
+          {' '}и тот же секрет в заголовке <code className="text-acc2">X-Multicom-Secret</code>. ATS принимает
+          статусы <code>ringing / answered / completed / busy / no_answer / failed / canceled</code> и по ним
+          двигает автодозвон, ACD и выгрузку в CRM. Без секрета приём событий закрыт (fail-closed).
         </div>
       </div>
 

@@ -28,6 +28,7 @@ class TelephonyProvider:
     name = "base"
     interactive = False  # True, если провайдер умеет «интерактивный канал» (опрос/DTMF/агент)
     needs_operator_ext = False  # True: для бриджа обязателен ext оператора (иначе accept запрещён)
+    supports_media = True  # False: транспорта без аудиослоя (REST-клиент без TTS/IVR)
 
     def __init__(self):
         self._sink = None          # очередь событий движка
@@ -519,6 +520,12 @@ class AsteriskAmiProvider(TelephonyProvider):
                 pass
 
 
+# Единый список провайдеров телефонии: настройки (settings.provider), пул
+# номеров (numbers.provider), CLI (--provider) и валидация в api — все сверяются
+# с ним, чтобы «добавили провайдера в реестр, забыли в трёх местах» не повторялось.
+PROVIDER_NAMES = ("sim", "uis", "ami", "megafon_vats", "multicom")
+
+
 def make_provider(settings: dict) -> TelephonyProvider:
     name = str(settings.get("provider") or "").strip().lower()
     if not name:
@@ -541,5 +548,6 @@ def make_provider(settings: dict) -> TelephonyProvider:
     # Fail-closed: неизвестное имя (опечатка «uis » и т.п.) — громкая ошибка,
     # а не молчаливый звонок через симулятор.
     raise ProviderNotConfigured(
-        "unknown provider: {!r} (ожидалось: sim / uis / ami / megafon_vats)".format(name))
+        "unknown provider: {!r} (ожидалось: {})".format(
+            name, " / ".join(PROVIDER_NAMES)))
 

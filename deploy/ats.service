@@ -1,0 +1,45 @@
+# systemd-юнит Axioma ATS v2 (сервер, Linux).
+#
+# Установка (права root, каталоги под вашу раскладку):
+#   cp deploy/ats.service /etc/systemd/system/ats.service
+#   # переменные окружения и секреты:
+#   install -d -m 750 /etc/ats && $EDITOR /etc/ats/ats.env   # см. deploy/ats.env.example
+#   install -d -o ats -g ats /var/lib/ats
+#   useradd -r -s /usr/sbin/nologin -d /var/lib/ats ats 2>/dev/null || true
+#   chown -R ats:ats /var/lib/ats
+#   systemctl daemon-reload && systemctl enable --now ats
+#   systemctl status ats && journalctl -u ats -f
+#
+# Проверка: curl -s http://127.0.0.1:9124/api/v2/health
+[Unit]
+Description=Axioma ATS v2 (исходящий обзвон, ACD, интеграции CRM/телефонии)
+Documentation=file:///opt/ats/docs/ATS_HOW_IT_WORKS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ats
+Group=ats
+WorkingDirectory=/opt/ats
+# Ключи amoCRM/ВАТС/LLM и путь к данным — только здесь (или в EnvironmentFile),
+# в интерфейсе их можно задавать как имена env-переменок (*_env).
+EnvironmentFile=-/etc/ats/ats.env
+Environment=PYTHONUNBUFFERED=1
+Environment=ATS_DATA_DIR=/var/lib/ats
+ExecStart=/usr/bin/python3 -m app.run --host 0.0.0.0 --port 9124
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+# Движок пишет в SQLite (WAL) + логи: файловых лимитов щадящих, но не жёстких
+LimitNOFILE=4096
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ats
+# Если АТС должна ходить только к оператору и amoCRM — уместен
+# IPAddressAllow/IPAddressDeny + DynamicUsers (см. docs/DEPLOY.md, §«жёсткая изоляция»).
+
+[Install]
+WantedBy=multi-user.target

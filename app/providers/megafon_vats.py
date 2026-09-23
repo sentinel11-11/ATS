@@ -383,6 +383,7 @@ class MegafonVatsProvider(TelephonyProvider):
     """
     name = "megafon_vats"
     interactive = False
+    supports_media = False
 
     def __init__(self):
         super().__init__()

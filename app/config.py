@@ -48,8 +48,16 @@ DEFAULT_SETTINGS = {
     "megafon_vats": {"base_url": "", "api_key": "", "api_key_env": "ATS_MEGAFON_API_KEY",
                      "crm_token": "", "crm_token_env": "ATS_MEGAFON_CRM_TOKEN",
                      "default_user": "", "default_group": "", "timeout_sec": 15},
+    # Мультиком (агрегатор SIP/номеров): REST makecall + вебхук статусов.
+    # Пути эндпоинтов настраиваемые — контракт «makecall/номера/статусы» у
+    # операторов различается; правим настройки, а не код. webhook_secret —
+    # входной секрет нашего /webhooks/multicom (fail-closed без него закрыт).
     "multicom": {"api_url": "https://api.multicom.ru/v1", "api_key": "", "api_key_env": "ATS_MULTICOM_API_KEY",
-                 "account_id": "", "sip_host": "sip.multicom.ru", "sip_user": "", "sip_secret": "", "timeout_sec": 15},
+                 "account_id": "", "sip_host": "sip.multicom.ru", "sip_user": "", "sip_secret": "", "timeout_sec": 15,
+                 "webhook_secret": "", "webhook_secret_env": "ATS_MULTICOM_WEBHOOK_TOKEN",
+                 "default_user": "ats", "callback_number": "", "record": True,
+                 "account_path": "/account", "numbers_path": "/numbers",
+                 "makecall_path": "/calls/make", "hangup_path": "/calls/{call_id}/hangup"},
     "llm": {"enabled": False, "base_url": "", "api_key_env": "ATS_LLM_KEY", "model": ""},
     "crm": {"driver": "csv"},     # csv | bitrix24 | amocrm
     "bitrix24": {"webhook_url": ""},

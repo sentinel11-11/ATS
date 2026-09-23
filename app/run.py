@@ -51,7 +51,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="ATS v2")
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
-    ap.add_argument("--provider", default=None, choices=["sim", "uis", "ami", "megafon_vats"],
+    from .telephony import PROVIDER_NAMES
+    ap.add_argument("--provider", default=None, choices=list(PROVIDER_NAMES),
                     help="Провайдер телефонии (сохраняется в настройки; "
                          "обязателен при первом запуске: без него движок не стартует)")
     ap.add_argument("--init-only", action="store_true")

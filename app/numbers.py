@@ -30,7 +30,7 @@ def list_numbers(include_disabled=False):
     return db.fetch(sql + " ORDER BY id")
 
 
-NUMBER_PROVIDERS = ("sim", "uis", "ami", "megafon_vats")
+from .telephony import PROVIDER_NAMES as NUMBER_PROVIDERS
 
 
 def add_number(number, label="", kind="mobile", provider="sim", daily_limit=100,

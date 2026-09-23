@@ -203,10 +203,28 @@ def _route(method, path, body, headers):
         ENGINE.push_event(ev)
         return OK, 200
     if p == ["webhooks", "multicom"] and method == "POST":
-        from .providers.multicom import map_multicom_webhook
+        from .providers.multicom import (map_multicom_webhook, verify_webhook_secret,
+                                         webhook_fingerprint)
+        s = db.get_settings()
+        # Fail-closed, как у UIS/МегаФона: без multicom.webhook_secret маршрут
+        # закрыт, иначе любой, кто знает URL, «завершал» бы чужие звонки.
+        ok_why, why = verify_webhook_secret(s, headers=headers, qparams=qparams)
+        if not ok_why:
+            return {"ok": False, "error": why,
+                    "detail": ("Задайте multicom.webhook_secret (или env "
+                                "ATS_MULTICOM_WEBHOOK_TOKEN) и передавайте его "
+                                "в заголовке X-Multicom-Secret")
+                    }, 403 if why == "webhook_disabled" else 401
         ev = map_multicom_webhook(body)
-        if ev and ENGINE:
-            ENGINE.push_event(ev)
+        if not ev:
+            return {"ok": False, "error": "unrecognized"}, 422
+        # Отпечаток — для дедупликации повторов оператора (движок использует
+        # его как opaque-строку, см. provider_events).
+        ev["fingerprint"] = webhook_fingerprint(ev)
+        print("[multicom] webhook ev={} callid={} dir={}".format(
+            ev.get("event"), ev.get("external_call_id"), ev.get("direction")))
+        # Только в очередь: отвечаем мгновенно, обработку делает тик движка.
+        ENGINE.push_event(ev)
         return OK, 200
     if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
         # Вебхук amoCRM — внешний (у amoCRM нет нашей сессии): роутим ДО need_auth.
@@ -430,6 +448,10 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _multicom_sync_route(body)
+    if p == ["multicom", "simulate-event"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _multicom_simulate_route(body)
     if p == ["amocrm", "check"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -988,17 +1010,20 @@ def _health():
     wh_megafon = bool(resolve_secret(s.get("megafon_vats") or {}, "crm_token",
                                      "crm_token_env", "ATS_MEGAFON_CRM_TOKEN"))
     wh_uis = bool((s.get("uis") or {}).get("webhook_secret", ""))
+    wh_multicom = bool(resolve_secret(s.get("multicom") or {}, "webhook_secret",
+                                       "webhook_secret_env", "ATS_MULTICOM_WEBHOOK_TOKEN"))
     eng_ok = ENGINE is not None
     return {"ok": bool(db_ok and eng_ok), "db": db_ok, "engine": eng_ok,
             "telephony": {"provider": pname, "connected": connected},
-            "webhook": bool(wh_megafon or wh_uis), "timestamp": now_iso()}
+            "webhook": bool(wh_megafon or wh_uis or wh_multicom), "timestamp": now_iso()}
 
 
 def _health_details():
     """Расширенный health для админа: маскированный конфиг, счётчики."""
+    from .providers.base import resolve_secret
     h = _health()
     s = db.get_settings()
-    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami")})
+    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami", "multicom")})
     today = now_iso()[:10]
     try:
         calls_today = db.fetch1(
@@ -1008,26 +1033,36 @@ def _health_details():
             "SELECT COUNT(*) c FROM campaign_items WHERE status='queued'")["c"]
         ops_free = db.fetch1(
             "SELECT COUNT(*) c FROM operators WHERE status='free'")["c"]
-        pool_total = db.fetch1(
-            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats'")["c"]
-        pool_usable = db.fetch1(
-            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats' "
-            "AND active=1 AND quarantined=0 AND enabled_outgoing=1")["c"]
+        def _pool(pv):
+            t = db.fetch1("SELECT COUNT(*) c FROM numbers WHERE provider=?", (pv,))["c"]
+            u = db.fetch1("SELECT COUNT(*) c FROM numbers WHERE provider=? "
+                          "AND active=1 AND quarantined=0 AND enabled_outgoing=1",
+                          (pv,))["c"]
+            return {"total": t, "usable": u}
+        # пул считаем по провайдерам: у МегаФона и Мультикома разные номера
+        pool_megafon = _pool("megafon_vats")
+        pool_multicom = _pool("multicom")
         vats_users = db.fetch1("SELECT COUNT(*) c FROM vats_users")["c"]
         vats_groups = db.fetch1("SELECT COUNT(*) c FROM vats_groups")["c"]
     except Exception:
         calls_today = items_queued = ops_free = -1
-        pool_total = pool_usable = vats_users = vats_groups = -1
+        pool_megafon = pool_multicom = {"total": -1, "usable": -1}
+        vats_users = vats_groups = -1
     thread_alive = bool(ENGINE is not None and ENGINE.is_running())
     return {"health": h, "engine_thread": thread_alive,
             "provider_config": masked,
             "webhooks": {"megafon": bool(h["webhook"] and
                                          (masked.get("megafon_vats") or {}).get(
                                              "crm_token")),
-                         "uis": bool((s.get("uis") or {}).get("webhook_secret"))},
+                         "uis": bool((s.get("uis") or {}).get("webhook_secret")),
+                         "multicom": bool(resolve_secret(s.get("multicom") or {},
+                                                          "webhook_secret",
+                                                          "webhook_secret_env",
+                                                          "ATS_MULTICOM_WEBHOOK_TOKEN"))},
             "stats": {"calls_today": calls_today, "items_queued": items_queued,
                       "operators_free": ops_free,
-                      "pool_megafon": {"total": pool_total, "usable": pool_usable},
+                      "pool_megafon": pool_megafon,
+                      "pool_multicom": pool_multicom,
                       "vats_users": vats_users, "vats_groups": vats_groups},
             "settings": {k: s.get(k) for k in
                          ("provider", "max_channels", "retry_max",
@@ -1246,7 +1281,7 @@ def _multicom_sync_route(body=None):
     from .providers.base import ProviderApiError
     from .telephony import ProviderNotConfigured
     try:
-        rep = ENGINE.multicom_pool_sync()
+        rep = ENGINE.multicom_pool_sync(dry_run=bool((body or {}).get("dry_run")))
         return {"ok": True, "report": rep}, 200
     except ProviderNotConfigured as e:
         return {"ok": False, "error": "multicom_not_configured", "detail": str(e)[:300]}, 400
@@ -1254,6 +1289,23 @@ def _multicom_sync_route(body=None):
         return {"ok": False, "error": "multicom_error", "detail": str(e)[:300]}, 502
     except Exception as e:
         return {"ok": False, "error": "multicom_error", "detail": str(e)[:300]}, 502
+
+
+def _multicom_simulate_route(body=None):
+    """Локальная симуляция вебхука Мультикома (admin, БЕЗ webhook_secret):
+    прогнать событие статуса через движок на стенде, где у агрегатора ещё нет
+    доступа. Только для отладки/демо."""
+    from .providers.multicom import map_multicom_webhook, webhook_fingerprint
+    ev = map_multicom_webhook(body or {})
+    if not ev:
+        return {"ok": False, "error": "unrecognized",
+                "detail": "Нужен внешний id звонка: call_id / id / uuid"}, 422
+    # суффикс -sim: повторная симуляция того же статуса не должна отбрасываться
+    # дедупликатором (provider_events.fingerprint уникален) — на стенде шлют одно
+    # и то же событие по кругу.
+    ev["fingerprint"] = webhook_fingerprint(ev) + "-sim" + uuid.uuid4().hex[:8]
+    ENGINE.push_event(ev)
+    return {"ok": True, "event": {k: v for k, v in ev.items() if k != "raw"}}, 200
 
 
 def _megafon_check_route(body=None):
@@ -1291,6 +1343,9 @@ def _megafon_simulate_route(body):
     ev = map_megafon_webhook(body or {})
     if not ev:
         return {"ok": False, "error": "unrecognized"}, 422
+    # суффикс -sim: повторная симуляция того же статуса не должна отбрасываться
+    # дедупликатором (provider_events.fingerprint уникален) — на стенде шлют одно
+    # и то же событие по кругу.
     ev["fingerprint"] = webhook_fingerprint(ev)
     ENGINE.push_event(ev)
     return {"ok": True, "event": {k: v for k, v in ev.items() if k != "raw"}}, 200
@@ -1575,8 +1630,12 @@ def _settings_save(body, sess=None):
     s = db.get_settings()
     if "provider" in body:
         pv = str(body.get("provider") or "").strip().lower()
-        if pv not in ("", "sim", "uis", "ami", "megafon_vats"):
-            return {"ok": False, "error": "bad_provider"}, 400
+        from .telephony import PROVIDER_NAMES
+        # Единый список провайдеров (app/telephony.py): опечатка → bad_provider,
+        # а «есть в UI, но нет в списке» больше не блокирует выбор провайдера.
+        if pv not in ("",) + tuple(PROVIDER_NAMES):
+            return {"ok": False, "error": "bad_provider",
+                    "detail": "допустимо: " + " / ".join(PROVIDER_NAMES)}, 400
         s["provider"] = pv  # "" = не настроен (fail-closed до явного выбора)
     for k in ("max_channels", "consent_required", "retry_max", "retry_delay_min",
               "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",

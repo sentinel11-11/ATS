@@ -123,6 +123,10 @@ class Engine:
             # Нормализованное событие ВАТС: корреляция по external_call_id —
             # наш call_id ещё не резолвлен (см. _on_megafon).
             return self._on_megafon(ev)
+        if ev.get("provider") == "multicom" and ev.get("call_id") is None:
+            # Вебхук агрегатора Мультиком: тот же принцип корреляции по
+            # external_call_id (см. _on_multicom).
+            return self._on_multicom(ev)
         evt = ev.get("event")
         call_id = ev.get("call_id")
         call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
@@ -686,25 +690,223 @@ class Engine:
         except Exception as e:
             return {"ok": False, "detail": f"Ошибка соединения Мультиком: {str(e)[:200]}"}
 
-    def multicom_pool_sync(self):
+    def multicom_pool_sync(self, dry_run=False):
+        """Сверить пул Caller ID с номерами агрегатора (только добавление).
+
+        Номера нормализуются к E.164 без «+» — иначе «+7900…» из API и
+        «7900…» в базе разъехались бы двумя строками. Ничего не удаляем,
+        карантин и active (выключатель админа) не трогаем.
+        """
+        from .providers.multicom import normalize_number
         client = self._multicom_client()
         nums = client.get_numbers()
-        added = 0
+        report = {"dry_run": bool(dry_run), "added": [], "errors": [],
+                  "total_remote": len(nums)}
+        seen = set()
         for n in nums:
             phone = str(n.get("number") or n.get("phone") or "").strip() if isinstance(n, dict) else str(n)
-            if phone:
-                exists = db.fetch1("SELECT id FROM numbers WHERE number=? OR phone=?", (phone, phone))
-                if not exists:
-                    db.insert("numbers", {
-                        "number": phone,
-                        "label": "multicom",
-                        "provider": "multicom",
-                        "enabled_outgoing": 1,
-                        "daily_limit": 100,
-                        "weight": 1
-                    })
-                    added += 1
-        return {"ok": True, "added": added, "total_remote": len(nums)}
+            norm = normalize_number(phone)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)   # один и тот же номер оператор может отдать в двух написаниях
+            exists = db.fetch1("SELECT id FROM numbers WHERE REPLACE(number,'+','')=?", (norm,))
+            if exists:
+                continue
+            if dry_run:
+                report["added"].append(norm)
+                continue
+            try:
+                db.insert("numbers", {
+                    "number": norm,
+                    "label": "multicom",
+                    "provider": "multicom",
+                    "enabled_outgoing": 1,
+                    "daily_limit": 100,
+                    "weight": 1,
+                    "created": now_iso()
+                })
+                report["added"].append(norm)
+            except Exception as e:
+                report["errors"].append("{}: {}".format(norm, str(e)[:120]))
+        print("[multicom] синк пула: +{} (всего у оператора: {})".format(
+            len(report["added"]), report["total_remote"]))
+        report["ok"] = True
+        return report
+
+    # ---------- Мультиком: события вебхука → FSM движка ----------
+    def _multicom_mark(self, fp, status):
+        if fp:
+            db.q("UPDATE provider_events SET status=?, processed_at=? WHERE fingerprint=?",
+                 (status, now_iso(), fp))
+
+    def _multicom_resolve(self, external_id):
+        if not external_id:
+            return None
+        return db.fetch1("SELECT * FROM calls WHERE provider='multicom' "
+                         "AND external_call_id=? ORDER BY id DESC LIMIT 1", (external_id,))
+
+    def _multicom_contact(self, phone):
+        from .providers.multicom import phone_variants
+        for variant in phone_variants(phone):
+            if not variant:
+                continue
+            c = db.fetch1("SELECT * FROM contacts WHERE phone=?", (variant,))
+            if c:
+                return c
+        return None
+
+    def _multicom_incoming(self, ev):
+        """Входящий от агрегатора: только запись журнала + карточка в UI (ACD
+        и маршрутизация — на стороне оператора/настроек SIP)."""
+        if not self.settings.get("log_non_campaign_calls", True):
+            return None
+        contact = self._multicom_contact(ev.get("phone"))
+        call_id = db.insert("calls", {
+            "campaign_id": 0, "item_id": 0, "contact_id": contact["id"] if contact else 0,
+            "contact_name": contact["name"] if contact else "",
+            "contact_phone": ev.get("phone", ""), "caller_id": "", "number_id": 0,
+            "provider": "multicom", "external_call_id": ev.get("external_call_id", ""),
+            "direction": "in", "status": "ringing", "result": "", "detail": "",
+            "agent_result": "", "recording": "", "started_at": now_iso(), "answered_at": "",
+            "ended_at": "", "duration_sec": 0, "provider_user": ev.get("user", ""),
+            "recording_url": ev.get("record_url", "")})
+        events.publish("call", {"id": call_id, "status": "ringing",
+                                "phone": ev.get("phone", ""), "direction": "in",
+                                "contact_name": contact["name"] if contact else "",
+                                "incoming": True})
+        return db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+
+    def _multicom_completed(self, call, item, ev, fp):
+        call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        if not call:
+            return self._multicom_mark(fp, "done")
+        if call["status"] == "done":
+            return self._multicom_mark(fp, "done")
+        direction = call.get("direction") or "out"
+        if direction == "in":
+            if call.get("answered_at"):
+                db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, "
+                     "result='done_ok', detail=? WHERE id=?",
+                     (now_iso(), self._duration(call), "Входящий: разговор завершён (Мультиком)",
+                      call["id"]))
+                self._push_crm(call, "done_ok")
+                events.publish("call", {"id": call["id"], "status": "done",
+                                        "phone": call["contact_phone"]})
+            else:
+                db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? "
+                     "WHERE id=?", (now_iso(), "Пропущенный входящий (Мультиком)"[:200], call["id"]))
+                try:
+                    self.crm.create_task(
+                        "Перезвонить клиенту",
+                        "Пропущенный входящий {} {} (звонок #{}, Мультиком {})".format(
+                            call.get("contact_name", ""), call.get("contact_phone", ""),
+                            call["id"], call.get("external_call_id", "")))
+                except Exception as e:
+                    print("[crm] create_task:", e)
+                self._push_crm(call, "missed")
+                events.publish("call", {"id": call["id"], "status": "missed",
+                                        "phone": call["contact_phone"], "direction": "in"})
+            return self._multicom_mark(fp, "done")
+        if not call.get("answered_at") and call.get("status") in ("new", "dialing", "ringing"):
+            self._finish_attempt(call, item, ev.get("raw_type") or "no_answer",
+                                 ev.get("detail") or "Завершён оператором без ответа",
+                                 retryable=True)
+            return self._multicom_mark(fp, "done")
+        campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?",
+                             (call["campaign_id"],)) if call["campaign_id"] else None
+        flow = (campaign or {}).get("flow") or "message"
+        if flow == "operator":
+            db.q("UPDATE acd SET status='completed', updated=? WHERE call_id=? "
+                 "AND status IN ('queued','offered','ringing','answered','accepted','bridged')",
+                 (now_iso(), call["id"]))
+            self._finish_attempt(call, item, "operator_ok", "Разговор завершён (Мультиком)", ok=True)
+        else:
+            self._finish_attempt(call, item, "done_ok", "Разговор завершён (Мультиком)", ok=True)
+        return self._multicom_mark(fp, "done")
+
+    def _on_multicom(self, ev):
+        """Вебхук агрегатора: дедуп по fingerprint, корреляция по external_call_id,
+        далее — общий FSM движка (answer→flow, финал→автодозвон/CRM)."""
+        fp = ev.get("fingerprint") or ""
+        if fp and db.fetch1("SELECT id FROM provider_events WHERE fingerprint=?", (fp,)):
+            print("[multicom] дубль вебхука {} — пропущен".format(fp[:12]))
+            return
+        if fp:
+            db.insert("provider_events", {
+                "provider": "multicom", "fingerprint": fp,
+                "external_call_id": ev.get("external_call_id", ""),
+                "event_type": ev.get("raw_type") or ev.get("event", ""),
+                "payload_json": json.dumps(ev.get("raw") or {}, ensure_ascii=False),
+                "received_at": now_iso(), "processed_at": "", "status": "new"})
+        kind = ev.get("event")
+        call = self._multicom_resolve(ev.get("external_call_id"))
+        if not call and kind == "ring" and ev.get("direction") == "in":
+            call = self._multicom_incoming(ev)
+        if not call:
+            print("[multicom] orphan {} {}: звонок не найден".format(
+                kind, ev.get("external_call_id")))
+            return self._multicom_mark(fp, "orphan")
+        # Топ-ап фактов от оператора: запись разговора, фактический CID, сотрудник.
+        upd, args = [], []
+        if ev.get("record_url"):
+            upd.append("recording_url=?")
+            args.append(str(ev["record_url"])[:500])
+        # Фактический исходящий номер от оператора честнее «запрошенного из пула»:
+        # агрегатор мог подставить свой CID (маршрут/резервирование).
+        clid = str(ev.get("clid") or "").strip()
+        if clid and clid != str(call.get("caller_id") or "").lstrip("+"):
+            upd.append("caller_id=?")
+            args.append(clid[:32])
+        if ev.get("user"):
+            upd.append("provider_user=?")
+            args.append(str(ev["user"])[:64])
+        if upd:
+            args.append(call["id"])
+            db.q("UPDATE calls SET {} WHERE id=?".format(", ".join(upd)), tuple(args))
+            call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+        item = db.fetch1("SELECT * FROM campaign_items WHERE id=?",
+                         (call["item_id"],)) if call["item_id"] else None
+        if kind == "ring":
+            if call["status"] != "done":
+                db.q("UPDATE calls SET status='ringing' WHERE id=?", (call["id"],))
+                if item and item.get("status") in ("queued", "dialing"):
+                    db.update("campaign_items", {"status": "dialing"}, "id=?", (item["id"],))
+                events.publish("call", {"id": call["id"], "status": "ringing",
+                                        "phone": call["contact_phone"]})
+            return self._multicom_mark(fp, "done")
+        if kind == "answered":
+            if call["status"] == "done" or call.get("answered_at"):
+                return self._multicom_mark(fp, "done")
+            if (call.get("direction") or "out") == "in":
+                db.q("UPDATE calls SET status='answered', answered_at=? WHERE id=?",
+                     (now_iso(), call["id"]))
+                events.publish("call", {"id": call["id"], "status": "answered",
+                                        "phone": call["contact_phone"], "direction": "in"})
+                return self._multicom_mark(fp, "done")
+            self.handle_event(dict(ev, call_id=call["id"], human=True))
+            return self._multicom_mark(fp, "done")
+        if kind in ("completed", "done"):
+            return self._multicom_completed(call, item, ev, fp)
+        if kind == "canceled":
+            if call.get("answered_at"):
+                return self._multicom_completed(call, item, ev, fp)
+            self._finish_attempt(call, item, "canceled",
+                                 ev.get("detail") or "Сброшен до ответа (Мультиком)",
+                                 retryable=True)
+            return self._multicom_mark(fp, "done")
+        if kind == "dropped":
+            self._on_dropped(call, item)
+            return self._multicom_mark(fp, "done")
+        if kind in ("busy", "no_answer", "failed"):
+            if call["status"] == "done":
+                return self._multicom_mark(fp, "done")
+            detail = ev.get("detail") or {"busy": "Занято (Мультиком)",
+                                          "no_answer": "Нет ответа (Мультиком)",
+                                          "failed": "Сбой оператора (Мультиком)"}[kind]
+            self._finish_attempt(call, item, kind, detail, retryable=True)
+            return self._multicom_mark(fp, "done")
+        print("[multicom] неизвестное нормализованное событие: {}".format(kind))
+        return self._multicom_mark(fp, "done")
 
     def _duration(self, call):
         st = _iso_to_dt(call.get("answered_at") or call.get("started_at"))
@@ -726,9 +928,10 @@ class Engine:
         campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?", (call["campaign_id"],)) if call["campaign_id"] else None
         flow = (campaign or {}).get("flow") or "message"
         if flow == "message" and (call.get("direction") or "out") == "out" \
-                and getattr(self.provider, "name", "") == "megafon_vats":
-            # REST API ВАТС не передаёт аудио: «доставить сообщение» нечем.
-            # Честный терминальный результат вместо ложного done_ok (§65 ТЗ).
+                and not getattr(self.provider, "supports_media", True):
+            # У транспорта нет аудио (REST ВАТС, REST-агрегатор): «доставить
+            # сообщение» нечем. Честный терминальный результат вместо ложного
+            # done_ok (§65 ТЗ).
             self._finish_attempt(call, item, "no_media",
                                  "flow=message невозможен: REST API ВАТС не передаёт аудио "
                                  "(нужен Asterisk с медиа-слоем)", retryable=False)
@@ -1076,20 +1279,23 @@ class Engine:
                     self.provider.hangup(c["id"])
                 except Exception:
                     pass
-        # Страховка для VATS-разговоров: если ВАТС не прислала финал
-        # (потерян вебхук, обрыв связи) — не висим в wait_operator вечно,
-        # а закрываем timeout+ретрай. Нормальный путь — COMPLETED/history,
-        # сюда попадаем только при потере событий.
+        # Страховка для «разговор на стороне оператора» (ВАТС МегаФон, агрегатор
+        # Мультиком): если финальный вебхук потерян (обрыв связи, рестарт ATS),
+        # звонок не должен висеть в wait_operator вечно — закрываем timeout+ретрай.
+        # Нормальный путь — COMPLETED/history; сюда попадаем только при потере
+        # событий. Имя настройки историческое (vats_*), действует и для multicom.
         vats_stuck_min = int(settings.get("vats_conversation_timeout_min", 30))
         if vats_stuck_min > 0:
             stuck = db.fetch(
                 "SELECT * FROM calls WHERE ended_at='' AND status='wait_operator' "
-                "AND provider='megafon_vats' AND external_call_id<>'' AND started_at<=?",
+                "AND provider IN ('megafon_vats','multicom') AND external_call_id<>'' "
+                "AND started_at<=?",
                 (self._ago(vats_stuck_min),))
             for c in stuck:
                 item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (c["item_id"],)) if c["item_id"] else None
-                print("[megafon] СТРАХОВКА: звонок {} в wait_operator дольше {} мин "
-                      "без финала ВАТС — timeout+ретрай".format(c["id"], vats_stuck_min))
+                print("[{}] СТРАХОВКА: звонок {} в wait_operator дольше {} мин "
+                      "без финала оператора — timeout+ретрай".format(
+                          c.get("provider", "vats"), c["id"], vats_stuck_min))
                 db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?",
                      (now_iso(), c["id"]))
                 self._finish_attempt(c, item, "timeout",
