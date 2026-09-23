@@ -91,7 +91,9 @@ start_process() {
   fi
   mkdir -p "$DATA_DIR/logs"
   log "запуск: python3 -m app.run --host 0.0.0.0 --port $PORT (лог: $DATA_DIR/logs/ats.log)"
-  nohup python3 -m app.run --host 0.0.0.0 --port "$PORT" >>"$DATA_DIR/logs/ats.log" 2>&1 &
+  # 9>&- — ОБЯЗАТЕЛЬНО: иначе наследник держит flock из fd 9 и следующее
+  # обновление/откат навсегда получит «другое обновление уже выполняется».
+  nohup python3 -m app.run --host 0.0.0.0 --port "$PORT" >>"$DATA_DIR/logs/ats.log" 2>&1 9>&- &
   echo $! > "$DATA_DIR/ats.pid"
 }
 
@@ -112,6 +114,15 @@ restart_and_check() {
     sleep 2
   done
   warn "health не ответил: ${res:-нет ответа}"
+  # Чаще всего приложение честно отказалось стартовать (fail-closed: не выбран
+  # провайдер, нет ключа оператора/CRM) — печатаем причину, а не «серый» таймаут.
+  if [ -f "$DATA_DIR/logs/ats.log" ]; then
+    warn "последние строки $DATA_DIR/logs/ats.log:"
+    tail -n 12 "$DATA_DIR/logs/ats.log" | sed 's/^/      /' || true
+  elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+    warn "последние строки journalctl -u $SERVICE:"
+    (journalctl -u "$SERVICE" -n 12 --no-pager 2>/dev/null || sudo -n journalctl -u "$SERVICE" -n 12 --no-pager 2>/dev/null) | sed 's/^/      /' || true
+  fi
   return 1
 }
 
@@ -126,14 +137,15 @@ rollback() {
 
 # ================== РЕЖИМ ОТКАТА ==================
 if [ "$MODE" = "rollback" ]; then
-  exec 9>"$LOCK"; flock -n 9 || die "другое обновление/откат уже выполняется (lock $LOCK)"
+  exec 9>"$LOCK"; flock -n 9 || die "другое обновление/откат уже выполняется (lock $LOCK). fuser -v $LOCK — кто держит"
   : >"$LOG" 2>/dev/null || LOG=/dev/null
   rollback
   exit 0
 fi
 
 # ================== ОБЫЧНОЕ ОБНОВЛЕНИЕ ==================
-exec 9>"$LOCK"; flock -n 9 || die "другое обновление уже выполняется (lock $LOCK) — дождитесь"
+exec 9>"$LOCK"; flock -n 9 || die "другое обновление уже выполняется (lock $LOCK) — дождитесь.
+Если уверенности нет: fuser -v $LOCK  (покажет pid; держатель — обычно зависший update)"
 : >"$LOG" 2>/dev/null || LOG=/dev/null
 [ -z "$BRANCH" ] && BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 PREV_SHA="$(git rev-parse HEAD)"
@@ -189,10 +201,27 @@ fi
 
 echo "$PREV_SHA" > .deploy-last
 git checkout "$BRANCH" >>"$LOG" 2>&1 || die "не переключились на $BRANCH (см. $LOG)"
+
+# Untracked-файлы на сервере, совпадающие с приходящими из репозитория, — частая
+# причина «merge aborted» (например, кто-то положил рядом свою копию deploy/update.sh).
+# Уводим ровно их (боевую БД не трогаем: она отслеживается и уже под skip-worktree).
+incoming="$(git diff --name-only HEAD.."$REMOTE/$BRANCH" 2>/dev/null || true)"
+moved=0
+for f in $incoming; do
+  if [ -f "$f" ] && git status --porcelain -- "$f" 2>/dev/null | grep -q '^?? '; then
+    mv "$f" "$f.pre-update-$STAMP" && moved=$((moved+1))
+    warn "локальная копия $f отложена в $f.pre-update-$STAMP"
+  fi
+done
+[ "$moved" -gt 0 ] && log "отложено конфликтующих untracked-файлов: $moved (их содержимое — в .pre-update-*)"
+
 git merge --ff-only "$REMOTE/$BRANCH" >>"$LOG" 2>&1 || die "
-ff-only merge не прошёл — на сервере есть свои коммиты поверх $REMOTE/$BRANCH.
-Разберитесь вручную (полный вывод: $LOG):
+ff-only merge не прошёл. Последние строки git:
+$(tail -5 "$LOG" | sed 's/^/      /')
+Типовые причины: (а) на сервере свои коммиты поверх $REMOTE/$BRANCH; (б) незакоммиченные
+изменения отслеживаемых файлов. Разбор вручную:
     cd $APP_DIR
+    git status --short
     git log --oneline $REMOTE/$BRANCH..HEAD      # что у вас лишнего
     git rebase $REMOTE/$BRANCH                   # или git reset --hard $REMOTE/$BRANCH, если лишнее не нужно
 "
