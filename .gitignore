@@ -33,3 +33,20 @@ Thumbs.db
 # Frontend Node modules
 frontend/node_modules/
 frontend/dist/
+
+# Служебное состояние обновления на сервере (deploy/update.sh)
+.deploy-last
+.deploy-stash-note
+
+# Runtime-данные боевого сервера, если АТС запущена «в репозитории»
+# (на проде правильнее ATS_DATA_DIR=/var/lib/ats — см. docs/DEPLOY.md §3.4).
+# data_v2/ats.db и data_v2/initial_credentials.txt исторически в индексе;
+# чтобы убрать их из git: см. docs/DEPLOY.md §3.4 (git rm --cached + эта строка).
+data_v2/logs/
+data_v2/recordings/
+data_v2/crm_out/
+data_v2/backups/
+data_v2/ats.db-wal
+data_v2/ats.db-shm
+data_v2/ats.pid
+node_modules/

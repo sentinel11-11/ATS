@@ -46,9 +46,15 @@ Windows: `run_ats2.bat` (или `py -3 -m app.run`).
 ### Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v     # Linux
-run_tests.bat                                 # Windows
+python3 -m unittest discover -s tests -v     # Linux (266 проверок)
 ```
+
+### Обновление на сервере
+
+```bash
+cd /opt/ats && ./deploy/update.sh <ветка>    # бэкап БД → ff-only merge → тесты → рестарт → health
+```
+Подробности (systemd, секреты, откат, Nginx/SSE, Windows) — `docs/DEPLOY.md`.
 
 ## 3. Структура кода
 
