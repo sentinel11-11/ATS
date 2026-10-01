@@ -319,8 +319,14 @@ export default function NumberPool({ addToast, refreshKey }) {
                 <option value="megafon_vats">МегаФон ВАТС</option>
                 <option value="uis">UIS / Comagic</option>
                 <option value="ami">Asterisk AMI</option>
+                <option value="multicom">Мультиком (MultiCom API / SIP)</option>
                 <option value="sim">Симуляция</option>
               </select>
+              <p className="text-[11px] text-muted mt-1 leading-relaxed">
+                Движок берёт номер строго из пула своего провайдера (поле provider). Для обзвона
+                через SIP-транк и Asterisk нужен «Asterisk AMI»: импорт из Мультикома помечает
+                номера как «multicom», и провайдер ami их не возьмёт.
+              </p>
             </div>
 
             <div>
@@ -402,7 +408,8 @@ export default function NumberPool({ addToast, refreshKey }) {
                   <option value="megafon_vats">МегаФон ВАТС</option>
                   <option value="uis">UIS / Comagic</option>
                   <option value="ami">Asterisk AMI</option>
-                  <option value="sim">Симуляция</option>
+                  <option value="multicom">Мультиком (MultiCom API / SIP)</option>
+                <option value="sim">Симуляция</option>
                 </select>
               </div>
 
