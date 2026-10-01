@@ -382,6 +382,10 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 ## 8. Диагностика «сервер не поднялся после обновления»
 
+Первые три вопроса на упавшем обновлении: `tail -60 /tmp/ats-update.log` (что делал
+`update.sh`), `git -C /opt/ats log --oneline -1` (на какой ревизии мы реально),
+`journalctl -u ats -n 50 --no-pager` или `tail -50 <ATS_DATA_DIR>/logs/ats.log`.
+
 ```bash
 systemctl status ats -l
 journalctl -u ats -n 100 --no-pager          # или tail -100 /var/lib/ats/logs/ats.log

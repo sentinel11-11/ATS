@@ -250,8 +250,22 @@ fi
 if [ "$DO_BUILD" = "1" ] && echo "$CHANGED" | grep -q '^frontend/'; then
   if command -v npm >/dev/null 2>&1; then
     log "пересборка UI: cd frontend && npm ci && npm run build (→ app/ui)"
-    ( cd frontend && npm ci --no-audit --no-fund >>"$LOG" 2>&1 && npm run build >>"$LOG" 2>&1 ) \
-      || die "сборка UI упала (см. $LOG). Без пересборки: $0 $BRANCH --no-build"
+    built=0
+    ( cd frontend && npm ci --no-audit --no-fund >>"$LOG" 2>&1 && npm run build >>"$LOG" 2>&1 ) && built=1
+    if [ "$built" != "1" ]; then
+      warn "npm ci не прошёл (нет сети / lock расходится с package.json) → пробую npm install"
+      ( cd frontend && npm install --no-audit --no-fund >>"$LOG" 2>&1 && npm run build >>"$LOG" 2>&1 ) && built=1
+    fi
+    if [ "$built" != "1" ]; then
+      # app/ui (готовая сборка) лежит в репозитории, поэтому без npm интерфейс всё
+      # равно актуален: он ровно из того же коммита, на который мы обновились.
+      if [ -n "$(git ls-files app/ui | head -1)" ]; then
+        warn "сборка UI упала — оставляем готовый app/ui из коммита $(git rev-parse --short HEAD); детали: tail -40 $LOG"
+      else
+        die "сборка UI упала, а готового app/ui в репозитории нет → интерфейс будет битым.
+Детали: tail -40 $LOG ; вручную: cd frontend && npm install && npm run build"
+      fi
+    fi
   else
     warn "npm не найден — используем собранный app/ui из репозитория"
   fi
