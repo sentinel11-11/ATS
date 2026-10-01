@@ -1307,9 +1307,16 @@ def _ami_check_route(body=None):
 
 def _multicom_sync_route(body=None):
     from .providers.base import ProviderApiError
-    from .telephony import ProviderNotConfigured
+    from .telephony import PROVIDER_NAMES, ProviderNotConfigured
+    b = body or {}
+    # provider — в чей пул кладём номера; для маршрута через Asterisk нужен "ami",
+    # иначе импортированные номера провайдер не увидит (numbers.acquire фильтрует по provider).
+    tag = str(b.get("provider") or "").strip().lower()
+    if tag and tag not in PROVIDER_NAMES:
+        return {"ok": False, "error": "bad_provider",
+                "detail": "provider должен быть одним из: %s" % ", ".join(PROVIDER_NAMES)}, 400
     try:
-        rep = ENGINE.multicom_pool_sync(dry_run=bool((body or {}).get("dry_run")))
+        rep = ENGINE.multicom_pool_sync(dry_run=bool(b.get("dry_run")), provider=tag or None)
         return {"ok": True, "report": rep}, 200
     except ProviderNotConfigured as e:
         return {"ok": False, "error": "multicom_not_configured", "detail": str(e)[:300]}, 400

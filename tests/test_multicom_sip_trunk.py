@@ -796,3 +796,85 @@ class AsteriskSideScriptsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _StubMulticomClient:
+    """Двойник REST-клиента Мультикома: только список номеров оператора."""
+
+    def __init__(self, nums=None):
+        self.nums = nums if nums is not None else [
+            {"number": "+79690229926"}, {"number": "89690229930"}, {"phone": "9362574897"}]
+
+    def get_numbers(self):
+        return list(self.nums)
+
+
+class MulticomPoolSyncProviderTest(unittest.TestCase):
+    """Синк пула Мультикома: в чей пул кладём номера (numbers.provider).
+
+    Движок выбирает номер строго по numbers.provider (numbers.acquire), поэтому
+    импорт для маршрута «SIP-транк → Asterisk → ATS» обязан идти с provider="ami":
+    с меткой "multicom" провайдер ami эти номера просто не увидит.
+    """
+
+    def setUp(self):
+        from app import api
+        db.q("DELETE FROM numbers")
+        st = db.get_settings()
+        self._old_provider = st.get("provider")
+        st["provider"] = "sim"        # без провайдера Engine не создаётся (fail-closed)
+        db.save_settings(st)
+        self.engine = Engine(auto_start=False)
+        self._client_backup = self.engine._multicom_client
+        self.engine._multicom_client = lambda *a, **k: _StubMulticomClient()
+        self._old_engine = api.ENGINE
+        api.ENGINE = self.engine
+        self.api = api
+
+    def tearDown(self):
+        from app import api
+        self.engine._multicom_client = self._client_backup
+        self.engine.stop()
+        api.ENGINE = self._old_engine
+        st = db.get_settings()
+        st["provider"] = self._old_provider
+        db.save_settings(st)
+        db.q("DELETE FROM numbers")
+
+    def test_default_tags_multicom(self):
+        rep = self.engine.multicom_pool_sync()
+        self.assertEqual(rep["provider"], "multicom")
+        self.assertEqual(sorted(rep["added"]), ["79690229926", "79690229930", "9362574897"])
+        rows = db.fetch("SELECT number, provider, label FROM numbers")
+        self.assertEqual({r["provider"] for r in rows}, {"multicom"})
+
+    def test_ami_tag_makes_numbers_usable_for_trunk_route(self):
+        rep = self.engine.multicom_pool_sync(provider="ami")
+        self.assertEqual(rep["provider"], "ami")
+        rows = db.fetch("SELECT number, provider FROM numbers WHERE provider='ami'")
+        self.assertEqual(len(rows), 3)
+        # именно это и важно: acquire провайдера ami находит номер
+        from app import numbers as numbers_mod
+        num = numbers_mod.acquire(provider="ami", cooldown_sec=0)
+        self.assertIsNotNone(num, "провайдер ami не видит импортированные номера")
+
+    def test_dry_run_writes_nothing(self):
+        rep = self.engine.multicom_pool_sync(dry_run=True, provider="ami")
+        self.assertEqual(len(rep["added"]), 3)
+        self.assertEqual(db.fetch("SELECT id FROM numbers"), [])
+
+    def test_unknown_provider_rejected(self):
+        with self.assertRaises(ValueError):
+            self.engine.multicom_pool_sync(provider="zabbix")
+
+    def test_route_accepts_provider_and_validates_it(self):
+        from app import security
+        admin = {"X-Ats-Token": security.create_token("admin", "admin")}
+        payload, code = self.api.route("POST", "/api/v2/multicom/pool-sync",
+                                       {"dry_run": True, "provider": "ami"}, admin)
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["report"]["provider"], "ami")
+        payload, code = self.api.route("POST", "/api/v2/multicom/pool-sync",
+                                       {"provider": "nope"}, admin)
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["error"], "bad_provider")

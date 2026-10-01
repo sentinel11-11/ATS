@@ -701,18 +701,29 @@ class Engine:
         except Exception as e:
             return {"ok": False, "detail": f"Ошибка соединения Мультиком: {str(e)[:200]}"}
 
-    def multicom_pool_sync(self, dry_run=False):
+    def multicom_pool_sync(self, dry_run=False, provider=None):
         """Сверить пул Caller ID с номерами агрегатора (только добавление).
 
         Номера нормализуются к E.164 без «+» — иначе «+7900…» из API и
         «7900…» в базе разъехались бы двумя строками. Ничего не удаляем,
         карантин и active (выключатель админа) не трогаем.
+
+        provider — в чей пул кладём номера (numbers.provider). Движок берёт
+        номера строго по этому полю (numbers.acquire(provider=…)), поэтому
+        импорт из Мультикома для маршрута «SIP-транк → Asterisk → ATS» обязан
+        идти с provider="ami" — иначе номера с меткой «multicom» в работу не
+        попадут. По умолчанию — "multicom" (прямой REST-провайдер).
         """
         from .providers.multicom import normalize_number
+        from .telephony import PROVIDER_NAMES
+        tag = str(provider or "multicom").strip().lower()
+        if tag not in PROVIDER_NAMES:
+            raise ValueError("неизвестный провайдер номеров: %s (можно: %s)"
+                             % (tag, ", ".join(PROVIDER_NAMES)))
         client = self._multicom_client()
         nums = client.get_numbers()
         report = {"dry_run": bool(dry_run), "added": [], "errors": [],
-                  "total_remote": len(nums)}
+                  "provider": tag, "total_remote": len(nums)}
         seen = set()
         for n in nums:
             phone = str(n.get("number") or n.get("phone") or "").strip() if isinstance(n, dict) else str(n)
@@ -729,8 +740,8 @@ class Engine:
             try:
                 db.insert("numbers", {
                     "number": norm,
-                    "label": "multicom",
-                    "provider": "multicom",
+                    "label": tag,
+                    "provider": tag,
                     "enabled_outgoing": 1,
                     "daily_limit": 100,
                     "weight": 1,
