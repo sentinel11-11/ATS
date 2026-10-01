@@ -16,6 +16,7 @@
 #
 # Переменные окружения (по умолчанию всё подбирается сам):
 #   ATS_DATA_DIR (data_v2)  ATS_PORT (из таблицы settings)  ATS_SERVICE (ats)
+#   ATS_APP_DIR  (/opt/ats) — каталог репозитория, если скрипту не доверяешь его расположение
 set -uo pipefail
 
 LOCK=/tmp/ats-update.lock
@@ -25,7 +26,10 @@ log()  { printf '\033[1;36m[ats-update]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[ats-update]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[ats-update]\033[0m %s\n' "$*" >&2; exit 1; }
 
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# APP_DIR можно задать извне (ATS_APP_DIR) — это нужно для «бутстрапа», когда
+# самого deploy/update.sh в рабочей копии ещё нет и скрипт качают в /tmp:
+#   ATS_APP_DIR=/opt/ats bash /tmp/update.sh <ветка>
+APP_DIR="${ATS_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$APP_DIR" || die "нет каталога $APP_DIR"
 
 # Переменные окружения сервера (ATS_DATA_DIR / ATS_PORT / ATS_SERVICE / ключи):
@@ -153,6 +157,14 @@ log "каталог: $APP_DIR | ветка: $BRANCH | remote: $REMOTE | данн
 [ -n "${_ENV_SRC:-}" ] && log "env: $_ENV_SRC"
 
 git fetch "$REMOTE" --prune >>"$LOG" 2>&1 || die "git fetch $REMOTE не удалось (см. $LOG)"
+# Если клон делали как `git clone -b main --single-branch` (или с --depth), то
+# ссылки origin/<ветка> на нашу рабочую ветку просто нет, и обычный fetch её не
+# подтянет. Достаём явно и заводим remote-ссылку, чтобы дальше всё работало штатно.
+if ! git rev-parse --verify --quiet "$REMOTE/$BRANCH" >/dev/null; then
+  warn "нет $REMOTE/$BRANCH — похоже на --single-branch клон; качаю ветку явно"
+  git fetch "$REMOTE" "+refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH" >>"$LOG" 2>&1 \
+    || die "не удалось получить $BRANCH из $REMOTE. Проверь: git ls-remote $REMOTE $BRANCH"
+fi
 REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH" 2>/dev/null || true)"
 [ -n "$REMOTE_SHA" ] || die "ветка $REMOTE/$BRANCH не найдена (git branch -r)"
 BEHIND="$(git rev-list --count "HEAD..$REMOTE/$BRANCH")"
@@ -266,5 +278,9 @@ echo "    было:   ${PREV_SHA:0:8}"
 echo "    стало:  $(git rev-parse --short HEAD) ($BRANCH)"
 echo "    пришло коммитов: $BEHIND"
 git log --oneline "$PREV_SHA"..HEAD 2>/dev/null | sed 's/^/      /' | head -20
-echo "    откат:  $0 --rollback   (вернёт ${PREV_SHA:0:8} + рестарт)"
+ROLL="$0 --rollback"
+# если скрипт запускали вне репозитория (бутстрап из /tmp, см. docs/DEPLOY.md §3.0),
+# для отката надо повторить ATS_APP_DIR — иначе откат будет искать репу не там
+[ -n "${ATS_APP_DIR:-}" ] && ROLL="ATS_APP_DIR=$APP_DIR $0 --rollback"
+echo "    откат:  $ROLL   (вернёт ${PREV_SHA:0:8} + рестарт)"
 echo "    лог:    $LOG"

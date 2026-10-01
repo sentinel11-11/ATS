@@ -56,6 +56,112 @@ cd /opt/ats/frontend && npm ci && npm run build     # результат → ../
 
 ## 3. Обновление программы: основная команда
 
+### 3.0 Если `deploy/update.sh` на сервере ещё нет (первый раз — только так)
+
+Каталог `deploy/` (сам скрипт, `ats.env.example`, `ats.service`, файлы Asterisk)
+появился в репозитории вместе с интеграцией Мультикома. Поэтому на сервере,
+который стоит на старой ревизии, команды «в одну строку» ещё не существует:
+
+```text
+-bash: ./deploy/update.sh: No such file or directory
+```
+
+Это не поломка, а «курица и яйцо»: скрипт приходит тем самым обновлением, ради
+которого его вызывают. Сначала один раз подтягиваем код руками (вариант А) или
+достаём только скрипт из приходящего коммита (вариант Б) — дальше `update.sh`
+уже лежит в репозитории и все будущие обновления идут одной командой.
+
+> Второй частый вариант той же ошибки: команду копируют из чата и в терминал
+> попадает `./deploy/[update.sh](http://update.sh)` (так markdown превращает
+> слово в ссылку). Путь должен быть ровно `./deploy/update.sh`.
+
+**Шаг 0 — понять, что за каталог `/opt/ats`:**
+
+```bash
+cd /opt/ats
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && echo "OK: это git-клон" || echo "НЕТ: это не git-клон"
+git remote -v
+git log --oneline -3
+git status --short | head
+ls deploy 2>/dev/null || echo "каталога deploy нет — ожидаемо для старой ревизии"
+```
+
+- `НЕТ: это не git-клон` → код просто скопировали (scp/rsync). Обновлять надо так:
+  клонировать в новый каталог и перенести оттуда код, оставив свои `data_v2/`
+  и `/etc/ats/ats.env` на месте — см. §2 и §3.2.
+- remote ведёт не на `sentinel11-11/ATS` → `git remote set-url origin <адрес>`
+  (или завести второй remote: `git remote add ats https://github.com/sentinel11-11/ATS.git`,
+  дальше во всех командах вместо `origin` писать `ats`).
+- `git status --short` что-то показывает → нормально: свои правки уйдут в `stash`,
+  а защиту боевой базы от перезаписи делает либо шаг 2 варианта А, либо шаг 4
+  самого `update.sh`.
+
+**Вариант А — один раз руками (ничего дополнительно не надо):**
+
+```bash
+cd /opt/ats
+BR=arena/01a0cdee-ats
+# 1) данные от git: явно тянем нужную ветку (актуально для клона -b main --single-branch / --depth)
+git fetch origin "+refs/heads/$BR:refs/remotes/origin/$BR"
+# 2) запрещаем git трогать runtime-файлы, которые исторически лежат в индексе
+git ls-files data_v2 | xargs -r -n1 git update-index --skip-worktree
+# 3) свои правки — в stash; база — копией «на всякий»
+git stash push -u -m "before-$BR" >/dev/null 2>&1 || true
+mkdir -p data_v2/backups
+[ -f data_v2/ats.db ] && cp -a data_v2/ats.db "data_v2/backups/ats-before-update-$(date +%Y%m%d-%H%M%S).db"
+# 4) переезд на нужную ревизию (только fast-forward, никаких merge-коммитов на проде)
+git checkout "$BR" 2>/dev/null || git checkout -b "$BR" "origin/$BR"
+git merge --ff-only "origin/$BR"
+```
+
+Дальше — тесты, интерфейс и рестарт:
+
+```bash
+python3 -m unittest discover -s tests | tail -3     # ожидаем «Ran 309 tests … OK»
+if command -v npm >/dev/null; then (cd frontend && npm ci --no-audit --no-fund && npm run build); fi
+sudo systemctl restart ats && curl -s localhost:9124/api/v2/health
+```
+
+Если сервис ещё не поставлен как systemd-unit (`/etc/systemd/system/ats.service`) —
+рестарт свой: `kill "$(cat data_v2/ats.pid)" 2>/dev/null; ./run_ats2.sh` (или см. §2).
+
+Контроль, что всё дошло:
+
+```bash
+git log --oneline -1                 # должен показать ревизию из origin/$BR
+ls docs/MULTICOM_SIP_CONNECT.md deploy/asterisk/ deploy/update.sh
+```
+
+После этого можно сразу прогнать штатный путь — он честно скажет, что актуальны:
+
+```bash
+./deploy/update.sh "$BR"             # «уже на актуальной ревизии — ничего делать не нужно»
+```
+
+**Вариант Б — достать из приходящего коммита только скрипт и обновляться им:**
+
+```bash
+cd /opt/ats
+BR=arena/01a0cdee-ats
+git fetch origin "+refs/heads/$BR:refs/remotes/origin/$BR"
+git show "origin/$BR:deploy/update.sh" > /tmp/update.sh
+ATS_APP_DIR=/opt/ats bash /tmp/update.sh "$BR"
+```
+
+`ATS_APP_DIR` обязателен именно в этом сценарии: запущенный из `/tmp` скрипт иначе
+решил бы, что репозиторий лежит в `/`, и всё сломалось бы на первом же `cd`.
+Дальше он сам сделает fetch → защиту `data_v2/` → stash → бэкап БД → ff-only
+merge → сборку UI → тесты → рестарт → health-check с автооткатом (§3.1).
+
+Если после `git fetch` оказалось, что `merge --ff-only` не проходит (на сервере
+накопились свои коммиты), разбор руками:
+
+```bash
+git log --oneline origin/$BR..HEAD    # что у нас лишнего
+git rebase origin/$BR                 # переставить свои коммиты поверх
+# или, если локальные коммиты не нужны: git reset --hard origin/$BR
+```
+
 ### 3.1 Один шаг (то, что нужно помнить)
 
 ```bash
@@ -97,6 +203,8 @@ cd /opt/ats && ./deploy/update.sh arena/01a0cdee-ats
 ```
 
 Лог операции: `/tmp/ats-update.log`.
+
+Если файла `deploy/update.sh` на сервере ещё нет — это первый проход, см. §3.0.
 
 ### 3.2 Если хочется руками (то же самое, минимальный вариант)
 
