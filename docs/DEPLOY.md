@@ -289,6 +289,7 @@ cd /opt/ats && ./deploy/update.sh arena/01a0cdee-ats
 ./deploy/update.sh arena/01a0cdee-ats --no-build    # не трогать UI
 ./deploy/update.sh arena/01a0cdee-ats --no-restart  # обновить код, сервис не трогать
 ./deploy/update.sh --rollback            # вернуться на предыдущую ревизию + рестарт
+./deploy/update.sh arena/01a0cdee-ats --force     # код актуален, но надо прогнать тесты и РЕСТАРТНУТЬ
 ```
 
 Лог операции: `/tmp/ats-update.log`.
@@ -365,7 +366,48 @@ rm -f /var/lib/ats/ats.db-wal /var/lib/ats/ats.db-shm     # старые WAL-х�
 sudo systemctl start ats
 ```
 
----
+### 3.6 Обновление прервано (^C, обрыв SSH, упавший терминал)
+
+Самый коварный исход: скрипт успел переключить код, но умер до рестарта — на
+тестах или на сборке UI. Выглядит как «всё хорошо» (`/api/v2/health` отвечает,
+интерфейс открывается), а **процесс крутит старую ревизию**: файлы новые, сервис
+— нет. Отсюда ощущение «обновление не применилось»: поведение не меняется,
+новых кнопок в UI нет, `provider=ami` «не появляется».
+
+Признаки и разбор:
+
+```bash
+cd /opt/ats                                  # у серверов с клоном глубже — /opt/ats/app
+git log --oneline -1                         # код какой ревизии лежит на диске
+systemctl show ats -p ExecMainStartTimestamp --value   # а процесс когда запущен
+ps -eo pid,etime,args | grep [a]pp.run       # etime «5-23:12» = процессу 5 суток
+```
+
+Если процесс запущен раньше, чем обновлён код (даже на минуту), — рестарт обязателен.
+`./deploy/update.sh` это видит и сам пишет предупреждение («процесс крутит СТАРУЮ
+ревизию»), в том числе когда коду уже некуда обновляться.
+
+Что делать:
+
+```bash
+cd /opt/ats
+./venv/bin/python -m unittest discover -s tests 2>&1 | tail -3   # довести то, на чём упали (обычно 309 тестов)
+sudo systemctl restart ats && sleep 2 && curl -s localhost:9124/api/v2/health
+journalctl -u ats -n 30 --no-pager                               # стартовал ли чисто, нет ли traceback
+```
+
+Либо одной командой — `./deploy/update.sh <ветка> --force`: он прогонит тесты и
+перезапустит сервис, даже если новых коммитов нет (флаг `--fast` дополнительно
+пропустит тесты, `--no-build` — пересборку UI).
+
+Откат при этом не страшен: `update.sh --rollback` вернёт код на `PREV_SHA` (файл
+`.deploy-last`) и перезапустит; база не откатывается (§3.5), а снимок БД, который
+скрипт делает перед merge, уже лежит в `…/backups/ats-before-update-<ts>.db`.
+
+Отдельно: если прерывание случилось между «код переключён» и «skip-worktree»,
+боевая копия базы в репозитории (`data_v2/ats.db`) может оказаться «грязной» —
+проверь `git status --porcelain | head` и, если она не нужна, `git checkout -- data_v2/ats.db`
+(данные АТС при `ATS_DATA_DIR=/var/lib/ats` там не живут).
 
 ## 4. Что происходит с БД при обновлении
 

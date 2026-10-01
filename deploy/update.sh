@@ -5,6 +5,7 @@
 #   ./deploy/update.sh arena/01a0cdee-ats    # явная ветка
 #   ./deploy/update.sh main origin --fast    # без прогона тестов
 #   ./deploy/update.sh --rollback            # откат на предыдущую ревизию
+#   ./deploy/update.sh <ветка> --force       # прогнать тесты и РЕСТАРТНУТЬ, даже если код актуален
 #
 # Флаги:  --fast        пропустить unittest (быстрое обновление «в поле»)
 #         --no-build    не пересобирать React-интерфейс (frontend/)
@@ -39,13 +40,14 @@ for _envf in /etc/ats/ats.env "$APP_DIR/deploy/ats.env" "$HOME/.ats.env"; do
   if [ -f "$_envf" ]; then set -a; . "$_envf" 2>/dev/null || true; set +a; _ENV_SRC="$_envf"; break; fi
 done
 
-BRANCH=""; REMOTE="origin"; DO_BUILD=1; DO_TESTS=1; DO_RESTART=1; MODE="update"
+BRANCH=""; REMOTE="origin"; DO_BUILD=1; DO_TESTS=1; DO_RESTART=1; FORCE=0; MODE="update"
 for a in "$@"; do
   case "$a" in
     --rollback)     MODE="rollback" ;;
     --fast|--no-tests) DO_TESTS=0 ;;
     --no-build)     DO_BUILD=0 ;;
     --no-restart)   DO_RESTART=0 ;;
+    --force)        FORCE=1 ;;
     -*)             die "неизвестный флаг: $a" ;;
     *) if [ -z "$BRANCH" ]; then BRANCH="$a"; else REMOTE="$a"; fi ;;
   esac
@@ -160,6 +162,27 @@ restart_and_check() {
   return 1
 }
 
+# Обновление, прерванное на тестах/сборке (^C, обрыв SSH), оставляет сервис на
+# СТАРОМ коде: файлы уже новые, процесс — нет. Это молча работает часами.
+stale_process_warn() {
+  local start_ts="" code_ts="" pid
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+    start_ts="$(date -d "$(systemctl show "$SERVICE" -p ExecMainStartTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true)"
+  fi
+  if [ -z "$start_ts" ]; then
+    pid="$(cat "$DATA_DIR/ats.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      start_ts="$(ps -o lstart= -p "$pid" 2>/dev/null | xargs -I{} date -d {} +%s 2>/dev/null || true)"
+    fi
+  fi
+  code_ts="$(stat -c %Y "$APP_DIR/app/api.py" 2>/dev/null || stat -c %Y "$APP_DIR/app" 2>/dev/null || true)"
+  [ -n "$start_ts" ] && [ -n "$code_ts" ] || return 0
+  if [ "$code_ts" -gt "$start_ts" ]; then
+    warn "код на диске от $(date -d "@$code_ts" '+%F %T'), а сервис запущен $(date -d "@$start_ts" '+%F %T') — процесс крутит СТАРУЮ ревизию"
+    warn "рестарт: systemctl restart $SERVICE   (или: $0 $BRANCH --force)"
+  fi
+}
+
 rollback() {
   local target="${TARGET:-$(cat .deploy-last 2>/dev/null || true)}"
   [ -n "$target" ] || die "нечего откатывать: нет .deploy-last. Укажите вручную: TARGET=<sha> $0 --rollback"
@@ -198,9 +221,13 @@ fi
 REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH" 2>/dev/null || true)"
 [ -n "$REMOTE_SHA" ] || die "ветка $REMOTE/$BRANCH не найдена (git branch -r)"
 BEHIND="$(git rev-list --count "HEAD..$REMOTE/$BRANCH")"
-if [ "$BEHIND" = "0" ] && [ "$PREV_SHA" = "$REMOTE_SHA" ]; then
-  log "уже на актуальной ревизии (${PREV_SHA:0:8}) — ничего делать не нужно"
+if [ "$BEHIND" = "0" ] && [ "$PREV_SHA" = "$REMOTE_SHA" ] && [ "$FORCE" != "1" ]; then
+  log "уже на актуальной ревизии (${PREV_SHA:0:8}) — код трогать не нужно"
+  stale_process_warn
   exit 0
+fi
+if [ "$BEHIND" = "0" ] && [ "$FORCE" = "1" ]; then
+  log "код уже актуален (${PREV_SHA:0:8}), но --force: прогоняю тесты и рестарт"
 fi
 log "обновляем: ${PREV_SHA:0:8} → ${REMOTE_SHA:0:8} ($BEHIND коммитов)"
 
@@ -208,14 +235,16 @@ log "обновляем: ${PREV_SHA:0:8} → ${REMOTE_SHA:0:8} ($BEHIND комм
 # Боевая база data_v2/ats.db исторически лежит в индексе git: pull мог бы
 # перезаписать её «свежей» версией из репозитория. Вешаем skip-worktree —
 # git не трогает файл, даже если он меняется в приходящих коммитах.
-if [ -d "$DATA_DIR" ]; then
-  tracked="$(git ls-files "$DATA_DIR" | tr '\n' ' ')"
-  if [ -n "${tracked// /}" ]; then
-    n=0
-    for f in $tracked; do git update-index --skip-worktree "$f" 2>>"$LOG" && n=$((n+1)); done
-    log "защищено от перезаписи runtime-файлов: $n"
-  fi
-fi
+n=0
+for rel in "data_v2" "${DATA_DIR#$APP_DIR/}"; do
+  case "$rel" in ""|/*|*"/../"*) continue ;; esac        # только пути внутри репозитория
+  [ -d "$APP_DIR/$rel" ] || continue
+  for f in $(git ls-files -- "$rel" 2>/dev/null); do
+    git update-index --skip-worktree "$f" 2>>"$LOG" && n=$((n+1))
+  done
+done
+[ "$n" -gt 0 ] && log "защищено от перезаписи runtime-файлов (skip-worktree): $n" \
+  || log "отслеживаемых runtime-файлов в репозитории нет — защищать нечего (база в $DATA_DIR)"
 dirty="$(git status --porcelain | grep -v '^?? ' | grep -v ' data_v2/' || true)"
 untr="$(git status --porcelain | grep -c '^?? ' || true)"
 if [ -n "$dirty" ]; then
@@ -340,3 +369,5 @@ ROLL="$0 --rollback"
 [ -n "${ATS_APP_DIR:-}" ] && ROLL="ATS_APP_DIR=$APP_DIR $0 --rollback"
 echo "    откат:  $ROLL   (вернёт ${PREV_SHA:0:8} + рестарт)"
 echo "    лог:    $LOG"
+stale_process_warn
+exit 0
