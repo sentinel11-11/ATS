@@ -135,9 +135,17 @@ class ToolingTest(unittest.TestCase):
             self.assertIn("pool_megafon", payload["stats"])
             blob = json.dumps(payload)
             self.assertNotIn("LITERAL-SECRET-KEY", blob)
-            self.assertNotIn("SECRET", blob)
             self.assertEqual(payload["provider_config"]["megafon_vats"]["api_key"],
                              "********")
+            # точная проверка вместо поиска подстроки «SECRET»: в дампе могут быть
+            # ИМЕНА переменных окружения (secret_env), они не являются секретом,
+            # а вот ЗНАЧЕНИЯ секретных полей обязаны быть замаскированы или пусты
+            masked = ("api_key", "crm_token", "secret", "webhook_secret", "link_secret")
+            for section in ("megafon_vats", "uis", "ami", "multicom", "records"):
+                for key, val in (payload["provider_config"].get(section) or {}).items():
+                    if key in masked:
+                        self.assertIn(val, ("", "********"),
+                                      "provider_config.%s.%s не замаскирован" % (section, key))
         finally:
             mf["api_key"] = "test-key"
             s["megafon_vats"] = mf

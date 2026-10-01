@@ -328,6 +328,18 @@ def format_outbound_number(value, fmt="raw"):
     return str(value).strip()
 
 
+def ami_secret(cfg=None):
+    """Пароль AMI: settings.ami.secret, иначе env из settings.ami.secret_env.
+
+    Второй вариант нужен, чтобы секрет не лежал в ats.db: /etc/ats/ats.env с
+    0640 root:ats защищён лучше, а в API и UI значение настроек и так маскируется
+    (то есть прочитать сохранённый пароль из интерфейса невозможно — источник истины
+    /etc/asterisk/manager-ats.conf).
+    """
+    from .providers.base import resolve_secret
+    return resolve_secret(cfg or {}, "secret", "secret_env", "ATS_AMI_SECRET")
+
+
 class AsteriskAmiProvider(TelephonyProvider):
     """Адаптер медиа-слоя Asterisk по AMI (SIP-транк к оператору).
 
@@ -366,14 +378,18 @@ class AsteriskAmiProvider(TelephonyProvider):
 
     def configure(self, settings: dict):
         cfg = settings.get("ami", {}) or {}
-        if not (cfg.get("host") and cfg.get("user") and cfg.get("secret")):
+        secret = ami_secret(cfg)
+        if not (cfg.get("host") and cfg.get("user") and secret):
             raise ProviderNotConfigured(
-                "Asterisk AMI не настроен (settings.ami.host/user/secret).")
-        self.cfg = cfg
+                "Asterisk AMI не настроен (settings.ami.host/user/secret). Пароль AMI — "
+                "это НЕ пароль из письма оператора: его задаёт администратор Asterisk в "
+                "/etc/asterisk/manager-ats.conf (секция [ats], строка secret). Хранить его "
+                "можно не в БД, а в окружении сервиса: ATS_AMI_SECRET в /etc/ats/ats.env.")
+        self.cfg = dict(cfg, secret=secret)   # resolved-значение только в памяти
         from . import asterisk as ami_mod
         try:
             client = ami_mod.AMIClient(cfg["host"], cfg.get("port", 5038),
-                                       cfg["user"], cfg["secret"], timeout=float(cfg.get("timeout", 5)))
+                                       cfg["user"], secret, timeout=float(cfg.get("timeout", 5)))
             client.connect()
             client.login()
             client.event_handler = self._on_event
@@ -678,13 +694,17 @@ def ami_check(settings: dict) -> dict:
                                  "critical": bool(critical)})
         return bool(ok)
 
-    if not (cfg.get("host") and cfg.get("user") and cfg.get("secret")):
-        add("config", False, "settings.ami: заполните host/user/secret")
+    secret = ami_secret(cfg)
+    if not (cfg.get("host") and cfg.get("user") and secret):
+        add("config", False, "settings.ami: заполните host/user/secret (пароль — из "
+                              "/etc/asterisk/manager-ats.conf, либо из ATS_AMI_SECRET)")
+        report["error"] = "ami_not_configured"
         return report
+    cfg = dict(cfg, secret=secret)
     client = None
     try:
         client = ami_mod.AMIClient(cfg["host"], cfg.get("port", 5038), cfg["user"],
-                                   cfg["secret"], timeout=float(cfg.get("timeout", 5)))
+                                   secret, timeout=float(cfg.get("timeout", 5)))
         client.connect()
         client.login()
         add("ami_login", True, "{}:{}".format(cfg["host"], cfg.get("port", 5038)))

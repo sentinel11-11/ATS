@@ -44,6 +44,11 @@ DEFAULT_SETTINGS = {
     "uis": {"api_url": "", "api_key": "", "number_pool_api": ""},
     "ami": {
         "host": "127.0.0.1", "port": 5038, "user": "", "secret": "", "timeout": 5,
+        # Пароль AMI можно не хранить в ats.db: secret — имя переменной окружения,
+        # из которой он берётся, если settings.ami.secret пуст (обычно ATS_AMI_SECRET
+        # в /etc/ats/ats.env, 0640 root:ats). В UI и в API значения секретов маскируются,
+        # поэтому «подсмотреть» пароль из интерфейса нельзя — источник истины файл.
+        "secret_env": "ATS_AMI_SECRET",
         # транк на операторе и технология канала: PJSIP (Asterisk 12+) или SIP (chan_sip)
         "trunk": "", "tech": "PJSIP", "dial_prefix": "",
         # формат набора для оператора и формат CLI: raw | digits | e164 | d10 | ru8

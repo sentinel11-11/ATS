@@ -23,6 +23,24 @@ from app.engine import Engine  # noqa: E402
 from app.telephony import (  # noqa: E402
     AsteriskAmiProvider, TelephonyProvider, format_outbound_number)
 
+from contextlib import contextmanager
+from unittest import mock
+
+
+@contextmanager
+def _env(**kw):
+    with mock.patch.dict(os.environ, kw, clear=False):
+        yield
+
+
+@contextmanager
+def _env_drop(*names):
+    with mock.patch.dict(os.environ, {}, clear=False):
+        for n in names:
+            os.environ.pop(n, None)
+        yield
+
+
 db.init_db()
 
 
@@ -461,6 +479,55 @@ class AmiCheckTest(unittest.TestCase):
 class _NullEngine:
     def reload_settings(self):
         pass
+
+
+class AmiSecretSourceTest(unittest.TestCase):
+    """Откуда АТС берёт пароль AMI: сначала настройки (БД), потом ATS_AMI_SECRET.
+
+    Пароль AMI — не из письма оператора: его создаёт администратор Asterisk. При этом
+    из UI/API его не прочесть (секретируются все ключи с 'secret'/'token'/'key' в
+    имени), поэтому место хранения должно быть очевидным.
+    """
+
+    def test_db_value_wins(self):
+        from app.telephony import ami_secret
+        with _env(ATS_AMI_SECRET="ENVPASS"):
+            self.assertEqual(ami_secret({"secret": "DBPASS", "secret_env": "ATS_AMI_SECRET"}), "DBPASS")
+
+    def test_env_fallback_when_db_empty(self):
+        from app.telephony import ami_secret
+        with _env(ATS_AMI_SECRET="ENVPASS"):
+            self.assertEqual(ami_secret({}), "ENVPASS")
+            self.assertEqual(ami_secret({"secret": "", "secret_env": "ATS_AMI_SECRET"}), "ENVPASS")
+
+    def test_provider_configures_from_env_only(self):
+        """С пустым settings.ami.secret и заданным env провайдер проходит проверку
+        конфигурации и падает уже на подключении — то есть секрет найден."""
+        from app.telephony import AsteriskAmiProvider, ProviderNotConfigured
+        with _env(ATS_AMI_SECRET="ENVPASS"):
+            with self.assertRaises(ProviderNotConfigured) as cm:
+                AsteriskAmiProvider().configure({"ami": {"host": "127.0.0.1", "port": 1,
+                                                          "user": "ats", "timeout": 2}})
+        self.assertIn("AMI недоступен", str(cm.exception))
+
+    def test_without_any_secret_fail_closed(self):
+        from app.telephony import AsteriskAmiProvider, ProviderNotConfigured
+        with _env_drop("ATS_AMI_SECRET"):
+            with self.assertRaises(ProviderNotConfigured) as cm:
+                AsteriskAmiProvider().configure({"ami": {"host": "127.0.0.1", "user": "ats",
+                                                          "secret": ""}})
+        msg = str(cm.exception)
+        self.assertIn("не настроен", msg)
+        self.assertIn("manager-ats.conf", msg)   # подсказка, где вообще брать пароль
+
+    def test_ami_check_reports_where_password_comes_from(self):
+        from app.telephony import ami_check
+        with _env_drop("ATS_AMI_SECRET"):
+            rep = ami_check({"ami": {"host": "127.0.0.1", "user": "ats", "secret": ""}})
+        self.assertFalse(rep["ok"])
+        cfg_check = [c for c in rep["checks"] if c["name"] == "config"][0]
+        self.assertIn("ATS_AMI_SECRET", cfg_check["detail"])
+        self.assertEqual(rep.get("error"), "ami_not_configured")
 
 
 class SettingsRoundtripTest(unittest.TestCase):
