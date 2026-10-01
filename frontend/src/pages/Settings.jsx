@@ -981,7 +981,7 @@ export default function Settings({ addToast, refreshKey }) {
         <p className="text-muted leading-relaxed">
           Поле «Имя SIP-транка» — то, что указано в <code>pjsip.conf</code>/<code>sip.conf</code> как
           endpoint/peer (например <code>mcm</code>): набор идёт каналом
-          <code>{' '}{технология}/{транк}/номер</code>. Формат номера задаёт то, что реально уйдёт
+          <code> PJSIP/номер@транк</code> или <code> SIP/транк/номер</code>. Формат номера задаёт то, что реально уйдёт
           оператору: у «Мультиком» исходящий набор — <code>8XXXXXXXXXX</code>, CLI — 10 цифр.
         </p>
       </div>
