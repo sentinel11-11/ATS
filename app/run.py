@@ -6,6 +6,7 @@
 """
 import argparse
 import getpass
+import os
 import sys
 
 from . import api, config, db
@@ -45,6 +46,31 @@ def _backup_db(keep=12):
         print("[ATS v2] Бэкап БД:", dst.name)
     except Exception as e:
         print("[ATS v2] Бэкап БД пропущен:", e)
+
+
+def resolve_listen(st, arg_host=None, arg_port=None):
+    """Откуда брать адрес слушания: CLI → ENV (ATS_HOST/ATS_PORT) → настройки → умолчания.
+
+    ENV важен для systemd с EnvironmentFile=/etc/ats/ats.env и для run_ats2.sh:
+    без него ATS_PORT из env молча игнорировался (порт брался из настроек).
+    """
+    host = (arg_host or os.environ.get("ATS_HOST") or st.get("host")
+            or config.HOST_DEFAULT)
+    port = None
+    # по очереди: CLI → env → настройки; некорректное значение не «съедает» остальное
+    for src in (arg_port, os.environ.get("ATS_PORT"), (st or {}).get("port")):
+        if src in (None, ""):
+            continue
+        try:
+            val = int(src)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= val <= 65535:
+            port = val
+            break
+    if port is None:
+        port = config.PORT_DEFAULT
+    return str(host).strip() or config.HOST_DEFAULT, port
 
 
 def main(argv=None):
@@ -127,8 +153,7 @@ def main(argv=None):
     if args.provider:
         st["provider"] = args.provider
         db.save_settings(st)
-    host = args.host or st.get("host") or config.HOST_DEFAULT
-    port = args.port or int(st.get("port", config.PORT_DEFAULT))
+    host, port = resolve_listen(st, args.host, args.port)
 
     if args.init_only:
         print("База инициализирована:", config.DB_PATH)

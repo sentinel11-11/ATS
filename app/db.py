@@ -715,7 +715,8 @@ def public_settings() -> dict:
     # Секции с секретами наружу не отдаём (api_key/crm_token ВАТС, ключи UIS/AMI/LLM,
     # вебхук Bitrix24). Админ правит их через /settings/raw с маскированием.
     pub = {k: v for k, v in s.items()
-           if k not in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm")}
+           if k not in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm",
+                        "records")}
     return pub
 
 

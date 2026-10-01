@@ -50,7 +50,8 @@ ATS Engine ──► CrmDriver (AmoCrm) ──► AmoCrmClient ──► amoCRM 
    `uniq=ats-call-<id>` (идемпотентность), `direction`, `duration`,
    `call_status` (см. таблицу), `call_result` (текст результата),
    `responsible_user_id`, `call_responsible` (имя из `provider.user` ВАТС,
-   если есть), `link` (запись из `calls.recording_url`), `created_at`
+   если есть), `link` (запись: URL оператора из `calls.recording_url`, а если файл записан на
+   нашем Asterisk — подписанная ссылка АТС, см. §7а), `created_at`
    (время начала звонка).
 3. **Задача** (`POST /tasks`) — ТОЛЬКО для неуспешных результатов
    (настраивается `auto_task_results`); `task_type_id` из настроек.
@@ -158,6 +159,28 @@ payload'а. Причина: `frontend/src/api.js` при любом HTTP 401 с�
 (пачками до 5), backoff `2^attempts` минут (потолок 2ч), после 8 попыток —
 `failed`. `uniq` делает повтор безопасным: дубль звонка в amoCRM не создаётся.
 
+## 7а. Запись разговора: чей файл и какая ссылка уходит в amoCRM
+
+| Источник записи | Что в БД | Что в `link` |
+|---|---|---|
+| ВАТС/агрегатор отдаёт свою запись | `calls.recording_url` (топ-ап из вебхука) | URL оператора |
+| Запись пишет наш Asterisk (`provider=ami`, `MixMonitor`) | `calls.recording` — имя файла в `data_v2/recordings/` | подписанная ссылка АТС |
+| Ни того, ни другого | пусто | поля в карточке нет (не «битая» ссылка) |
+
+Подписная ссылка строится в `app/records.py`: `/api/v2/records/<call_id>?exp=<unix>&sig=<hmac>`,
+срок — `settings.records.link_ttl_hours` (по умолчанию 72 ч), абсолютный адрес —
+`settings.records.base_url` (иначе относительный). Секрет — `records.link_secret` или
+ENV `ATS_RECORDS_LINK_TOKEN`; если не задан — генерируется один раз и сохраняется в
+настройки, чтобы ссылки жили после рестарта. Токен сессии в CRM не попадает, чужой
+звонок по такой ссылке не подобрать (`hmac.compare_digest`), файл вне
+`data_v2/recordings/` не отдаётся (`records.path_for`).
+
+Файлы с Asterisk заносятся в БД cron-скриптом `deploy/asterisk/attach_recordings.py`
+(имя вида `call-<id>.wav` → звонок, `in-<канал>.wav` → входящий по `external_call_id`);
+подключение — `docs/MULTICOM_SIP_CONNECT.md` §11.5.
+
+---
+
 ## 8. Unsorted («Неразобранное»)
 
 `create_unsorted()` — только для ВХОДЯЩИХ звонков (так задуман SIP-режим
@@ -174,8 +197,6 @@ amoCRM): снабжён обязательным `metadata` (номер, вре�
 - Воронки/этапы (`/leads/pipelines`), создание сделок `/leads`, таблица
   связей `crm_links` (ATS entity ↔ amo entity) — нужны для сценария
   «кампания → сделка в воронке».
-- Подписанные URL записей разговоров (локальные записи отдаются только по
-  авторизованному API; в `link` уходит провайдерская `recording_url` ВАТС).
 - Click-to-call из виджета amoCRM (возвращается явный 501).
 - Мультиаккаунт amoCRM (сейчас один аккаунт на инстанс ATS), платформа
   amocrm.com/kommo.com (хост зашит `*.amocrm.ru`).
@@ -221,7 +242,7 @@ amoCRM): снабжён обязательным `metadata` (номер, вре�
 | Звонков нет, а ошибки CRM в логе | Сбой доставки: записи скопились в `crm_outbox` | `sqlite3 data_v2/ats.db "SELECT id,status,attempts,last_error,updated FROM crm_outbox ORDER BY id DESC LIMIT 20"`; чинить доступность amoCRM/токен — отправка продолжится сама |
 | Дубли контактов | В amoCRM уже несколько контактов с одинаковым хвостом номера | В логе: `[amocrm] дубль контакта по номеру …`. Зачистить дубли в amoCRM (АТС берёт первый и не плодит новых) |
 | Звонки «приписаны» не тому менеджеру | `operator_user_map` не заполнена / ключ не совпал | Ключ = `vats_login` → `ext` → `login` (первое непустое). Проверить синк менеджеров и карту |
-| Нет записи разговора в карточке | АТС кладёт в `link` провайдерский `recording_url`; записей на стороне оператора нет | Настроить запись у оператора/ВАТС, либо загружать файл в АТС (`POST /api/v2/calls/recording`) и отдавать ссылку вручную |
+| Нет записи разговора в карточке | В `link` идёт `calls.recording_url` оператора или подписанная ссылка на локальный файл (§7а); если оба поля пустые — поля нет | Настроить запись у оператора/ВАТС, либо писать `MixMonitor` на Asterisk + cron `deploy/asterisk/attach_recordings.py`; вручную — `POST /api/v2/calls/recording` |
 | Задача «перезвонить» не создаётся | Результат не входит в `auto_task_results`, либо `auto_create_tasks=false`, либо нет `task_type_id` | Проверить настройки и `calls.result`; `task_type_id` взять из `GET /api/v4/account?with=task_types` |
 | Снял(а) галочку «автосоздание контакта», а оно всё равно работает | Старые БД могли хранить строку `"False"` (truthy) | Уже лечится `_amo_flag` (ложь = `false/0/нет/no/off/""`); пересохранить настройки |
 | amoCRM отключила интеграцию | Сработал хук отключения (GET-вебхук с подписью) → `amocrm.disabled=true` | Включить обратно в amoCRM и снять флаг в `amocrm` (§5) |

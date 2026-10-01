@@ -42,7 +42,30 @@ DEFAULT_SETTINGS = {
     "auto_quarantine_on_complaints": 3,
     "log_non_campaign_calls": True,
     "uis": {"api_url": "", "api_key": "", "number_pool_api": ""},
-    "ami": {"host": "127.0.0.1", "port": 5038, "user": "", "secret": ""},
+    "ami": {
+        "host": "127.0.0.1", "port": 5038, "user": "", "secret": "", "timeout": 5,
+        # транк на операторе и технология канала: PJSIP (Asterisk 12+) или SIP (chan_sip)
+        "trunk": "", "tech": "PJSIP", "dial_prefix": "",
+        # формат набора для оператора и формат CLI: raw | digits | e164 | d10 | ru8
+        "number_format": "raw", "caller_id_format": "digits",
+        "context": "ats-out", "ring_timeout_ms": 35000,
+        # диалплан пишет запись (MixMonitor) при ATS_RECORD=1; channel_pattern —
+        # полный шаблон диал-строки, если синтаксис канала нестандартный
+        "record_calls": True, "channel_pattern": "",
+        # озвучка текста сообщения средствами Asterisk (AGI в play_context)
+        "play_message": True, "play_context": "ats-play",
+        # входящие с транка (DID) — в журнал ATS и в amoCRM
+        "inbound_enabled": True, "inbound_contexts": "from-mcm,ats-in", "inbound_tech": "PJSIP",
+        # перевод на оператора (поток operator)
+        "operator_trunk": "", "acd_callerid": "", "op_context": "from-internal",
+        "op_wait_sec": 45, "op_ring_timeout_ms": 30000, "acd_answer_timeout": 35,
+        "bridge_timeout": 10,
+    },
+    "records": {
+        # базовый URL для подписанных ссылок на запись (amoCRM, почта); пусто → относительная
+        "base_url": "", "link_ttl_hours": 72, "link_secret": "",
+        "link_secret_env": "ATS_RECORDS_LINK_TOKEN",
+    },
     # МегаФон ВАТС (REST CRM API): base_url=https://{domain}; секреты — literal
     # или env (маскируются в UI, плейсхолдер ******** не затирает — см. api.py).
     "megafon_vats": {"base_url": "", "api_key": "", "api_key_env": "ATS_MEGAFON_API_KEY",
@@ -57,7 +80,9 @@ DEFAULT_SETTINGS = {
                  "webhook_secret": "", "webhook_secret_env": "ATS_MULTICOM_WEBHOOK_TOKEN",
                  "default_user": "ats", "callback_number": "", "record": True,
                  "account_path": "/account", "numbers_path": "/numbers",
-                 "makecall_path": "/calls/make", "hangup_path": "/calls/{call_id}/hangup"},
+                 "makecall_path": "/calls/make", "hangup_path": "/calls/{call_id}/hangup",
+                 # транспорт REST: ни озвучки, ни удержания — только бинд с колбэком
+                 "supports_media": False, "supports_transfer": False},
     "llm": {"enabled": False, "base_url": "", "api_key_env": "ATS_LLM_KEY", "model": ""},
     "crm": {"driver": "csv"},     # csv | bitrix24 | amocrm
     "bitrix24": {"webhook_url": ""},

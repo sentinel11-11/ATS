@@ -9,6 +9,7 @@ import datetime
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -119,6 +120,9 @@ class Engine:
         return got
 
     def handle_event(self, ev):
+        if ev.get("event") in ("inbound", "inbound_answer", "inbound_end"):
+            # Входящий с SIP-транка (Asterisk): нашего call_id нет — создаём запись.
+            return self._on_inbound(ev)
         if ev.get("provider") == "megafon_vats" and ev.get("call_id") is None:
             # Нормализованное событие ВАТС: корреляция по external_call_id —
             # наш call_id ещё не резолвлен (см. _on_megafon).
@@ -150,6 +154,13 @@ class Engine:
         elif evt == "dropped":
             self._on_dropped(call, item)
         elif evt == "done":
+            if (call.get("status") or "") in ("talk", "talk_done") \
+                    and (call.get("direction") or "out") == "out":
+                # медиаслой (Asterisk AGI) закончил озвучку и канал закрыт:
+                # нормальный терминальный результат потока message
+                self.provider.hangup(call_id)
+                self._finish_attempt(call, item, "done_ok", "Сообщение озвучено (Asterisk)", ok=True)
+                return
             db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=? WHERE id=?",
                  (now_iso(), self._duration(call), call_id))
             events.publish("call", {"id": call_id, "status": "done", "phone": call["contact_phone"]})
@@ -745,15 +756,122 @@ class Engine:
         return db.fetch1("SELECT * FROM calls WHERE provider='multicom' "
                          "AND external_call_id=? ORDER BY id DESC LIMIT 1", (external_id,))
 
-    def _multicom_contact(self, phone):
+    @staticmethod
+    def _phone_candidates(phone):
+        """Все написания номера для поиска: варианты оператора (digits/+/8↔7) плюс
+        российский мобильный в 10 цифр — по такому CLI приходят входящие с транка,
+        а в базе номер хранится как +7XXXXXXXXXX."""
         from .providers.multicom import phone_variants
-        for variant in phone_variants(phone):
+        cands = list(phone_variants(phone))
+        d = re.sub(r"\D", "", str(phone or ""))
+        if len(d) == 10:
+            for pref in ("7", "+7", "8"):
+                v = pref + d
+                if v not in cands:
+                    cands.append(v)
+        return cands
+
+    def _contact_by_phone(self, phone):
+        """Контакт по любому написанию номера — входящий с CLI `9690229926`
+        находится в базе, где номер сохранён как `+79690229926`."""
+        for variant in self._phone_candidates(phone):
             if not variant:
                 continue
             c = db.fetch1("SELECT * FROM contacts WHERE phone=?", (variant,))
             if c:
                 return c
         return None
+
+    def _number_by_did(self, did):
+        """Номер пула, на который поступил входящий (для статистики и CID).
+        DID из диалплана обычно 10 цифр, в пуле номер E.164 — сравниваем по
+        последним 10 цифрам, а не строкой."""
+        d = re.sub(r"\D", "", str(did or ""))
+        if len(d) < 10:
+            return None
+        tail = d[-10:]
+        try:
+            rows = db.fetch("SELECT * FROM numbers")
+        except Exception:
+            return None
+        for n in rows:
+            nd = re.sub(r"\D", "", str(n.get("number") or ""))
+            if len(nd) >= 10 and (nd == d or nd[-10:] == tail):
+                return n
+        return None
+
+    def _on_inbound(self, ev):
+        """Входящий с SIP-транка (события AMI-провайдера): журнал + связка с
+        контактом и CRM. Маршрутизация/очередь — на стороне диалплана Asterisk."""
+        ch = str(ev.get("channel") or "")
+        if not ch:
+            return None
+        kind = ev.get("event")
+        call = db.fetch1("SELECT * FROM calls WHERE direction='in' AND external_call_id=?", (ch,))
+        if kind == "inbound":
+            if call:
+                return call
+            if not self.settings.get("log_non_campaign_calls", True):
+                return None
+            provider = str(getattr(self.provider, "name", "") or "")
+            contact = self._contact_by_phone(ev.get("phone"))
+            num = self._number_by_did(ev.get("did")) or {}
+            call_id = db.insert("calls", {
+                "campaign_id": 0, "item_id": 0, "contact_id": contact["id"] if contact else 0,
+                "contact_name": contact["name"] if contact else "",
+                "contact_phone": str(ev.get("phone") or ""),
+                "caller_id": str(num.get("number") or ev.get("did") or "")[:32],
+                "number_id": num.get("id", 0) or 0, "provider": provider,
+                "external_call_id": ch[:64], "direction": "in", "status": "ringing",
+                "result": "", "detail": "Входящий с транка ({})".format(provider)[:200],
+                "agent_result": "", "recording": "", "started_at": now_iso(),
+                "answered_at": "", "ended_at": "", "duration_sec": 0})
+            if num:
+                try:
+                    numbers_mod.mark_used(num["id"], int(self.settings.get("line_cooldown_sec", 5)))
+                except Exception:
+                    pass
+            events.publish("call", {"id": call_id, "status": "ringing",
+                                    "phone": str(ev.get("phone") or ""), "direction": "in",
+                                    "contact_name": contact["name"] if contact else "",
+                                    "incoming": True})
+            return db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
+        if not call:
+            return None
+        if kind == "inbound_answer":
+            if not call.get("answered_at"):
+                db.q("UPDATE calls SET status='answered', answered_at=? WHERE id=?",
+                     (now_iso(), call["id"]))
+                events.publish("call", {"id": call["id"], "status": "answered",
+                                        "phone": call["contact_phone"], "direction": "in"})
+            return call
+        # inbound_end
+        if call.get("status") == "done":
+            return call
+        if call.get("answered_at"):
+            db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result='done_ok', "
+                 "detail=? WHERE id=?", (now_iso(), self._duration(call),
+                                        "Входящий: разговор завершён", call["id"]))
+            self._push_crm(db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],)), "done_ok")
+            events.publish("call", {"id": call["id"], "status": "done",
+                                    "phone": call["contact_phone"], "direction": "in"})
+        else:
+            db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? WHERE id=?",
+                 (now_iso(), "Пропущенный входящий"[:200], call["id"]))
+            try:
+                self.crm.create_task(
+                    "Перезвонить клиенту",
+                    "Пропущенный входящий {} {} (звонок #{})".format(
+                        call.get("contact_name", ""), call.get("contact_phone", ""), call["id"]))
+            except Exception as e:
+                print("[crm] create_task:", e)
+            self._push_crm(db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],)), "missed")
+            events.publish("call", {"id": call["id"], "status": "missed",
+                                    "phone": call["contact_phone"], "direction": "in"})
+        return call
+
+    def _multicom_contact(self, phone):
+        return self._contact_by_phone(phone)
 
     def _multicom_incoming(self, ev):
         """Входящий от агрегатора: только запись журнала + карточка в UI (ACD
@@ -941,6 +1059,18 @@ class Engine:
         elif flow == "agent":
             self._run_agent(call, item, campaign)
         else:  # message
+            if getattr(self.provider, "dialplan_plays_text", False):
+                # Озвучку выполняет медиаслой: текст передан каналу переменной
+                # ATS_TEXT_B64, диалплан отвечает, играет (AGI) и вешается.
+                # Финал придёт событием done/hangup (или закроет watchdog) —
+                # статус «доставлено» появляется только после реальной озвучки.
+                db.q("UPDATE calls SET status='talk', detail=? WHERE id=?",
+                     ("Озвучка передана в медиаслой (Asterisk)", call["id"]))
+                if item:
+                    db.update("campaign_items", {"status": "talk"}, "id=?", (item["id"],))
+                events.publish("call", {"id": call["id"], "status": "talk",
+                                        "phone": call["contact_phone"]})
+                return
             db.q("UPDATE calls SET status='talk' WHERE id=?", (call["id"],))
             if item:
                 db.update("campaign_items", {"status": "talk"}, "id=?", (item["id"],))
@@ -1261,6 +1391,23 @@ class Engine:
                 self.provider.hangup(c["id"])
             except Exception:
                 pass
+        # Озвучка (flow=message на Asterisk) не должна зависнуть в «talk» навсегда:
+        # события Hangup могли не прийти (обрыв AMI/рестарт Asterisk) — закрываем как timeout.
+        talk_max_sec = int(settings.get("message_max_sec", 300))
+        if talk_max_sec > 0:
+            stuck_play = db.fetch(
+                "SELECT * FROM calls WHERE ended_at='' AND status IN ('talk','talk_done') "
+                "AND direction='out' AND started_at<=?", (self._ago(talk_max_sec / 60.0),))
+            for c in stuck_play:
+                item = db.fetch1("SELECT * FROM campaign_items WHERE id=?", (c["item_id"],)) if c["item_id"] else None
+                print("[watchdog] озвучка звонка {} не завершена за {} с — timeout".format(c["id"], talk_max_sec))
+                try:
+                    self.provider.hangup(c["id"])
+                except Exception:
+                    pass
+                self._finish_attempt(c, item, "timeout",
+                                     "Озвучка не завершена за {} с".format(talk_max_sec), retryable=True)
+
         # ACD: оператор не принял звонок в срок -> no_operator + задача на перезвон.
         # Исключение — исходящие makecall-разговоры МегаФона (external_call_id
         # задан): там сотрудника с клиентом уже соединила сама ВАТС, «ожидания»

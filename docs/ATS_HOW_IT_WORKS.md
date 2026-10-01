@@ -98,6 +98,9 @@ Asterisk/SIP-транк, UIS). Сама АТС **не производит зв�
 | `app/audit.py` | Аудит действий: кто/откуда/что сделал, маскирование секретов в `details_json` |
 | `app/api.py` | ~1900 строк: аутентификация, все роуты, вебхуки операторов, синки, загрузка записей, отчёты, health |
 | `app/engine.py` | Диспетчер: тик, события, дозвон, автодозвон, watchdog, ACD, CRM-пуш, outbox |
+| `app/telephony.py` | Провайдеры телефонии + `PROVIDER_NAMES` (единственный список: `sim, uis, ami, megafon_vats, multicom`); здесь же `AsteriskAmiProvider` (Originate/Bridge/входящие/форматы номера) и `ami_check()` |
+| `app/asterisk.py` | Клиент Asterisk Manager Interface: логин, действия с `ActionID`, `wait_for(predicate)`, автопереподключение с backoff, парсер баннера/событий |
+| `app/records.py` | Подписанные ссылки на локальные записи разговоров (`/api/v2/records/<id>?exp=…&sig=…`): HMAC + срок, секрет из настроек/ENV, автогенерация и сохранение |
 | `app/numbers.py` | Пул CallerID: `acquire()` (лимит/кулдаун/карантин/вес), `mark_used/mark_answered`, `pool_state`, сброс суточных счётчиков |
 | `app/agent.py` | ИИ-агент: `run_scripted()` (дерево сценария), `AgentLLM` (OpenAI-совместимый L2) |
 | `app/crm.py` | `CrmDriver` + `CsvCrm` + `Bitrix24Crm` + `AmoCrm` (маппинг результатов, задачи, заметки, ответственные) |
@@ -404,6 +407,9 @@ curl -s -XPOST -H "X-Ats-Token: $T" localhost:9124/api/v2/campaigns/3/start
 | `watchdog_timeout_min` | 20 | зависший дозвон → timeout+ретрай |
 | `acd_wait_timeout_sec` | 60 | клиент не дождался оператора → no_operator + задача в CRM |
 | `vats_conversation_timeout_min` | 30 | нет финала от оператора → страховка (действует и для multicom) |
+| `message_max_sec` | 300 | озвучка (flow=message на Asterisk) не завершилась → timeout+ретрай (страховка от потерянного Hangup) |
+| `ami.*` | см. `app/config.py` | AMI-хост/порт/доступ, `trunk`, `tech`, `number_format`/`caller_id_format`, `context`, `play_*`, `inbound_*`, параметры бриджа — подробно в `docs/MULTICOM_SIP_CONNECT.md` §8 |
+| `records.*` | `base_url=""`, `link_ttl_hours=72` | подписные ссылки на записи для amoCRM/писем |
 | `window_start/window_end/window_days` | 08:00 / 20:00 / все дни | разрешённое окно обзвона |
 | `auto_quarantine_on_complaints` | 3 | жалоб на номер ≥ N → карантин |
 | `log_non_campaign_calls` | true | писать входящие/нескамповые звонки в журнал |
@@ -430,9 +436,13 @@ curl -s -XPOST -H "X-Ats-Token: $T" localhost:9124/api/v2/campaigns/3/start
 
 ## 16. Что сознательно НЕ умеет v2 (чтобы не обещать лишнего)
 
-- **Свой медиа-слой**: нет TTS/IVR/записи разговора внутри ATS. Нужен Asterisk
-  (`provider=ami`, транспорт написан) или оператор, который сам даёт запись/IVR.
-  Пока этого нет: `flow=message` на REST-операторах = `no_media`, `flow=agent` = `no_channel`.
+- **Свой медиа-слой внутри ATS**: нет — голоса в Python-процессе не производится.
+  Медиа отдаётся Asterisk (`provider=ami`): там TTS-озвучка через AGI
+  (`deploy/asterisk/agi/ats_say.py`), запись через `MixMonitor`, входящие по DID.
+  На REST-транспортах без аудио (`megafon_vats`, `multicom`) `flow=message` честно
+  завершается как `no_media`, `flow=agent` — как `no_channel`. Опрос DTMF-меню,
+  IVR-формы и «нажмите 1» с маршрутизацией по цифре — не реализованы и на Asterisk
+  (озвучку можно только прервать нажатием).
 - **Click-to-call из виджета amoCRM** — маршрут есть, но отвечает `501`.
 - **Воронки/сделки amoCRM** (`/leads`, этапы) — не реализованы.
 - **Биллинг/тайфинды**, многоуровневые очереди со стратегиями (round-robin, skills) —

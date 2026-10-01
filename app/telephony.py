@@ -10,8 +10,10 @@
 Фабрика выбирает адаптер по settings["provider"]. Новые операторы (МТС и др.) = новые классы
 с тем же интерфейсом (мультиоператорность, задача T38).
 """
+import base64
 import queue
 import random
+import re
 import threading
 import time
 import uuid
@@ -294,17 +296,54 @@ def map_uis_webhook(body: dict):
 
 
 # ---------- Asterisk/AMI — транспорт на базе AMIClient ----------
+AMI_NUMBER_FORMATS = ("raw", "digits", "d10", "e164", "ru8")
+
+
+def digits_only(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def format_outbound_number(value, fmt="raw"):
+    """Формат набора для SIP-транка. Операторы диктуют свой: «ru8» — 8XXXXXXXXXX
+    (Мультиком), «e164» — +7XXXXXXXXXX, «d10» — XXXXXXXXXX, «digits» — все цифры,
+    «raw» — строка как лежит в БД (обратная совместимость)."""
+    d = digits_only(value)
+    if not d:
+        return ""
+    fmt = str(fmt or "raw").strip().lower()
+    if fmt == "digits":
+        return d
+    if fmt == "d10":
+        return d[-10:] if len(d) >= 10 else d
+    if fmt == "e164":
+        if len(d) == 11 and d[0] in ("7", "8"):
+            return "+7" + d[1:]
+        return "+" + d
+    if fmt == "ru8":
+        if len(d) == 11 and d[0] in ("7", "8"):
+            return "8" + d[1:]
+        if len(d) == 10:
+            return "8" + d
+        return d
+    return str(value).strip()
+
+
 class AsteriskAmiProvider(TelephonyProvider):
     """Адаптер медиа-слоя Asterisk по AMI (SIP-транк к оператору).
 
     Конфигурация (settings.ami): host, port=5038, user, secret, trunk (имя PJSIP/SIP-транка),
-    dial_prefix (напр. '' или '8'), context (контекст набора), ring_timeout_ms, amd (bool).
+    tech (PJSIP|SIP — технология канала), number_format/caller_id_format (raw|digits|d10|e164|ru8),
+    dial_prefix (надбавка после нормализации), context (контекст набора), ring_timeout_ms,
+    play_message/play_context (озвучка текста через AGI в диалплане),
+    inbound_enabled/inbound_contexts (входящие с транка в журнал),
+    op_context/op_wait_sec/bridge_timeout (перевод на оператора).
 
     Originate: Channel PJSIP/{trunk}/{dial_prefix}{phone}, CallerID "{ats-call-<id>}" <caller_id>.
     Маркер в CallerIDName используется, чтобы сопоставить канал с нашим call_id (Newchannel).
     Карта событий AMI → события движка (проверена на протокольном фейке, живой стенд T14):
     Newchannel -> ring, Dial(ANSWER) -> answered, Hangup -> done,
-    OriginateResponse(Failure) -> failed.
+    OriginateResponse(Failure) -> failed. Newchannel в контексте оператора ->
+    inbound/inbound_answer/inbound_end (входящий с DID попадает в журнал ATS и в CRM).
     connect_operator(): Originate операторского leg'а -> ожидание OriginateResponse
     (ответ оператора) -> AMI Bridge двух каналов. True только если бридж состоялся.
     Настройки бриджа (settings.ami): op_context (свой диалплан вместо Wait),
@@ -312,12 +351,16 @@ class AsteriskAmiProvider(TelephonyProvider):
     """
     name = "ami"
     needs_operator_ext = True
+    # Текст сообщения озвучивает сам Asterisk (AGI в play_context): движок ждёт
+    # финал по событию, а не «спит секунду и пишет «доставлено»».
+    dialplan_plays_text = True
 
     def __init__(self):
         super().__init__()
         self.cfg = {}
         self.client = None
         self.channels = {}   # call_id -> channel name
+        self._inbound = {}   # channel name -> True (входящий с транка, отслеживаем)
         self._originate = {}  # action_id dial-Originate -> call_id (ждём OriginateResponse)
         self._lock = threading.RLock()
 
@@ -339,18 +382,51 @@ class AsteriskAmiProvider(TelephonyProvider):
         self.client = client
         return self
 
+    def _tech(self):
+        return str(self.cfg.get("tech") or "PJSIP").strip() or "PJSIP"
+
+    def _channel_string(self, phone, trunk=None):
+        """Диал-строка канала. У технологий свой синтаксис: chan_sip — `SIP/peer/номер`,
+        chan_pjsip — `PJSIP/номер@endpoint`. Переопределяется целиком настройкой
+        `channel_pattern` (шаблон с {number} и {trunk})."""
+        trunk = str(trunk if trunk is not None else self.cfg.get("trunk", ""))
+        pattern = str(self.cfg.get("channel_pattern") or "").strip()
+        if pattern:
+            try:
+                return pattern.format(number=phone, trunk=trunk)
+            except (KeyError, IndexError, ValueError):
+                pass
+        if self._tech().upper() == "SIP":
+            return "SIP/{}/{}".format(trunk, phone)
+        return "PJSIP/{}@{}".format(phone, trunk)
+
     def _trunk_channel(self, phone):
-        return "PJSIP/{}/{}".format(self.cfg.get("trunk", ""), phone)
+        return self._channel_string(phone)
 
     def dial(self, req: dict):
         if not self.client:
             raise ProviderNotConfigured("AMI не подключён")
-        phone = str(req["phone"])
+        phone = format_outbound_number(req["phone"], self.cfg.get("number_format", "raw"))
         if self.cfg.get("dial_prefix"):
             phone = str(self.cfg["dial_prefix"]) + phone
+        if not phone:
+            raise ProviderNotConfigured(
+                "Номер {!r} пуст после нормализации (number_format={})".format(
+                    req.get("phone"), self.cfg.get("number_format", "raw")))
         chan = self._trunk_channel(phone)
-        cid_num = req.get("caller_id", "")
+        cid_num = format_outbound_number(req.get("caller_id", ""),
+                                         self.cfg.get("caller_id_format", "digits"))
         cid_name = "ats-call-{}".format(req["call_id"])
+        variables = ["ATS_CALL_ID={}".format(req["call_id"])]
+        text = str(req.get("text") or "").strip()
+        if text and self.cfg.get("play_message", True):
+            # base64: в AMI-пакете значения не должны содержать CR/LF, а текст
+            # кампании — любое; диалплан декодирует через BASE64_DECODE.
+            variables.append("ATS_TEXT_B64=" + base64.b64encode(
+                text[:1500].encode("utf-8")).decode("ascii"))
+        if self.cfg.get("record_calls", True):
+            # по этому флагу диалплан включает MixMonitor (запись на сервере Asterisk)
+            variables.append("ATS_RECORD=1")
         params = {
             "Channel": chan,
             "Exten": "s",
@@ -358,7 +434,7 @@ class AsteriskAmiProvider(TelephonyProvider):
             "Priority": "1",
             "CallerID": '"{}" <{}>'.format(cid_name, cid_num),
             "Timeout": str(self.cfg.get("ring_timeout_ms", 35000)),
-            "Variable": "ATS_CALL_ID={}".format(req["call_id"]),
+            "Variable": variables,
             "Async": "true",
         }
         resp = self.client.action("Originate", params)
@@ -398,8 +474,10 @@ class AsteriskAmiProvider(TelephonyProvider):
             caller_ch = self.channels.get(call_id)
         if not caller_ch:
             return False
-        op_chan = "PJSIP/{}/{}".format(
-            self.cfg.get("operator_trunk", self.cfg.get("trunk", "")), operator_ext)
+        op_chan = self._channel_string(
+            format_outbound_number(operator_ext, self.cfg.get("number_format", "raw"))
+            or str(operator_ext),
+            self.cfg.get("operator_trunk", self.cfg.get("trunk", "")))
         op_params = {
             "Channel": op_chan,
             "CallerID": '"ATS-ACD" <{}>'.format(self.cfg.get("acd_callerid", "")),
@@ -443,13 +521,71 @@ class AsteriskAmiProvider(TelephonyProvider):
             return False
         return True
 
+    def _on_play_variable(self, ev):
+        """ATS_PLAY=failed:<причина> — озвучка не состоялась (нет TTS, ошибка AGI).
+        При успехе финал отдаёт Hangup. Так в журнале не появится ложное «доставлено»."""
+        value = str(ev.get("Value", "") or "")
+        if not value.lower().startswith("fail"):
+            return
+        ch = str(ev.get("Channel", "") or "")
+        call_id = self.channels_rev_get(ch)
+        if not call_id:
+            return
+        self.emit({"event": "status", "call_id": call_id, "status": "failed",
+                   "detail": ("Озвучка не выполнена: " + value.split(":", 1)[-1])[:200]})
+
+    # ---------- входящие с транка (DID) ----------
+    def _inbound_candidate(self, ev):
+        """Имя канала, если это входящий с транка (DID в контексте оператора)."""
+        if not self.cfg.get("inbound_enabled", True):
+            return ""
+        allowed = [c.strip() for c in str(self.cfg.get("inbound_contexts", "") or "").split(",")
+                   if c.strip()]
+        if allowed and str(ev.get("Context", "")) not in allowed:
+            return ""
+        ch = str(ev.get("Channel", "") or "")
+        tech = str(self.cfg.get("inbound_tech") or self.cfg.get("tech") or "PJSIP").strip()
+        trunk = str(self.cfg.get("trunk") or "").strip()
+        if trunk and not ch.startswith("{}/{}".format(tech, trunk)):
+            return ""
+        return ch
+
     def _on_event(self, ev: dict):
         etype = str(ev.get("Event", "")).lower()
         if etype == "originateresponse":
             self._on_originate_response(ev)
             return
-        # маркер канала в CallerIDName (может быть "ats-call-<id>")
         ch = ev.get("Channel")
+        if etype == "variableset" and str(ev.get("Variable", "")) == "ATS_PLAY":
+            # AGI не знает нашего call_id: итог озвучки ставит диалплан
+            self._on_play_variable(ev)
+            return
+        if etype == "newchannel":
+            inbound_ch = self._inbound_candidate(ev)
+            if inbound_ch:
+                with self._lock:
+                    known = inbound_ch in self._inbound
+                    self._inbound[inbound_ch] = True
+                if not known:
+                    self.emit({"event": "inbound", "channel": inbound_ch,
+                               "phone": str(ev.get("CallerIDNum") or ev.get("ConnectedLineNum") or ""),
+                               "did": str(ev.get("Exten", "") or "")})
+                return
+        elif etype == "newstate":
+            with self._lock:
+                tracked = str(ev.get("Channel", "")) in self._inbound
+            if tracked and str(ev.get("ChannelState", "")) == "6":  # 6 = UP
+                self.emit({"event": "inbound_answer", "channel": str(ev.get("Channel", ""))})
+            return
+        elif etype == "hangup":
+            with self._lock:
+                tracked = str(ev.get("Channel", "")) in self._inbound
+                if tracked:
+                    self._inbound.pop(str(ev.get("Channel", "")), None)
+            if tracked:
+                self.emit({"event": "inbound_end", "channel": str(ev.get("Channel", "")),
+                           "detail": str(ev.get("Cause", "") or "")})
+                return
         marker = None
         for key in ("CallerIDName", "ConnectedLineName", "CallerID"):
             v = str(ev.get(key, ""))
@@ -518,6 +654,111 @@ class AsteriskAmiProvider(TelephonyProvider):
                 self.client.close()
             except Exception:
                 pass
+
+
+def ami_check(settings: dict) -> dict:
+    """Диагностика связки ATS ↔ Asterisk ↔ SIP-транк без единого звонка.
+
+    Проверяет: доступность и логин AMI, версию Asterisk, состояние регистрации у
+    оператора (pjsip/sip), наличие контекстов диалплана, кодеков, и то, что пул
+    номеров настроен на провайдера `ami`. Возвращает отчёт по чек-листу; `ok` —
+    только если пройдены критичные проверки.
+    """
+    from . import asterisk as ami_mod
+    cfg = dict((settings or {}).get("ami") or {})
+    tech = str(cfg.get("tech") or "PJSIP").strip().upper() or "PJSIP"
+    trunk = str(cfg.get("trunk") or "").strip()
+    context = str(cfg.get("context") or "ats-out")
+    report = {"ok": False, "tech": tech, "trunk": trunk, "checks": [],
+              "number_format": str(cfg.get("number_format") or "raw"),
+              "caller_id_format": str(cfg.get("caller_id_format") or "digits")}
+
+    def add(name, ok, detail="", critical=True):
+        report["checks"].append({"name": name, "ok": bool(ok), "detail": str(detail)[:600],
+                                 "critical": bool(critical)})
+        return bool(ok)
+
+    if not (cfg.get("host") and cfg.get("user") and cfg.get("secret")):
+        add("config", False, "settings.ami: заполните host/user/secret")
+        return report
+    client = None
+    try:
+        client = ami_mod.AMIClient(cfg["host"], cfg.get("port", 5038), cfg["user"],
+                                   cfg["secret"], timeout=float(cfg.get("timeout", 5)))
+        client.connect()
+        client.login()
+        add("ami_login", True, "{}:{}".format(cfg["host"], cfg.get("port", 5038)))
+    except Exception as e:  # noqa: BLE001
+        add("ami_login", False, e)
+        report["error"] = "ami_unreachable"
+        if client:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return report
+
+    def command(cmd, timeout=2.5):
+        """CLI через AMI (формат ответа может различаться) — только текстом."""
+        try:
+            return client.run_command(cmd, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            return "ошибка команды: {}".format(e)
+
+    try:
+        ver = command("core show version")
+        add("asterisk", "Asterisk" in ver or "version" in ver.lower(), ver.strip().splitlines()[-1:]
+            and ver.strip().splitlines()[-1] or ver, critical=False)
+        ping = client.action("Ping", check=False)
+        add("ping", str(ping.get("Response", "")).lower() == "success",
+            ping.get("Message", ""), critical=False)
+        if tech == "SIP":
+            reg, peers = command("sip show peers"), command("sip show registry")
+            trunk_ok = trunk.lower() in reg.lower()
+        else:
+            reg, peers = command("pjsip show contacts"), command("pjsip show endpoints")
+            trunk_ok = (not trunk) or trunk.lower() in peers.lower() or trunk.lower() in reg.lower()
+        registered = any(word in reg.lower() for word in
+                         ("avail", "requested", "bound", "ok", "registered"))
+        add("trunk_configured", trunk_ok,
+            ("транк '{}' найден в выводе".format(trunk) if trunk_ok else
+             "транк '{}' не найден — проверьте pjsip.conf/sip.conf и имя в настройках".format(trunk)))
+        add("registration", registered, reg.strip() or "регистрации/контакта нет — "
+                                                        "проверьте логин/пароль и файрвол")
+        def context_ok(text, ctx):
+            low = (text or "").lower()
+            if any(bad in low for bad in ("no such context", "cannot exist", "no context matched")):
+                return False
+            return ctx.lower() in low
+        plan = command("dialplan show {}".format(context))
+        add("dialplan", context_ok(plan, context),
+            (plan.strip()[:400] or "контекст {} не виден в диалплане".format(context)))
+        play_ctx = str(cfg.get("play_context") or "ats-play")
+        if cfg.get("play_message", True):
+            play = command("dialplan show {}".format(play_ctx))
+            add("agi_play", context_ok(play, play_ctx), play.strip()[:300], critical=False)
+        g729 = command("module show like codec_g729")
+        add("codec_g729", "codec_g729" in g729.lower(), g729.strip()[:200], critical=False)
+    finally:
+        try:
+            client.logoff()
+            client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        from . import db as _db
+        row = _db.fetch1("SELECT COUNT(*) AS c FROM numbers WHERE provider='ami' AND active=1"
+                        " AND quarantined=0")
+        count = int((row or {}).get("c") or 0)
+    except Exception:  # noqa: BLE001
+        count = 0
+    add("numbers_pool", count > 0,
+        "активных номеров ami в пуле: {}{}".format(
+            count, "" if count else " — добавьте номера с provider=ami (см. docs/MULTICOM_SIP_CONNECT.md)"))
+    report["numbers_active"] = count
+    report["ok"] = all(c["ok"] for c in report["checks"] if c.get("critical"))
+    return report
 
 
 # Единый список провайдеров телефонии: настройки (settings.provider), пул

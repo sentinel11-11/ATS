@@ -383,14 +383,16 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
-        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm")})
+        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "megafon_vats", "multicom",
+                                                     "llm", "bitrix24", "amocrm", "crm", "records")})
         return {"provider_config": masked}, 200
     if p == ["settings", "raw"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
         cfg = body.get("provider_config") or body
-        for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm"):
+        for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm",
+                  "records"):
             if isinstance(cfg.get(k), dict):
                 merged = dict(s.get(k) or {})
                 for fk, fv in cfg[k].items():
@@ -452,6 +454,10 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _multicom_simulate_route(body)
+    if p == ["ami", "check"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _ami_check_route(body)
     if p == ["amocrm", "check"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -1023,7 +1029,8 @@ def _health_details():
     from .providers.base import resolve_secret
     h = _health()
     s = db.get_settings()
-    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami", "multicom")})
+    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami", "multicom",
+                                                   "records")})
     today = now_iso()[:10]
     try:
         calls_today = db.fetch1(
@@ -1042,11 +1049,12 @@ def _health_details():
         # пул считаем по провайдерам: у МегаФона и Мультикома разные номера
         pool_megafon = _pool("megafon_vats")
         pool_multicom = _pool("multicom")
+        pool_ami = _pool("ami")      # транк оператора: Asterisk/FreeSWITCH по AMI
         vats_users = db.fetch1("SELECT COUNT(*) c FROM vats_users")["c"]
         vats_groups = db.fetch1("SELECT COUNT(*) c FROM vats_groups")["c"]
     except Exception:
         calls_today = items_queued = ops_free = -1
-        pool_megafon = pool_multicom = {"total": -1, "usable": -1}
+        pool_ami = pool_megafon = pool_multicom = {"total": -1, "usable": -1}
         vats_users = vats_groups = -1
     thread_alive = bool(ENGINE is not None and ENGINE.is_running())
     return {"health": h, "engine_thread": thread_alive,
@@ -1061,6 +1069,7 @@ def _health_details():
                                                           "ATS_MULTICOM_WEBHOOK_TOKEN"))},
             "stats": {"calls_today": calls_today, "items_queued": items_queued,
                       "operators_free": ops_free,
+                      "pool_ami": pool_ami,
                       "pool_megafon": pool_megafon,
                       "pool_multicom": pool_multicom,
                       "vats_users": vats_users, "vats_groups": vats_groups},
@@ -1275,6 +1284,25 @@ def _multicom_check_route(body=None):
     if rep.get("ok"):
         return {"ok": True, "report": rep}, 200
     return {"ok": False, "error": "multicom_error", "detail": rep.get("detail"), "report": rep}, 502
+
+
+def _ami_check_route(body=None):
+    """POST /api/v2/ami/check — чек-лист связи с Asterisk и транком (без звонков)."""
+    from .telephony import ami_check
+    settings = db.get_settings()
+    b = body or {}
+    incoming = b.get("ami") if isinstance(b.get("ami"), dict) else b
+    merged = dict(settings.get("ami") or {})
+    for k, v in (incoming or {}).items():
+        if k in merged and not _is_masked_value(v):
+            merged[k] = v
+    settings = dict(settings, ami=merged)
+    rep = ami_check(settings)
+    if rep.get("ok"):
+        return {"ok": True, "report": rep}, 200
+    return {"ok": False, "error": rep.get("error") or "ami_check_failed",
+            "detail": next((c["detail"] for c in rep.get("checks", [])
+                            if not c["ok"] and c.get("critical")), ""), "report": rep}, 200
 
 
 def _multicom_sync_route(body=None):
@@ -1641,13 +1669,13 @@ def _settings_save(body, sess=None):
               "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",
               "vats_conversation_timeout_min",
               "window_start", "window_end", "sim_answer", "auto_quarantine_on_complaints",
-              "sim_outcome", "crm"):
+              "sim_outcome", "crm", "records", "message_max_sec"):
         if k in body:
             if k in ("consent_required",):
                 s[k] = bool(body[k])
             elif k == "sim_outcome" and isinstance(body[k], dict):
                 s[k] = {str(x): int(body[k][x]) for x in body[k]}
-            elif k in ("crm", "uis", "ami", "llm", "bitrix24") and isinstance(body[k], dict):
+            elif k in ("crm", "uis", "ami", "llm", "bitrix24", "records") and isinstance(body[k], dict):
                 s[k] = {**s.get(k, {}), **body[k]}
             else:
                 s[k] = body[k]
@@ -1888,6 +1916,15 @@ def _recording_upload(body):
     call_id = int(body.get("call_id", 0) or 0)
     fname = str(body.get("filename", "")).replace("\\", "/").split("/")[-1][-80:]
     ext = os.path.splitext(fname)[1].lower()
+    if not call_id:
+        # входящий с транка: call_id знает только ATS — диалплан называет файл по
+        # имени канала, поэтому разрешаем звонок по external_call_id
+        ext_id = str(body.get("external_call_id", "") or "").strip()
+        if ext_id:
+            row = db.fetch1("SELECT id FROM calls WHERE external_call_id=? ORDER BY id DESC",
+                            (ext_id[:64],))
+            if row:
+                call_id = int(row["id"])
     if not call_id:
         return {"ok": False, "error": "call_id_required"}, 400
     if ext not in AUDIO_EXT:

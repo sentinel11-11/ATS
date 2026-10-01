@@ -227,5 +227,5 @@ Kafka/Docker-оркестрации. VPS от 1 vCPU/1 ГБ. Обновлени�
 - **Как это устроено (для технической экспертизы (due diligence)):** `docs/ATS_HOW_IT_WORKS.md`.
 - **Интеграция с amoCRM (наш «козырь» для SMB):** `docs/AMOCRM_INTEGRATION.md`.
 - **Деплой/обновление на сервере:** `docs/DEPLOY.md`, `deploy/update.sh`, `deploy/ats.service`.
-- **Тесты как доказательство:** `python3 -m unittest discover -s tests` (266 проверок,
+- **Тесты как доказательство:** `python3 -m unittest discover -s tests` (302 проверки,
   включая 26 по Мультикому с mock-оператором: `tests/test_multicom_provider.py`).

@@ -100,6 +100,11 @@ class Handler(BaseHTTPRequestHandler):
         mrec = _re.match(r"^(?:/api/v2|/v2)?/calls/(\d+)/recording$", u.path)
         if mrec:
             return self._recording(int(mrec.group(1)), parse_qs(u.query))
+        # запись по подписанной ссылке (для amoCRM/почты): без токена сессии,
+        # но с HMAC-подписью и сроком действия — см. app/records.py
+        msig = _re.match(r"^(?:/api/v2|/v2)?/records/(\d+)$", u.path)
+        if msig:
+            return self._recording_signed(int(msig.group(1)), parse_qs(u.query))
         if u.path in ("/api/v2/events", "/v2/events", "/events"):
             return self._sse()
 
@@ -122,6 +127,25 @@ class Handler(BaseHTTPRequestHandler):
         rel = u.path.lstrip("/")
         self._static(rel)
         self._send_json({"ok": False, "error": "not_found"}, 404)
+
+    def _recording_signed(self, call_id, query):
+        from . import records
+        q = query or {}
+        exp = (q.get("exp") or [""])[0]
+        sig = (q.get("sig") or [""])[0]
+        if not records.verify(call_id, exp, sig):
+            return self._send_json({"ok": False, "error": "bad_signature"}, 403)
+        path = records.path_for(call_id)
+        if path is None:
+            return self._send_json({"ok": False, "error": "no_recording"}, 404)
+        import os
+        fname = os.path.basename(str(path))
+        ctype = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+                 ".opus": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac",
+                 ".flac": "audio/flac"}.get(path.suffix.lower(), "application/octet-stream")
+        self._send_bytes(path.read_bytes(), ctype, 200,
+                         {"Content-Disposition": 'inline; filename="' + fname + '"',
+                          "Cache-Control": "private, max-age=60"})
 
     def _recording(self, call_id, query):
         qtoken = (query.get("token") or [""])[0]

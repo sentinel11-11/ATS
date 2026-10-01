@@ -294,6 +294,15 @@ class AmoCrm(CrmDriver):
         # Ссылка на запись: из провайдерской recording_url (ВАТС) или явных полей.
         record_link = str(call.get("record_url") or call.get("record_link")
                           or call.get("recording_url") or "").strip()
+        if not record_link and call.get("recording") and call.get("id"):
+            # Запись лежит у нас (диалплан Asterisk, MixMonitor), у
+            # оператора ссылки нет — генерируем подписную: она не требует токена
+            # сессии и живёт records.link_ttl_hours.
+            try:
+                from . import records as _records
+                record_link = _records.link(call["id"])
+            except Exception:
+                record_link = ""
         # call_result в amoCRM — свободный текст: человекочитаемый detail
         # («Разговор завершён (ВАТС)»), машинный код результата — в скобках.
         detail_text = str(call.get("detail") or "").strip()
