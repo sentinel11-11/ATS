@@ -55,6 +55,22 @@ command -v git >/dev/null || die "не найден git"
 command -v python3 >/dev/null || die "не найден python3"
 git rev-parse --git-dir >/dev/null 2>&1 || die "$APP_DIR — не git-репозиторий: обновляйте там, куда клонирован ATS"
 
+# ATS_DATA_DIR / ATS_PORT / ATS_SERVICE могут быть объявлены только в юните systemd
+# (частый случай, когда /etc/ats/ats.env ещё не заводили) — достаём их оттуда,
+# иначе бэкап БД и health-check пойдут по неверным путям.
+if [ -z "${ATS_DATA_DIR:-}" ] || [ -z "${ATS_PORT:-}" ] || [ -z "${ATS_SERVICE:-}" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    for kv in $(systemctl show "${ATS_SERVICE:-ats}" -p Environment --value 2>/dev/null || true); do
+      case "$kv" in
+        ATS_DATA_DIR=*) [ -z "${ATS_DATA_DIR:-}" ] && export ATS_DATA_DIR="${kv#*=}" ;;
+        ATS_PORT=*)     [ -z "${ATS_PORT:-}" ]     && export ATS_PORT="${kv#*=}" ;;
+        ATS_SERVICE=*)  [ -z "${ATS_SERVICE:-}" ]  && export ATS_SERVICE="${kv#*=}" ;;
+      esac
+    done
+    [ -n "${ATS_DATA_DIR:-}" ] && log "ATS_DATA_DIR подставлен из юнита ${ATS_SERVICE:-ats}: $ATS_DATA_DIR"
+  fi
+fi
+
 DATA_DIR="${ATS_DATA_DIR:-$APP_DIR/data_v2}"
 DB_FILE="$DATA_DIR/ats.db"
 SERVICE="${ATS_SERVICE:-ats}"

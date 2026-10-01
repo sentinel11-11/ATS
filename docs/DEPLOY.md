@@ -174,6 +174,83 @@ git rebase origin/$BR                 # переставить свои комм
 # или, если локальные коммиты не нужны: git reset --hard origin/$BR
 ```
 
+### 3.0.1 Если `/opt/ats` — не git-клон (переезд на нормальное обновление)
+
+Проверка: `cd /opt/ats && git rev-parse --is-inside-work-tree` → «not a git repository».
+Обычно за этим стоит раскладка «код принесли файлами»: корень проекта лежит на уровень
+глубже (например `/opt/ats/app/…`), venv живёт внутри кода, юнит запускает
+`/opt/ats/app/venv/bin/python -m app.run --host 127.0.0.1 --port 9124`, данные в `/var/lib/ats`.
+Минусы такого состояния: нет истории, нет отката, нет `deploy/update.sh`, «обновление» =
+перетаскивание файлов, и никто не знает, правился ли код руками.
+
+Полезно знать: ядро ATS v2 — чистый stdlib (не-stdlib импортов в `app/` нет), поэтому
+venv приложению не нужен; данные при переезде не трогаются вообще, они в `ATS_DATA_DIR`.
+
+**Шаг 1. понять, какая ревизия сейчас на сервере и правили ли её руками:**
+
+```bash
+find /opt/ats -name '*.py' -not -path '*/venv/*' | sort | xargs md5sum > /tmp/manifest.txt
+python3 /path/to/clone/deploy/match-manifest.py /tmp/manifest.txt   # покажет ревизию и ручные правки
+```
+
+**Шаг 2. собрать новый код рядом и проверить на копии базы (живой сервис не трогаем):**
+
+```bash
+git clone -b arena/01a0cdee-ats https://github.com/sentinel11-11/ATS.git /opt/ats-new
+cp -a /var/lib/ats /tmp/ats-smoke
+cd /opt/ats-new && python3 -m unittest discover -s tests 2>&1 | tail -3
+ATS_DATA_DIR=/tmp/ats-smoke ATS_ALLOW_SIM_FALLBACK=1 nohup python3 -m app.run --host 127.0.0.1 --port 9199 >/tmp/smoke.log 2>&1 &
+sleep 3; curl -s localhost:9199/api/v2/health; echo; kill %1 2>/dev/null; rm -rf /tmp/ats-smoke
+```
+
+**Шаг 3. конфиг окружения** — его читают и systemd (`EnvironmentFile`), и `update.sh`;
+без него скрипт обновления ищет базу в `<репозиторий>/data_v2` и может не найти:
+
+```bash
+install -d -m 750 /etc/ats
+cat > /etc/ats/ats.env <<'ENV'
+ATS_DATA_DIR=/var/lib/ats
+ATS_HOST=127.0.0.1
+ATS_PORT=9124
+ATS_SERVICE=ats
+ENV
+chmod 640 /etc/ats/ats.env
+```
+
+Ключи API (amoCRM/ВАТС/AMI), если они были вписаны прямо в юнит, перенести сюда же.
+
+**Шаг 4. переезд и откат:**
+
+```bash
+ts=$(date +%Y%m%d-%H%M%S)
+systemctl stop ats
+mv /opt/ats /opt/ats.legacy-$ts && mv /opt/ats-new /opt/ats
+chown -R ats:ats /opt/ats
+cp /opt/ats/deploy/ats.service /etc/systemd/system/ats.service   # ExecStart без жёстких --host/--port, venv не нужен
+systemctl daemon-reload && systemctl start ats && curl -s localhost:9124/api/v2/health
+# откат, если health не OK:
+#   systemctl stop ats && rm -rf /opt/ats && mv /opt/ats.legacy-$ts /opt/ats && systemctl start ats
+```
+
+**Шаг 5. разбор легаси-копии** (свои файлы: сертификаты, выгрузки, ручные правки):
+
+```bash
+diff -rq /opt/ats.legacy-$ts/app/app /opt/ats/app 2>/dev/null | head -20
+ls -la /opt/ats.legacy-$ts | grep -vE ' (app|venv|__pycache__)'
+```
+
+Дальше все обновления — `cd /opt/ats && ./deploy/update.sh <ветка>`. `ats.legacy-$ts`
+удаляй, когда убедились (обычно на следующий день).
+
+**Две вещи, которые стоит поправить при переезде:**
+
+- `ATS_ALLOW_SIM_FALLBACK=1` в юните — удобен на стенде, но на боевой линии опасен:
+  при недоступном AMI/Asterisk АТС не упадёт, а уйдёт в симуляцию, и в журнале начнут
+  появляться несуществующие дозвоны. Держать включённым только на время наладки.
+- `--host 127.0.0.1` — если интерфейсом пользуются не только через SSH-туннель,
+  слушать `0.0.0.0` и закрывать фронт reverse-proxy с TLS (§6); для ссылок на записи
+  из amoCRM нужен адрес, доступный из браузера (`records.base_url`).
+
 ### 3.1 Один шаг (то, что нужно помнить)
 
 ```bash
