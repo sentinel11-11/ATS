@@ -203,16 +203,30 @@ asterisk -rx "module show like codec_g729"      # пусто — значит G.
 
 ```bash
 cd /opt/ats/app
-MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh
-# варианты: --print (показать результат) | --dry-run | --check | --firewall (правила на
-# сеть оператора) | --ami (пользователь AMI + сгенерированный пароль) |
-# --numbers (15 номеров письма в пул ATS с provider=ami) | --ats (settings.ami и
-# provider=ami через API) | --restart (systemctl restart ats после --ats)
+set +o history                        # чтобы пароли не ушли в ~/.bash_history
+MCM_PASS='***'              # пароль SIP-регистрации из письма
+AMIPASS=$(openssl rand -hex 24)               # пароль AMI — его придумываем МЫ (его в письме нет)
+ATS_TOKEN=$(curl -s -X POST http://127.0.0.1:9124/api/v2/auth/login \
+      -H 'Content-Type: application/json' -d '{"login":"admin","password":"…"}' \
+      | sed 's/.*"token":"***"]*\)".*/\1/')  # токен API АТС (нужен для --ats/--numbers)
+sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.sh \
+     --firewall --ami --ats --numbers
 ```
 
-Значения по умолчанию — из письма (`00083819`, `95.128.224.47:5060`,
-`95.128.224.0/21`, `alaw,ulaw,g729`, 15 каналов); переопределяются окружением:
-`MCM_LOGIN MCM_HOST MCM_PORT MCM_TRUNK MCM_NET MCM_RTP MCM_CODECS MCM_MAX_CHANNELS`.
+Флаги: `--print` (показать конфиг до записи) | `--dry-run` (ничего не писать) |
+`--check` (только диагностика) | `--firewall` (правила iptables/ufw на сеть оператора) |
+`--ami` (пользователь AMI в `manager-ats.conf` **и** `ATS_AMI_SECRET` в `/etc/ats/ats.env`,
+права 0640 root:ats) | `--ats` (settings.ami + `provider=ami` через API, перезапуск не нужен) |
+`--numbers` (15 номеров письма в пул с `provider=ami`, идемпотентно) | `--numbers-only` |
+`--restart` (перезапустить сервис после `--ats`). Скрипт можно запускать повторно — он
+дописывает/обновляет, а не удваивает строки (`#include`, `ATS_AMI_SECRET`).
+
+Переопределяемые значения по умолчанию: `MCM_LOGIN` (`00083819`), `MCM_HOST`/`MCM_PORT`
+(`95.128.224.47`/`5060`), `MCM_TRUNK` (`mcm` — имя секции и оно же `settings.ami.trunk`),
+`MCM_NET` (`95.128.224.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (`alaw,ulaw,g729`),
+`MCM_MAX_CHANNELS` (`15`), `MCM_NUMBERS` (список из письма), `MCM_NUMBER_PROVIDER` (`ami`),
+`MCM_DAILY_LIMIT` (`120`), `AMI_USER` (`ats`), `ATS_ENV_FILE` (`/etc/ats/ats.env`),
+`ATS_URL` (`http://127.0.0.1:9124`).
 
 Вручную — то же самое, если хочется без скрипта:
 
@@ -307,6 +321,42 @@ timeout 3 bash -c '</dev/tcp/127.0.0.1/5038' && echo "AMI слушает 5038"
 printf 'Action: Login\r\nUsername: ats\r\nSecret: %s\r\nActionID: 1\r\n\r\n' "$AMIPASS" \
   | timeout 5 nc 127.0.0.1 5038 | head -4     # Response: Success
 ```
+
+Права на файлы — `0640 root:asterisk`: их читает только Asterisk.
+
+### 7.1. Где именно лежит пароль AMI и где его посмотреть
+
+Пароль AMI **не приходит в письме Мультикома** — его создаём мы: это внутренний пароль
+между АТС и Asterisk. Он живёт здесь:
+
+| Где | Что там | Как посмотреть |
+|---|---|---|
+| `/etc/asterisk/manager-ats.conf` | строка `secret = …` в секции `[ats]` — единственное место, откуда пароль читается текстом | `sudo grep -E "^\s*secret" /etc/asterisk/manager-ats.conf` |
+| `/etc/ats/ats.env` (если прогоняли `--ami`) | `ATS_AMI_SECRET=…` — копия, чтобы пароль не лежал в базе | `sudo grep ATS_AMI_SECRET /etc/ats/ats.env` |
+| настройки АТС (`ats.db`, раздел `ami`) | `secret` — если вводили руками в интерфейсе | в UI и в API всегда `********`, прочитать оттуда нельзя |
+
+Порядок выбора пароля (`app/telephony.py`, функция `ami_secret()`):
+
+1. `settings.ami.secret` — то, что введено в поле «AMI Пароль»;
+2. если пусто — переменная окружения из `settings.ami.secret_env` (по умолчанию
+   `ATS_AMI_SECRET`), то есть строка из `/etc/ats/ats.env`, которую systemd подставляет
+   при старте сервиса.
+
+Следствия:
+
+* хранить пароль в базе не обязательно — вариант «только `ats.env`» безопаснее (в SQLite
+  секреты лежат открытым текстом). После правки `ats.env` нужен `sudo systemctl restart ats`:
+  окружение перечитывается только на старте сервиса;
+* поле «AMI Пароль» в интерфейсе можно оставить пустым: сохранение маскированного
+  `********` игнорируется, пароль возьмётся из `ats.env`;
+* меняем пароль — правим `manager-ats.conf`, затем `sudo asterisk -rx "module reload manager.cfm"`,
+  затем то же значение в `ats.env` (или в поле «AMI Пароль») и `sudo systemctl restart ats`;
+  проверяем `POST /api/v2/ami/check` — в отчёте видно, из какого источника взят пароль
+  (`пароль AMI задан … (в ATS_AMI_SECRET — нет)`);
+* в логи и в дамп `/api/v2/health/details` пароль не попадает: `app/api.py` маскирует любое
+  поле, имя которого содержит `secret`/`token`/`key`/`password` (кроме имён переменных `*_env`);
+* прописать пароль в `manager.conf` вместо отдельного файла нельзя: скрипт установки намеренно
+  останавливается, если видит там секцию `[ats]` — так секрет не попадает в файл с широкими правами.
 
 ---
 

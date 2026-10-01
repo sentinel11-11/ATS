@@ -209,17 +209,22 @@ apply_ats_settings() {
   # Провайдер и форматы — настройки АТС, их пишем через API (секции settings/raw),
   # а не правкой БД: только так проходит та же валидация, что и через UI.
   [ -n "${ATS_TOKEN:-}" ] || die "нужен ATS_TOKEN (токен администратора АТС): ATS_TOKEN=… $0 --ats"
-  [ -n "${AMIPASS:-}" ] || die "нужен AMIPASS — тот же пароль, что в manager-ats.conf (--ami его генерирует; можно задать явно)"
+  if [ "${ATS_SKIP_DB_SECRET:-0}" != "1" ]; then
+    [ -n "${AMIPASS:-}" ] || die "нужен AMIPASS — тот же пароль, что в manager-ats.conf (--ami его генерирует; можно задать явно)"
+  fi
   ATS_URL="$ATS_URL" ATS_TOKEN="$ATS_TOKEN" AMIPASS="$AMIPASS" MCM_TRUNK="$MCM_TRUNK" \
+  ATS_SKIP_DB_SECRET="${ATS_SKIP_DB_SECRET:-0}" \
   AMI_HOST="${AMI_HOST:-127.0.0.1}" AMI_PORT="${AMI_PORT:-5038}" AMI_USER="${AMI_USER:-ats}" \
   python3 - <<'PYATS'
 import json, os, urllib.request
 
+skip_db = os.environ.get("ATS_SKIP_DB_SECRET") == "1"
 ami = {
     "host": os.environ.get("AMI_HOST", "127.0.0.1"),
     "port": int(os.environ.get("AMI_PORT", "5038")),
     "user": os.environ.get("AMI_USER", "ats"),
-    "secret": os.environ["AMIPASS"],
+    # "" — сознательно очищаем сохранённый секрет: он лежит в ATS_AMI_SECRET (ats.env)
+    "secret": "" if skip_db else os.environ["AMIPASS"],
     "trunk": os.environ["MCM_TRUNK"],
     "tech": "PJSIP",
     "number_format": "ru8",          # из письма: 8_КодГорода_НомерТелефона
@@ -361,6 +366,37 @@ if [ "$WANT_AMI" = "1" ]; then
       warn "нет $AST_DIR/manager.conf — создайте его с секцией [general] enabled = yes и строкой #include manager-ats.conf"
     fi
     export AMIPASS
+    # Секрет лучше не хранить в ats.db: кладём в ATS_AMI_SECRET файла окружения
+    # сервиса (0640 root:ats), АТС подхватит его через settings.ami.secret_env.
+    ATS_ENV_FILE="${ATS_ENV_FILE:-/etc/ats/ats.env}"
+    ATS_SKIP_DB_SECRET=0
+    case "$AMIPASS" in
+      *[!A-Za-z0-9._~-]*)
+        warn "в пароле AMI есть символы вне [A-Za-z0-9._~-] — в $ATS_ENV_FILE не пишем"
+        warn "(в EnvironmentFile systemd раскрывает dollar-ссылки и портит значение);"
+        warn "в этом случае пароль используйте в настройках АТС (поле «AMI Пароль»)" ;;
+      *)
+        if [ -d "$(dirname "$ATS_ENV_FILE")" ]; then
+          [ -f "$ATS_ENV_FILE" ] || : > "$ATS_ENV_FILE"
+          if grep -q '^ATS_AMI_SECRET=' "$ATS_ENV_FILE"; then
+            sed -i "s|^ATS_AMI_SECRET=.*|ATS_AMI_SECRET=$AMIPASS|" "$ATS_ENV_FILE"
+          else
+            printf 'ATS_AMI_SECRET=%s\n' "$AMIPASS" >> "$ATS_ENV_FILE"
+          fi
+          chmod 0640 "$ATS_ENV_FILE" 2>/dev/null || true
+          id -u ats >/dev/null 2>&1 && chown root:ats "$ATS_ENV_FILE" 2>/dev/null || true
+          log "пароль AMI записан в $ATS_ENV_FILE (ATS_AMI_SECRET, 0640 root:ats)"
+          if ! command -v systemctl >/dev/null 2>&1 \
+             || (systemctl cat ats 2>/dev/null || true) | grep -q 'EnvironmentFile'; then
+            ATS_SKIP_DB_SECRET=1        # в БД секрет не нужен — берём из окружения
+          else
+            warn "в юните ats нет EnvironmentFile= — ATS_AMI_SECRET не подхватится"
+            log "добавьте: printf '[Service]\nEnvironmentFile=-/etc/ats/ats.env\n' | sudo tee /etc/systemd/system/ats.service.d/env.conf && sudo systemctl daemon-reload"
+          fi
+        else
+          warn "нет каталога $(dirname "$ATS_ENV_FILE") — писать ATS_AMI_SECRET некуда, пароль только в настройках АТС"
+        fi ;;
+    esac
     log "AMI: пользователь 'ats'. Пароль (вбить в АТС → Asterisk AMI Manager → «AMI Пароль»):"
     log "     $AMIPASS"
   else

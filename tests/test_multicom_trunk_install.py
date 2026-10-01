@@ -135,6 +135,26 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertIn("#include manager-ats.conf", (self.dir / "manager.conf").read_text())
         self.assertIn("enabled = yes", (self.dir / "manager.conf").read_text())
 
+    def test_ami_password_lands_in_service_env_file(self):
+        """--ami кладёт ATS_AMI_SECRET в файл окружения сервиса, а не только в БД."""
+        env_file = self.dir / "ats.env"
+        p = run(env=dict(self.env, ATS_ENV_FILE=str(env_file), AMIPASS="abcdef123456"),
+                args=["--ami"])
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        text = env_file.read_text(encoding="utf-8")
+        self.assertEqual(text.count("ATS_AMI_SECRET="), 1, "повторный прогон не дублирует строку")
+        self.assertIn("ATS_AMI_SECRET=abcdef123456", text)
+        self.assertEqual(oct(env_file.stat().st_mode & 0o777), "0o640")
+
+    def test_ami_password_with_specials_not_written_to_env(self):
+        """systemd раскрывает $VAR в EnvironmentFile — такие пароли не пишем."""
+        env_file = self.dir / "ats.env"
+        p = run(env=dict(self.env, ATS_ENV_FILE=str(env_file), AMIPASS="pa$$word x"),
+                args=["--ami"])
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-600:])
+        self.assertNotIn("ATS_AMI_SECRET", env_file.read_text(encoding="utf-8") if env_file.exists() else "")
+        self.assertIn("не пишем", p.stdout + p.stderr)
+
     def test_check_mode_reports_before_install(self):
         p = run(["--check"], env=self.env)
         self.assertNotEqual(p.returncode, 0)
