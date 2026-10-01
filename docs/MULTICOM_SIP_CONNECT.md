@@ -193,15 +193,41 @@ asterisk -rx "module show like codec_g729"      # пусто — значит G.
 
 ## 5. Шаг 2 — транк на Мультиком
 
-Рекомендуемый вариант — `chan_pjsip` (Asterisk 12+):
+Рекомендуемый вариант — `chan_pjsip` (Asterisk 12+). Данные из письма вносит ОДИН скрипт:
+он рендерит `deploy/asterisk/pjsip-multicom.conf` (шаблон с метками `__MCM_LOGIN__`,
+`__MCM_PASS__`, `__MCM_HOST__`, `__MCM_PORT__`, `__MCM_NET__`, `__MCM_MAXCH__` и блоком
+`allow=`) в `/etc/asterisk/pjsip-multicom.conf`, проверяет значения (перенос строки и `;`
+ломали бы синтаксис конфига), ставит 0640 root:asterisk, делает бэкап предыдущего файла,
+добавляет `#include` в `pjsip.conf`, перечитывает `res_pjsip` и ждёт `200 OK` от
+регистрации. Пароль в репозиторий и в историю shell не попадает.
+
+```bash
+cd /opt/ats/app
+MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh
+# варианты: --print (показать результат) | --dry-run | --check | --firewall (правила на
+# сеть оператора) | --ami (пользователь AMI + сгенерированный пароль) |
+# --numbers (15 номеров письма в пул ATS с provider=ami) | --ats (settings.ami и
+# provider=ami через API) | --restart (systemctl restart ats после --ats)
+```
+
+Значения по умолчанию — из письма (`00083819`, `95.128.224.47:5060`,
+`95.128.224.0/21`, `alaw,ulaw,g729`, 15 каналов); переопределяются окружением:
+`MCM_LOGIN MCM_HOST MCM_PORT MCM_TRUNK MCM_NET MCM_RTP MCM_CODECS MCM_MAX_CHANNELS`.
+
+Вручную — то же самое, если хочется без скрипта:
 
 ```bash
 cp deploy/asterisk/pjsip-multicom.conf /etc/asterisk/
-sed -i 's/ПАРОЛЬ_ИЗ_ПИСЬМА/ВСТАВЬТЕ_ПАРОЛЬ_ИЗ_ПИСЬМА/' /etc/asterisk/pjsip-multicom.conf
-echo '#include pjsip-multicom.conf' >> /etc/asterisk/pjsip.conf
+$EDITOR /etc/asterisk/pjsip-multicom.conf      # вместо __MCM_*__ — данные письма
 chown root:asterisk /etc/asterisk/pjsip-multicom.conf && chmod 0640 /etc/asterisk/pjsip-multicom.conf
+grep -q 'pjsip-multicom.conf' /etc/asterisk/pjsip.conf || echo '#include pjsip-multicom.conf' >> /etc/asterisk/pjsip.conf
 asterisk -rx "module reload res_pjsip.so"
 ```
+
+Покрыто тестами: `tests/test_multicom_trunk_install.py` (рендер данных письма,
+переименование секций под `MCM_TRUNK`, отказ на опасных значениях, идемпотентный
+`#include`, права 0640, права root) и `tests/test_deploy_scripts.py` (синтаксис всех
+`deploy/*.sh` и запрет `grep -q` в условиях).
 
 Проверка (именно в этом порядке):
 
@@ -220,7 +246,8 @@ asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 Если у вас Asterisk 10–18 и вы хотите ровно как в документации оператора — `chan_sip`:
 
 ```bash
-cp deploy/asterisk/sip-multicom.conf /etc/asterisk/    # правки пароля те же
+cp deploy/asterisk/sip-multicom.conf /etc/asterisk/   # этот вариант скрипт не трогает:
+# правьте руками — строки 9 и 27, вместо ПАРОЛЬ_ИЗ_ПИСЬМА (две позиции!)
 echo '#include sip-multicom.conf' >> /etc/asterisk/sip.conf
 asterisk -rx "module reload func_sip.so" ; asterisk -rx "sip reload"
 asterisk -rx "sip show registry"    # Expected this host … State: Registered
@@ -263,6 +290,7 @@ asterisk -rx "dialplan show from-mcm"     # входящие (DID → сотру
 
 ```bash
 AMIPASS=$(openssl rand -hex 24)
+# проще всего: sudo -E ./deploy/asterisk/install-multicom-trunk.sh --ami (сгенерирует пароль)
 cp deploy/asterisk/manager-ats.conf /etc/asterisk/
 sed -i "s/ЗАМЕНИТЕ_НА_СЛУЧАЙНЫЙ_ПАРОЛЬ/$AMIPASS/" /etc/asterisk/manager-ats.conf
 echo '#include manager-ats.conf' >> /etc/asterisk/manager.conf
@@ -361,6 +389,11 @@ curl -s -X POST $ATS/api/v2/multicom/pool-sync -H "X-Ats-Token: $TOK" -H 'Conten
 | `acd_answer_timeout`, `bridge_timeout` | `35`, `10` | ожидания АЦД |
 | `acd_callerid` | `9690229926` | какой CLI показывать сотруднику при входящем/переводе |
 
+Быстрее всего — `sudo -E ./deploy/asterisk/install-multicom-trunk.sh --ami --ats` (пароль AMI
+генерируется, `settings.ami` и `provider=ami` пишутся через API тем же запросом; флага
+`--restart` хватает, чтобы провайдер пересоздался). Ниже — то же самое вручную, если хочется
+контроля.
+
 Пример записи настроек (админ-токеном):
 
 ```bash
@@ -383,6 +416,15 @@ curl -s -X POST $ATS/api/v2/settings/raw -H "X-Ats-Token: $TOK" -H 'Content-Type
 Мультиком прислал 10-значные московские мобильные. В базе номер хранится в E.164
 (`+7…`), а оператору уходит в формате `ru8` — за это отвечает `number_format`, ничего
 переименовывать в кампаниях не надо.
+
+Тем же скриптом (без цикла curl, идемпотентно — существующие номера вернут
+`number_exists` и это не ошибка):
+
+```bash
+ATS_TOKEN=$TOK sudo -E ./deploy/asterisk/install-multicom-trunk.sh --numbers-only
+```
+
+Вручную:
 
 ```bash
 for n in 9690229926 9690229930 9690229937 9690229938 9690229942 \
