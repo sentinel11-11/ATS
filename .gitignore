@@ -50,3 +50,13 @@ data_v2/ats.db-wal
 data_v2/ats.db-shm
 data_v2/ats.pid
 node_modules/
+
+# venv, развёрнутый прямо в корень репозитория (кто-то выполнил `python3 -m venv .`).
+# Смысл не в чистоте git status, а в том, чтобы тысячи файлов site-packages никогда
+# не попадали ни в stash, ни в commit: deploy/update.sh работает без `stash -u`.
+/bin/
+/lib/
+/lib64
+/include/
+/share/
+/pyvenv.cfg

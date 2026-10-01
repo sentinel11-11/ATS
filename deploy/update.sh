@@ -217,11 +217,23 @@ if [ -d "$DATA_DIR" ]; then
   fi
 fi
 dirty="$(git status --porcelain | grep -v '^?? ' | grep -v ' data_v2/' || true)"
+untr="$(git status --porcelain | grep -c '^?? ' || true)"
 if [ -n "$dirty" ]; then
-  warn "незакоммиченные правки на сервере — убираю в stash:"
+  warn "незакоммиченные правки на сервере — убираю в stash (untracked не трогаю):"
   echo "$dirty" | sed 's/^/      /'
-  git stash push -u -m "ats-update-$STAMP" >>"$LOG" 2>&1 || die "git stash не удался (см. $LOG)"
-  warn "вернуть их после: git stash list / git stash pop"
+  # ВАЖНО: без -u. Иначе в stash уезжают и untracked-файлы, а у серверов, где venv
+  # развёрнут рядом с кодом (bin/, lib/, pyvenv.cfg), это тысячи файлов и минутное
+  # «обновление». Untracked checkout/merge не мешают: конфликтующие уводим ниже.
+  git stash push -m "ats-update-$STAMP" >>"$LOG" 2>&1 || die "git stash не удался (см. $LOG)"
+  {
+    echo "обновление $STAMP: серверные правки скрыты в stash"
+    echo "  вернуть:   git stash pop"
+    echo "  посмотреть: git stash list && git stash show -p stash@{0}"
+    echo "  untracked ($untr шт.) оставлены на месте — git их не трогает"
+  } > .deploy-stash-note 2>/dev/null || true
+  warn "вернуть после: git stash pop (записка — в .deploy-stash-note)"
+elif [ "${untr:-0}" != "0" ]; then
+  log "untracked-файлов на сервере: $untr (venv, локальные конфиги) — оставляю как есть"
 fi
 
 # --- бэкап БД (SQLite backup API — корректный снимок живой базы с WAL) ---
