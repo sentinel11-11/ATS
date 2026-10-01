@@ -228,7 +228,20 @@ sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.
 `MCM_DAILY_LIMIT` (`120`), `AMI_USER` (`ats`), `ATS_ENV_FILE` (`/etc/ats/ats.env`),
 `ATS_URL` (`http://127.0.0.1:9124`).
 
-Вручную — то же самое, если хочется без скрипта:
+Вручную — то же самое, если хочется без скрипта. Пароль при этом не должен попасть
+ни в историю shell, ни в `ps`, ни в `/tmp`:
+
+```bash
+set +o history                                   # отключить запись истории для сессии
+read -s -p "Пароль из письма: " MCM_PASS; echo    # без echo и без аргументов команды
+cp deploy/asterisk/pjsip-multicom.conf /etc/asterisk/
+sudo sed -i "s|^password=.*|password=$MCM_PASS|" /etc/asterisk/pjsip-multicom.conf
+unset MCM_PASS
+sudo chown root:asterisk /etc/asterisk/pjsip-multicom.conf && sudo chmod 0640 /etc/asterisk/pjsip-multicom.conf
+grep -c 'password=' /etc/asterisk/pjsip-multicom.conf   # 1 — файл на месте, метка заменена
+```
+
+и наоборот, включить историю обратно: `set -o history`.
 
 ```bash
 cp deploy/asterisk/pjsip-multicom.conf /etc/asterisk/
@@ -687,6 +700,14 @@ IP-телефонный шлюз (Asterisk, chan_pjsip) с исходящими/
 
 - Пароль SIP и AMI-секрет — **не** в git. В шаблонах заглушки; реальные значения
   живут в `/etc/ats/ats.env` (ATS) и в `/etc/asterisk/*.conf` с правами `0640 root:asterisk`.
+- В репозитории всё-таки лежат данные из письма оператора (логин, IP регистратора, список
+  номеров) и dev-база `data_v2/` — что и как вычищать после настройки, расписано в
+  `docs/SECURITY_CLEANUP.md`. До конца настройки эти файлы не трогаем.
+- Копировать `/etc/asterisk/pjsip-multicom.conf` куда-либо в `/tmp` нельзя — пароль уедет
+  в файл с правами 0644 в world-readable каталоге. Права чинятся `chmod`/`chown` на самом
+  файле; скрипт для `--dry-run` использует `mktemp -d` (0700) и убирает за собой.
+- Пароль внутри `sed "s/^password=.*/password=…/"` виден не только в `~/.bash_history`, но и
+  в `ps` (аргументы чужого процесса). Безопасный способ задать значение — `read -s` (см. §5).
 - `manager.conf`: только `permit=127.0.0.1` (или внутренний IP ATS), `webenabled=no`.
 - 5060 наружу — только сеть оператора; остальной SIP-скан — `DROP` (+`fail2ban`/`sipfloodds`).
 - 152-ФЗ: обзвон только по согласившимся контактам (`consent`), чёрный список и
