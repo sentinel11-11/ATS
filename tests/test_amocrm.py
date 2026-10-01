@@ -240,6 +240,22 @@ class TestSanitizersAndHelpers(unittest.TestCase):
         self.assertEqual(AMO_DEFAULT_RESULT_MAP["rejected"], 2)
 
 
+class TestResponsibleIdConfig(unittest.TestCase):
+    """Настройка amocrm.responsible_user_id: 0 = «не отправлять», мусор = 1 (как раньше)."""
+
+    def test_zero_is_not_coerced_to_one(self):
+        from app.crm import _amo_responsible_id
+        self.assertEqual(_amo_responsible_id({"responsible_user_id": 0}), 0)
+        self.assertEqual(_amo_responsible_id({"responsible_user_id": "0"}), 0)
+        self.assertEqual(_amo_responsible_id({}), 1)
+        self.assertEqual(_amo_responsible_id({"responsible_user_id": ""}), 1)
+        self.assertEqual(_amo_responsible_id({"responsible_user_id": "abc"}), 1)
+
+    def test_override_wins(self):
+        from app.crm import _amo_responsible_id
+        self.assertEqual(_amo_responsible_id({"responsible_user_id": 4}, 9), 9)
+
+
 class TestFactory(unittest.TestCase):
     def test_factory_amocrm(self):
         crm = make_crm({"crm": {"driver": "amocrm"},
@@ -289,6 +305,76 @@ class TestClientContract(unittest.TestCase):
         users = self._client().get_users()
         self.assertEqual(len(users), 1)
         self.assertEqual(users[0]["id"], 2)
+
+    # --- responsible_user_id: живая поломка на проде (400 NotSupportedChoice) ---
+
+    @staticmethod
+    def _rejecting_client(responsible, refuse_first=True):
+        """Клиент, у которого amoCRM отклоняет поле ответственного (как в проде).
+
+        Двойник HTTP-сервера не нужен: проверяем именно контракт клиента —
+        что повтор идёт БЕЗ поля и что отказ запоминается.
+        """
+        import json as _json
+        c = AmoCrmClient(subdomain="test", access_token="token123",
+                         responsible_user_id=responsible)
+        c._min_interval = 0
+        sent = []
+        refuse = [refuse_first]
+
+        def fake_request(method, path, params=None, body=None, **kw):
+            sent.append((method, path, _json.loads(_json.dumps(body))))
+            if refuse[0]:
+                refuse[0] = False
+                raise AmoCrmApiError(
+                    'amoCRM HTTP 400: {"_embedded":{"errors":[{"code":"NotSupportedChoice",'
+                    '"path":"responsible_user_id"}]}}',
+                    status=400,
+                    payload='{"_embedded":{"errors":[{"code":"NotSupportedChoice",'
+                            '"path":"responsible_user_id","message":"Недопустимое значение"}]}}')
+            return {"_embedded": {"contacts": [{"id": 777, "name": "x"}]}}
+
+        c._request = fake_request
+        return c, sent
+
+    def test_responsible_rejected_is_retried_without_field(self):
+        c, sent = self._rejecting_client(1)
+        res = c.create_contact("Иван Петров", "89261234567")
+        self.assertEqual(res["id"], 777, "контакт должен быть создан со второго запроса")
+        self.assertEqual(len(sent), 2, "один повтор без поля — не больше")
+        self.assertEqual(sent[0][2][0].get("responsible_user_id"), 1)
+        self.assertNotIn("responsible_user_id", sent[1][2][0],
+                         "повторный запрос обязан идти без отклонённого поля")
+
+    def test_responsible_rejection_is_remembered(self):
+        c, sent = self._rejecting_client(1)
+        c.create_contact("А", "89261234567")
+        sent.clear()
+        c.create_contact("Б", "89260000000")
+        self.assertEqual(len(sent), 1, "после отказа не должны плодить дубль-запросы на каждую сущность")
+        self.assertNotIn("responsible_user_id", sent[0][2][0])
+
+    def test_responsible_zero_means_never_send(self):
+        """0 в конфиге — «не отправлять поле вовсе», а не «id=1» (так было в прошлой версии)."""
+        c, sent = self._rejecting_client(0, refuse_first=False)
+        c.create_contact("В", "89261111111")
+        self.assertNotIn("responsible_user_id", sent[0][2][0])
+
+    def test_other_400_is_not_swallowed(self):
+        """400 по другой причине должен подниматься наружу, а не «чиниться» повтором."""
+        c = AmoCrmClient(subdomain="test", access_token="token123", responsible_user_id=5)
+        c._min_interval = 0
+        calls = []
+
+        def fake_request(method, path, params=None, body=None, **kw):
+            calls.append(path)
+            raise AmoCrmApiError("amoCRM HTTP 400: pipeline не найден", status=400,
+                                 payload='{"_embedded":{"errors":[{"path":"pipeline_id"}]}}')
+
+        c._request = fake_request
+        with self.assertRaises(AmoCrmApiError):
+            c.create_contact("Г", "89262222222")
+        self.assertEqual(len(calls), 1, "повторов на несвязанную ошибку быть не должно")
 
     def test_search_errors_not_swallowed(self):
         # 401 при поиске контакта = ошибка, а НЕ «контакт не найден»

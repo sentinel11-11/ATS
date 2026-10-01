@@ -26,6 +26,7 @@
 """
 import datetime
 import json
+import logging
 import re
 import socket
 import threading
@@ -36,6 +37,8 @@ import urllib.request
 import uuid
 
 from .base import ProviderApiError, resolve_secret
+
+log = logging.getLogger("ats.amocrm")
 
 DEFAULT_AMOCRM_TOKEN_ENV = "ATS_AMOCRM_TOKEN"
 
@@ -153,10 +156,14 @@ class AmoCrmClient:
         self.redirect_uri = str(redirect_uri or "").strip()
         self.on_tokens_updated = on_tokens_updated
 
+        # 0 (или пустое значение) означает «вообще не отправлять responsible»:
+        # в части аккаунтов amoCRM это поле принимает только id реальных пользователей
+        # аккаунта, и дефолтная единица ломает всю доставку (см. _post_entities).
         try:
-            self.responsible_user_id = int(responsible_user_id or 1)
+            self.responsible_user_id = int(responsible_user_id) if responsible_user_id not in (None, "") else 1
         except (TypeError, ValueError):
             self.responsible_user_id = 1
+        self._skip_default_responsible = self.responsible_user_id <= 0
 
         try:
             self.timeout = max(1, int(timeout_sec or 15))
@@ -366,13 +373,78 @@ class AmoCrmClient:
             return res["_embedded"]["contacts"]
         return []
 
+    # ---------- ответственный (responsible_user_id) ----------
+
+    def _responsible_value(self, override=None):
+        """Кого назначать ответственным; None — поле не отправлять вовсе.
+
+        override (карта операторов operator_user_map или ответственный найденного
+        контакта) важнее конфигурационного значения. Если amoCRM отвергла именно
+        конфигурационный id, мы перестаём подставлять его по умолчанию, но явный
+        override всё ещё пробуем — он мог быть валидным.
+        """
+        for candidate in (override, None if self._skip_default_responsible else self.responsible_user_id):
+            if candidate in (None, ""):
+                continue
+            try:
+                value = int(candidate)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+            break
+        return None
+
+    def _apply_responsible(self, target, override=None):
+        """Добавляет responsible_user_id в словарь сущности, только если есть что добавлять."""
+        value = self._responsible_value(override)
+        if value is not None and isinstance(target, dict):
+            target["responsible_user_id"] = value
+        return target
+
+    @staticmethod
+    def _strip_key(obj, key):
+        if isinstance(obj, dict):
+            return {k: AmoCrmClient._strip_key(v, key) for k, v in obj.items() if k != key}
+        if isinstance(obj, (list, tuple)):
+            return [AmoCrmClient._strip_key(v, key) for v in obj]
+        return obj
+
+    @staticmethod
+    def _is_responsible_rejected(exc):
+        """Ответ amoCRM 400 именно про responsible_user_id (NotSupportedChoice и т.п.)."""
+        if getattr(exc, "status", None) != 400:
+            return False
+        blob = "%s %s" % (getattr(exc, "payload", "") or "", exc)
+        return "responsible_user_id" in blob
+
+    def _post_entities(self, path, payload):
+        """POST списка сущностей с авто-деградацией поля «ответственный».
+
+        До этой правки один неверный responsible_user_id в настройке ронял ВСЮ
+        очередь доставки: amoCRM отвечала
+        400 {"code":"NotSupportedChoice","path":"responsible_user_id"} и outbox
+        уходил в «НЕ доставлен (превышены повторы)» на каждом цикле движка.
+        Без поля amoCRM назначает ответственным владельца интеграции, поэтому
+        повтор без него — корректная деградация, а не потеря данных.
+        """
+        try:
+            return self._request("POST", path, body=payload)
+        except AmoCrmApiError as exc:
+            if not self._is_responsible_rejected(exc) or self._skip_default_responsible:
+                raise
+            self._skip_default_responsible = True
+            log.warning("amoCRM отвергла responsible_user_id=%s — повторяю %s без этого поля; "
+                        "почини настройку amocrm.responsible_user_id (id пользователя аккаунта, "
+                        "GET /api/v4/users). Отказ: %s",
+                        self.responsible_user_id, path, str(exc)[:200])
+            return self._request("POST", path, body=self._strip_key(payload, "responsible_user_id"))
+
     def create_contact(self, name, phone, responsible_user_id=None):
         """Создать новый контакт в amoCRM с номером телефона."""
         phone_clean = _sanitize_phone(phone)
-        resp_id = int(responsible_user_id or self.responsible_user_id)
         payload = [{
             "name": str(name or f"Клиент {phone_clean}").strip(),
-            "responsible_user_id": resp_id,
             "custom_fields_values": [
                 {
                     "field_code": "PHONE",
@@ -385,7 +457,8 @@ class AmoCrmClient:
                 }
             ]
         }]
-        res = self._request("POST", "/contacts", body=payload)
+        self._apply_responsible(payload[0], responsible_user_id)
+        res = self._post_entities("/contacts", payload)
         if isinstance(res, dict) and "_embedded" in res and "contacts" in res["_embedded"]:
             return res["_embedded"]["contacts"][0]
         return res
@@ -412,7 +485,6 @@ class AmoCrmClient:
         (строка; для аналитики звонков в amoCRM).
         """
         phone_clean = _sanitize_phone(phone)
-        resp_id = int(responsible_user_id or self.responsible_user_id)
 
         try:
             c_code = int(status_code)
@@ -433,9 +505,9 @@ class AmoCrmClient:
             "source": "Axioma ATS",
             "call_status": c_code,
             "call_result": str(result_text or "").strip()[:500],
-            "responsible_user_id": resp_id,
             "created_at": ts
         }
+        self._apply_responsible(call, responsible_user_id)
         link = str(record_link or "").strip()
         if link:
             call["link"] = link
@@ -446,7 +518,7 @@ class AmoCrmClient:
         if call_resp:
             call["call_responsible"] = call_resp[:255]
 
-        return self._request("POST", "/calls", body=[call])
+        return self._post_entities("/calls", [call])
 
     # ---------- задачи / примечания ----------
 
@@ -458,7 +530,6 @@ class AmoCrmClient:
         (GET /api/v4/account?with=task_types); 1 — обычная задача по
         умолчанию. Переопределяется настройкой интеграции.
         """
-        resp_id = int(responsible_user_id or self.responsible_user_id)
         till = int(complete_till or (datetime.datetime.now().timestamp() + 3600 * 4))  # по умолч +4 часа
 
         try:
@@ -469,15 +540,15 @@ class AmoCrmClient:
         task = {
             "text": str(text or "Связаться с клиентом").strip(),
             "complete_till": till,
-            "responsible_user_id": resp_id,
             "task_type_id": tt_id
         }
+        self._apply_responsible(task, responsible_user_id)
 
         if entity_id and entity_type:
             task["entity_id"] = int(entity_id)
             task["entity_type"] = str(entity_type)
 
-        return self._request("POST", "/tasks", body=[task])
+        return self._post_entities("/tasks", [task])
 
     def add_note(self, entity_type, entity_id, note_type, text):
         """Добавить примечание на таймлайн контакта или сделки."""
@@ -503,7 +574,6 @@ class AmoCrmClient:
         source_uid — uuid4 (timestamp-схема давала коллизии в одну секунду).
         """
         phone_clean = _sanitize_phone(phone)
-        resp_id = int(responsible_user_id or self.responsible_user_id)
         ts = int(called_at or datetime.datetime.now().timestamp())
 
         try:
@@ -532,7 +602,6 @@ class AmoCrmClient:
                 "contacts": [
                     {
                         "name": str(contact_name or f"Новый клиент {phone_clean}").strip(),
-                        "responsible_user_id": resp_id,
                         "custom_fields_values": [
                             {
                                 "field_code": "PHONE",
@@ -544,4 +613,5 @@ class AmoCrmClient:
             }
         }]
 
-        return self._request("POST", "/leads/unsorted/sip", body=payload)
+        self._apply_responsible(payload[0]["_embedded"]["contacts"][0], responsible_user_id)
+        return self._post_entities("/leads/unsorted/sip", payload)

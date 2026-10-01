@@ -135,6 +135,21 @@ _AMO_TRUE_STRINGS = frozenset(
     {"true", "1", "да", "yes", "on", "y", "t", "д", "правда"})
 
 
+def _amo_responsible_id(mcfg, override=None):
+    """Id ответственного в amoCRM по настройке (или по override).
+
+    0 / пусто = «поле не отправлять вовсе»: amoCRM тогда назначает ответственным
+    владельца интеграции. Важно, что 0 НЕ приводится к 1 через `or` — именно так
+    на аккаунтах, где пользователя с id=1 нет, вся очередь crm_outbox вставала
+    с `400 NotSupportedChoice` по `responsible_user_id` (см. AmoCrmClient._post_entities).
+    """
+    raw = override if override not in (None, "") else mcfg.get("responsible_user_id", 1)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _amo_flag(v, default=True):
     """Булев флаг amoCRM с толерантностью к legacy-строкам.
 
@@ -197,7 +212,7 @@ class AmoCrm(CrmDriver):
         mcfg = self._mcfg()
         subdomain = str(mcfg.get("subdomain") or "").strip()
         token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
-        resp_id = mcfg.get("responsible_user_id") or 1
+        resp_id = _amo_responsible_id(mcfg)
         timeout = mcfg.get("timeout_sec") or 15
         refresh = resolve_secret(mcfg, "refresh_token", "refresh_token_env",
                                  "ATS_AMOCRM_REFRESH_TOKEN")
@@ -262,10 +277,7 @@ class AmoCrm(CrmDriver):
                     return int(contact["responsible_user_id"])
             except (TypeError, ValueError):
                 pass
-        try:
-            return int(mcfg.get("responsible_user_id") or 1)
-        except (TypeError, ValueError):
-            return 1
+        return _amo_responsible_id(mcfg)
 
     # ---------- основной поток ----------
 
@@ -341,7 +353,7 @@ class AmoCrm(CrmDriver):
         #    превращается в «контакта нет» → дубли в amoCRM.
         contact_id = None
         contact = None
-        responsible_id = int(mcfg.get("responsible_user_id") or 1)
+        responsible_id = _amo_responsible_id(mcfg)
 
         if phone:
             with self._contact_lock:
@@ -420,7 +432,7 @@ class AmoCrm(CrmDriver):
         client = self._client()
         mcfg = self._mcfg()
         try:
-            resp_id = int(responsible or mcfg.get("responsible_user_id") or 1)
+            resp_id = _amo_responsible_id(mcfg, responsible)
         except (TypeError, ValueError):
             resp_id = 1
         return client.create_task(text=f"{title}\n{desc}".strip(),
