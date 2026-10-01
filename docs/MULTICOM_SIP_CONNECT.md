@@ -409,7 +409,13 @@ curl -s -X POST $ATS/api/v2/settings/raw -H "X-Ats-Token: $TOK" -H 'Content-Type
 `ATS_RECORDS_LINK_TOKEN` для подписи ссылок на записи; для AMI пароля — просто
 `sed`-правка настроек один раз.
 
-Перезапуск, чтобы провайдер пересоздался: `systemctl restart ats` (или `./deploy/update.sh` — см. `docs/DEPLOY.md`).
+`provider` принимается и этим запросом (раньше — нет: цикл мержил только dict-секции,
+и «переключись на ami одним curl» оставляло движок на старом провайдере). Рестарт не
+нужен: `POST /settings/raw` вызывает `ENGINE.reload_settings()`, который пересоздаёт
+провайдер и CRM на месте. Перезапуск (`systemctl restart ats`) требуется только если
+меняли `/etc/ats/ats.env`, юнит или код.
+
+То же самое делает скрипт: `sudo -E ./deploy/asterisk/install-multicom-trunk.sh --ami --ats`.
 
 ## 9. Шаг 6 — пул из 15 номеров
 

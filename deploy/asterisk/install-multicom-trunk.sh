@@ -422,7 +422,8 @@ if [ "$WANT_ATS" = "1" ]; then
       warn "systemctl не найден — перезапустите АТС сами, иначе settings.ami не применятся"
     fi
   else
-    log "чтобы провайдер пересоздался: sudo systemctl restart ats"
+    log "провайдер пересоздаётся сразу (settings/raw дёргает reload_settings); рестарт"
+    log "понадобится только если меняли /etc/ats/ats.env или сам юнит"
   fi
 fi
 
