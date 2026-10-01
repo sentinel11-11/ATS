@@ -107,6 +107,30 @@ PY
 }
 PORT="${ATS_PORT:-$(detect_port)}"; PORT="${PORT:-9124}"
 
+# ВАЖНО: никаких `... | grep -q` в условиях. При `set -o pipefail` grep, вышедший по
+# первой находке, обрывает запись в свой stdin — upstream получает SIGPIPE (141), и
+# весь конвейер считается упавшим. На живом сервере это дало ложное «systemd-юнита нет»
+# и лишний запуск второго экземпляра АТС от root прямо поверх работающего сервиса.
+# Такие проверки делаем через case или grep без -q.
+has_unit() {
+  local units
+  units="$(systemctl list-unit-files 2>/dev/null || true)"
+  case "$units" in
+    *"${SERVICE}.service"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+port_busy() {
+  local p="$1" out=""
+  if command -v ss >/dev/null 2>&1; then
+    out="$(ss -ltn 2>/dev/null | grep -E "[:.]${p}[[:space:]]" || true)"
+  elif command -v netstat >/dev/null 2>&1; then
+    out="$(netstat -ltn 2>/dev/null | grep -E "[:.]${p}[[:space:]]" || true)"
+  fi
+  [ -n "$out" ]
+}
+
 health_probe() {
   python3 - "$PORT" <<'PY' 2>/dev/null
 import json, sys, urllib.request
@@ -120,6 +144,15 @@ PY
 }
 
 start_process() {
+  if has_unit; then
+    die "юнит ${SERVICE}.service существует — второй экземпляр вручную не поднимаю (два процесса на одном порту + обманутый health-check). Рестарт: sudo systemctl restart $SERVICE"
+  fi
+  if port_busy "$PORT"; then
+    die "порт $PORT уже занят — запуск нового экземпляра отменён. Кто держит: ss -ltnp | grep :$PORT"
+  fi
+  if [ "$(id -u)" = "0" ]; then
+    warn "запускаю от root: $DATA_DIR/ats.pid и $DATA_DIR/logs/* станут root-owned, а сервис под User=ats их затем не перезапишет"
+  fi
   pid="$(cat "$DATA_DIR/ats.pid" 2>/dev/null || true)"
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     log "останавливаю старый процесс ATS (pid $pid)"; kill "$pid" 2>/dev/null || true; sleep 2
@@ -134,12 +167,26 @@ start_process() {
 }
 
 restart_and_check() {
+  # 0 — перезапущен и health OK; 1 — запущен, но health не ответил (уместен автооткат);
+  # 2 — рестарт вообще не выполнен (права/юнит/activating): код при этом корректный,
+  #     откатывать из-за прав автоматически нельзя.
   if [ "$DO_RESTART" != "1" ]; then log "--no-restart: сервис не трогаем (перезапустите сами)"; return 0; fi
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  if command -v systemctl >/dev/null 2>&1 && has_unit; then
     log "systemctl restart $SERVICE"
-    (systemctl restart "$SERVICE" 2>>"$LOG" || sudo -n systemctl restart "$SERVICE" 2>>"$LOG") || \
-      warn "рестарт systemd не удался правами — запускаю свой процесс"
-    systemctl is-active --quiet "$SERVICE" 2>/dev/null || start_process
+    if ! systemctl restart "$SERVICE" 2>>"$LOG" && ! sudo -n systemctl restart "$SERVICE" 2>>"$LOG"; then
+      warn "systemctl restart $SERVICE не удался (подробности: tail -20 $LOG) — код обновлён, сервис НЕ перезапущен"
+      warn "сделай вручную: sudo systemctl restart $SERVICE && curl -s localhost:$PORT/api/v2/health"
+      return 2
+    fi
+    active=0
+    for _ in 1 2 3 4 5; do
+      if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then active=1; break; fi
+      sleep 2
+    done
+    if [ "$active" != "1" ]; then
+      warn "юнит $SERVICE после restart не в состоянии active: systemctl status $SERVICE -l ; journalctl -u $SERVICE -n 40 --no-pager"
+      return 2
+    fi
   else
     start_process
   fi
@@ -155,7 +202,7 @@ restart_and_check() {
   if [ -f "$DATA_DIR/logs/ats.log" ]; then
     warn "последние строки $DATA_DIR/logs/ats.log:"
     tail -n 12 "$DATA_DIR/logs/ats.log" | sed 's/^/      /' || true
-  elif command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  elif command -v systemctl >/dev/null 2>&1 && has_unit; then
     warn "последние строки journalctl -u $SERVICE:"
     (journalctl -u "$SERVICE" -n 12 --no-pager 2>/dev/null || sudo -n journalctl -u "$SERVICE" -n 12 --no-pager 2>/dev/null) | sed 's/^/      /' || true
   fi
@@ -166,7 +213,7 @@ restart_and_check() {
 # СТАРОМ коде: файлы уже новые, процесс — нет. Это молча работает часами.
 stale_process_warn() {
   local start_ts="" code_ts="" pid
-  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}\.service"; then
+  if command -v systemctl >/dev/null 2>&1 && has_unit; then
     start_ts="$(date -d "$(systemctl show "$SERVICE" -p ExecMainStartTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true)"
   fi
   if [ -z "$start_ts" ]; then
@@ -188,8 +235,13 @@ rollback() {
   [ -n "$target" ] || die "нечего откатывать: нет .deploy-last. Укажите вручную: TARGET=<sha> $0 --rollback"
   log "откат на $target"
   git reset --hard "$target" >>"$LOG" 2>&1 || die "git reset не удался (см. $LOG)"
-  restart_and_check && log "готово: сервис на $target, health OK" \
-    || die "откат применён, но health не OK — смотрите $LOG и $DATA_DIR/logs/ats.log"
+  restart_and_check
+  case $? in
+    0) log "готово: сервис на $target, health OK" ;;
+    2) die "код откачен на $target, но сервис НЕ перезапущен (недостаточно прав / юнит в activating).
+     Вручную: sudo systemctl restart $SERVICE && curl -s localhost:$PORT/api/v2/health" ;;
+    *) die "откат применён, но health не OK — смотрите $LOG и $DATA_DIR/logs/ats.log" ;;
+  esac
 }
 
 # ================== РЕЖИМ ОТКАТА ==================
@@ -291,7 +343,7 @@ git checkout "$BRANCH" >>"$LOG" 2>&1 || die "не переключились н�
 incoming="$(git diff --name-only HEAD.."$REMOTE/$BRANCH" 2>/dev/null || true)"
 moved=0
 for f in $incoming; do
-  if [ -f "$f" ] && git status --porcelain -- "$f" 2>/dev/null | grep -q '^?? '; then
+  if [ -f "$f" ] && git status --porcelain -- "$f" 2>/dev/null | grep '^?? ' >/dev/null; then
     mv "$f" "$f.pre-update-$STAMP" && moved=$((moved+1))
     warn "локальная копия $f отложена в $f.pre-update-$STAMP"
   fi
@@ -312,13 +364,13 @@ log "код: $(git rev-parse --short HEAD) ($BRANCH)"
 CHANGED="$(git diff --name-only "$PREV_SHA" HEAD 2>/dev/null || echo '*')"
 
 # --- зависимости Python (ядро v2 живёт на stdlib; requirements.txt — legacy) ---
-if echo "$CHANGED" | grep -q '^requirements\.txt$'; then
+if echo "$CHANGED" | grep '^requirements\.txt$' >/dev/null; then
   log "requirements.txt изменился → python3 -m pip install -r requirements.txt"
   python3 -m pip install -r requirements.txt >>"$LOG" 2>&1 || warn "pip install не прошёл (для ATS v2 это не блокирует запуск)"
 fi
 
 # --- сборка интерфейса, если менялся frontend/ ---
-if [ "$DO_BUILD" = "1" ] && echo "$CHANGED" | grep -q '^frontend/'; then
+if [ "$DO_BUILD" = "1" ] && echo "$CHANGED" | grep '^frontend/' >/dev/null; then
   if command -v npm >/dev/null 2>&1; then
     log "пересборка UI: cd frontend && npm ci && npm run build (→ app/ui)"
     built=0
@@ -339,6 +391,14 @@ if [ "$DO_BUILD" = "1" ] && echo "$CHANGED" | grep -q '^frontend/'; then
     fi
   else
     warn "npm не найден — используем собранный app/ui из репозитория"
+    # Это безопасно ровно в одном случае: сборка в app/ui коммитится вместе с исходниками
+    # (контроль — tests/test_ui_build.py + build-info.json). Если в диапазоне frontend/
+    # менялся, а app/ui — нет, прод получит СТАРЫЙ интерфейс без ошибки в логе.
+    ui_changed="$(git diff --name-only "$PREV_SHA" HEAD -- app/ui 2>/dev/null | grep . >/dev/null 2>&1 && echo 1 || echo 0)"
+    if [ "$ui_changed" != "1" ]; then
+      warn "frontend/ менялся, а app/ui в этих коммитах — нет: интерфейс может отставать от исходников"
+      warn "на машине с node: cd frontend && npm run build && закоммить app/ui (иначе прод это не получит)"
+    fi
   fi
 fi
 
@@ -352,7 +412,15 @@ if [ "$DO_TESTS" = "1" ]; then
   log "тесты OK"
 fi
 
-if ! restart_and_check; then
+restart_and_check
+RC=$?
+if [ "$RC" = "2" ]; then
+  echo "    код:    $(git rev-parse --short HEAD) — обновлён и проходит тесты" >&2
+  echo "    ВНИМАНИЕ: сервис НЕ перезапущен (см. warn выше) — значит в проде всё ещё" >&2
+  echo "    работает предыдущая ревизия. Автооткат не сделан намеренно; выполни:" >&2
+  echo "      sudo systemctl restart $SERVICE && curl -s localhost:$PORT/api/v2/health" >&2
+  exit 3
+elif [ "$RC" != "0" ]; then
   warn "сервис после обновления не отвечает: tail -80 $LOG ; tail -80 $DATA_DIR/logs/ats.log"
   rollback || warn "откат тоже не поднял сервис — нужен ручной разбор"
   exit 1
