@@ -391,6 +391,16 @@ def _route(method, path, body, headers):
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
         cfg = body.get("provider_config") or body
+        # Провайдер выбирается здесь же, иначе «настроить провайдера одним запросом»
+        # было бы невозможно: секции мержатся циклом ниже, а provider — строка, и
+        # раньше он молча игнорировался (настраиваешь ami, а движок остаётся на старом).
+        if "provider" in cfg:
+            from .telephony import PROVIDER_NAMES
+            pv = str(cfg.get("provider") or "").strip().lower()
+            if pv not in ("",) + tuple(PROVIDER_NAMES):
+                return {"ok": False, "error": "bad_provider",
+                        "detail": "допустимо: " + " / ".join(PROVIDER_NAMES)}, 400
+            s["provider"] = pv        # "" = не выбран (fail-closed, звонков нет)
         for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm",
                   "records"):
             if isinstance(cfg.get(k), dict):

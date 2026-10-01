@@ -506,6 +506,34 @@ class SettingsRoundtripTest(unittest.TestCase):
         self.assertNotIn("REC_SECRET_1", json.dumps(payload, ensure_ascii=False))
         self.assertEqual(payload["provider_config"]["ami"]["number_format"], "ru8")
 
+    def test_raw_accepts_provider_and_validates_it(self):
+        """Один запрос должен настраивать и провайдера, и его секцию.
+
+        Раньше `provider` в /settings/raw игнорировался (цикл мержил только dict-секции),
+        и инструкция «переключись на ami одним curl» оставляла движок на старом
+        провайдере — ровно тот случай, который выглядит как «АТС игнорирует настройки».
+        """
+        from app import api, security
+        tok = security.create_token("admin", "admin")
+        headers = {"X-Ats-Token": tok}
+        payload, code = api._route("POST", "/api/v2/settings/raw",
+                                   {"provider_config": {"provider": "ami",
+                                                         "ami": {"trunk": "mcm"}}}, headers)
+        self.assertEqual(code, 200, payload)
+        cur = db.get_settings()
+        self.assertEqual(cur["provider"], "ami")
+        self.assertEqual(cur["ami"]["trunk"], "mcm")
+        payload, code = api._route("POST", "/api/v2/settings/raw",
+                                   {"provider_config": {"provider": "zabbix"}}, headers)
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["error"], "bad_provider")
+        self.assertIn("ami", payload["detail"])
+        # пустая строка — осознанный «не выбран» (fail-closed), а не ошибка
+        payload, code = api._route("POST", "/api/v2/settings/raw",
+                                   {"provider_config": {"provider": ""}}, headers)
+        self.assertEqual(code, 200)
+        self.assertEqual(db.get_settings()["provider"], "")
+
     def test_settings_save_accepts_message_max_sec(self):
         from app import api, security
         tok = security.create_token("admin", "admin")
