@@ -14,6 +14,18 @@ set -u
 A="${ATS_DIR:-/opt/ats}"; B="${ATS_BRANCH:-arena/01a0cdee-ats}"; R="${ATS_REMOTE:-origin}"
 [ -d "$A" ] || { echo "НЕТ каталога $A — скажи, где лежит код, и повтори: ATS_DIR=/путь bash /tmp/ats-check.sh"; exit 1; }
 cd "$A" || exit 1
+
+# git ищет репозиторий ТОЛЬКО вверх по дереву. Если проект лежит не в $A, а, скажем,
+# в $A/app (частый случай, когда клон положили в подкаталог), из $A он выглядит как
+# «не git». Ищем клон и вниз — на один-два уровня.
+if ! git -C "$A" rev-parse --git-dir >/dev/null 2>&1; then
+  for d in "$A"/* "$A"/*/*; do
+    [ -d "$d/.git" ] || continue
+    echo "подсказка: git-клон найден глубже: $d (запускаю от него; у тебя, видимо, WorkingDirectory именно там)"
+    A="$d"; cd "$A" || exit 1
+    break
+  done
+fi
 h(){ printf '\n===== %s =====\n' "$*"; }
 p(){ printf '  %s\n' "$*"; }
 r(){ printf '  $ %s\n' "$*"; eval "$*" 2>&1 | sed 's/^/    /'; }

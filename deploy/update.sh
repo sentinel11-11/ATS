@@ -53,7 +53,21 @@ done
 
 command -v git >/dev/null || die "не найден git"
 command -v python3 >/dev/null || die "не найден python3"
-git rev-parse --git-dir >/dev/null 2>&1 || die "$APP_DIR — не git-репозиторий: обновляйте там, куда клонирован ATS"
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  # клон вполне может лежать на уровень глубже (./app, ./src): git находит репу только
+  # вверх по дереву, поэтому запуск «сверху» выглядит как «не репозиторий».
+  found=""
+  for d in "$APP_DIR"/* "$APP_DIR"/*/*; do
+    [ -d "$d/.git" ] || continue
+    if [ -n "$found" ] && [ "$found" != "$d" ]; then found=""; break; fi   # неоднозначно — не угадываем
+    found="$d"
+  done
+  if [ -n "$found" ]; then
+    warn "в $APP_DIR нет .git — нашёл клон глубже: $found (перехожу туда)"
+    APP_DIR="$found"; cd "$APP_DIR" || die "не смог войти в $APP_DIR"
+  fi
+fi
+git rev-parse --git-dir >/dev/null 2>&1 || die "$APP_DIR — не git-репозиторий: обновляйте там, куда клонирован ATS (git clone … /opt/ats)"
 
 # ATS_DATA_DIR / ATS_PORT / ATS_SERVICE могут быть объявлены только в юните systemd
 # (частый случай, когда /etc/ats/ats.env ещё не заводили) — достаём их оттуда,
