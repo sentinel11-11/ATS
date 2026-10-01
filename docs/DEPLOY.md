@@ -75,6 +75,18 @@ cd /opt/ats/frontend && npm ci && npm run build     # результат → ../
 > попадает `./deploy/[update.sh](http://update.sh)` (так markdown превращает
 > слово в ссылку). Путь должен быть ровно `./deploy/update.sh`.
 
+Перед тем как что-то менять, полезно снять срез состояния сервера — это ровно то, по чему
+видно, «что там лежит» и можно ли обновляться fast-forward'ом:
+
+```bash
+bash deploy/check.sh | tee /tmp/ats-check.txt      # быстрый отчёт (6 разделов)
+./deploy/audit.sh  | tee /tmp/ats-audit.txt        # полный: + содержимое БД, логи, Asterisk
+```
+
+Оба ничего не меняют (единственная запись — `git fetch`, он обновляет только
+`refs/remotes/*`). Когда `deploy/` на сервере ещё нет, быстрый отчёт можно вытащить
+из приходящего коммита: `git show "origin/$BR:deploy/check.sh" > /tmp/ats-check.sh && bash /tmp/ats-check.sh`.
+
 **Шаг 0 — понять, что за каталог `/opt/ats`:**
 
 ```bash
