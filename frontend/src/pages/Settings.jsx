@@ -861,7 +861,7 @@ export default function Settings({ addToast, refreshKey }) {
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={ami.user || ''}
               onChange={(e) => updateProvider('ami', 'user', e.target.value)}
-              placeholder="admin"
+              placeholder="ats (имя секции [ats] в manager.conf)"
             />
           </div>
           <div>
@@ -871,7 +871,7 @@ export default function Settings({ addToast, refreshKey }) {
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={ami.secret || ''}
               onChange={(e) => updateProvider('ami', 'secret', e.target.value)}
-              placeholder="••••••••"
+              placeholder="secret из /etc/asterisk/manager-ats.conf, НЕ пароль оператора"
             />
           </div>
         </div>
