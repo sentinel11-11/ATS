@@ -42,14 +42,52 @@ DEFAULT_SETTINGS = {
     "auto_quarantine_on_complaints": 3,
     "log_non_campaign_calls": True,
     "uis": {"api_url": "", "api_key": "", "number_pool_api": ""},
-    "ami": {"host": "127.0.0.1", "port": 5038, "user": "", "secret": ""},
+    "ami": {
+        "host": "127.0.0.1", "port": 5038, "user": "", "secret": "", "timeout": 5,
+        # Пароль AMI можно не хранить в ats.db: secret — имя переменной окружения,
+        # из которой он берётся, если settings.ami.secret пуст (обычно ATS_AMI_SECRET
+        # в /etc/ats/ats.env, 0640 root:ats). В UI и в API значения секретов маскируются,
+        # поэтому «подсмотреть» пароль из интерфейса нельзя — источник истины файл.
+        "secret_env": "ATS_AMI_SECRET",
+        # транк на операторе и технология канала: PJSIP (Asterisk 12+) или SIP (chan_sip)
+        "trunk": "", "tech": "PJSIP", "dial_prefix": "",
+        # формат набора для оператора и формат CLI: raw | digits | e164 | d10 | ru8
+        "number_format": "raw", "caller_id_format": "digits",
+        "context": "ats-out", "ring_timeout_ms": 35000,
+        # диалплан пишет запись (MixMonitor) при ATS_RECORD=1; channel_pattern —
+        # полный шаблон диал-строки, если синтаксис канала нестандартный
+        "record_calls": True, "channel_pattern": "",
+        # озвучка текста сообщения средствами Asterisk (AGI в play_context)
+        "play_message": True, "play_context": "ats-play",
+        # входящие с транка (DID) — в журнал ATS и в amoCRM
+        "inbound_enabled": True, "inbound_contexts": "from-mcm,ats-in", "inbound_tech": "PJSIP",
+        # перевод на оператора (поток operator)
+        "operator_trunk": "", "acd_callerid": "", "op_context": "from-internal",
+        "op_wait_sec": 45, "op_ring_timeout_ms": 30000, "acd_answer_timeout": 35,
+        "bridge_timeout": 10,
+    },
+    "records": {
+        # базовый URL для подписанных ссылок на запись (amoCRM, почта); пусто → относительная
+        "base_url": "", "link_ttl_hours": 72, "link_secret": "",
+        "link_secret_env": "ATS_RECORDS_LINK_TOKEN",
+    },
     # МегаФон ВАТС (REST CRM API): base_url=https://{domain}; секреты — literal
     # или env (маскируются в UI, плейсхолдер ******** не затирает — см. api.py).
     "megafon_vats": {"base_url": "", "api_key": "", "api_key_env": "ATS_MEGAFON_API_KEY",
                      "crm_token": "", "crm_token_env": "ATS_MEGAFON_CRM_TOKEN",
                      "default_user": "", "default_group": "", "timeout_sec": 15},
+    # Мультиком (агрегатор SIP/номеров): REST makecall + вебхук статусов.
+    # Пути эндпоинтов настраиваемые — контракт «makecall/номера/статусы» у
+    # операторов различается; правим настройки, а не код. webhook_secret —
+    # входной секрет нашего /webhooks/multicom (fail-closed без него закрыт).
     "multicom": {"api_url": "https://api.multicom.ru/v1", "api_key": "", "api_key_env": "ATS_MULTICOM_API_KEY",
-                 "account_id": "", "sip_host": "sip.multicom.ru", "sip_user": "", "sip_secret": "", "timeout_sec": 15},
+                 "account_id": "", "sip_host": "sip.multicom.ru", "sip_user": "", "sip_secret": "", "timeout_sec": 15,
+                 "webhook_secret": "", "webhook_secret_env": "ATS_MULTICOM_WEBHOOK_TOKEN",
+                 "default_user": "ats", "callback_number": "", "record": True,
+                 "account_path": "/account", "numbers_path": "/numbers",
+                 "makecall_path": "/calls/make", "hangup_path": "/calls/{call_id}/hangup",
+                 # транспорт REST: ни озвучки, ни удержания — только бинд с колбэком
+                 "supports_media": False, "supports_transfer": False},
     "llm": {"enabled": False, "base_url": "", "api_key_env": "ATS_LLM_KEY", "model": ""},
     "crm": {"driver": "csv"},     # csv | bitrix24 | amocrm
     "bitrix24": {"webhook_url": ""},
@@ -57,9 +95,33 @@ DEFAULT_SETTINGS = {
         "subdomain": "",
         "access_token": "",
         "access_token_env": "ATS_AMOCRM_TOKEN",
+        # OAuth-интеграция (опционально): при заданных client_id/secret/refresh_token
+        # клиент сам обновляет пару токенов по 401 и атомарно сохраняет новую в настройки.
+        # Для долгосрочного токена (вкладка «Ключи» приватной интеграции) эти поля не нужны.
+        "client_id": "",
+        "client_secret": "",
+        "client_secret_env": "ATS_AMOCRM_CLIENT_SECRET",
+        "refresh_token": "",
+        "refresh_token_env": "ATS_AMOCRM_REFRESH_TOKEN",
+        "redirect_uri": "",
+        # Вебхук (клик-дозвон/события из amoCRM): fail-closed без токена.
+        "webhook_token": "",
+        "webhook_token_env": "ATS_AMOCRM_WEBHOOK_TOKEN",
         "responsible_user_id": 1,
+        # Карта операторов ATS -> пользователи amoCRM:
+        # {"vats_login|ext": amo_user_id} — звонок вешается на реального сотрудника.
+        "operator_user_map": {},
+        # Брать ответственного из найденного контакта (когда карта операторов не сработала).
+        "use_contact_responsible": True,
+        "task_type_id": 1,
         "auto_create_contacts": True,
         "auto_create_tasks": True,
+        "auto_task_results": ["busy", "no_answer", "timeout", "missed",
+                              "machine", "no_operator", "rejected", "declined"],
+        # Переопределение маппинга результатов АТС -> код call_status amoCRM:
+        # call_status_map = {"result_ats": 4|7|6|5|3|2|1}
+        "call_status_map": {},
+        "rate_limit_rps": 7,
         "unsorted_on_new": False,
         "timeout_sec": 15
     },

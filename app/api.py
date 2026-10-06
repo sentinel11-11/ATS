@@ -203,11 +203,34 @@ def _route(method, path, body, headers):
         ENGINE.push_event(ev)
         return OK, 200
     if p == ["webhooks", "multicom"] and method == "POST":
-        from .providers.multicom import map_multicom_webhook
+        from .providers.multicom import (map_multicom_webhook, verify_webhook_secret,
+                                         webhook_fingerprint)
+        s = db.get_settings()
+        # Fail-closed, как у UIS/МегаФона: без multicom.webhook_secret маршрут
+        # закрыт, иначе любой, кто знает URL, «завершал» бы чужие звонки.
+        ok_why, why = verify_webhook_secret(s, headers=headers, qparams=qparams)
+        if not ok_why:
+            return {"ok": False, "error": why,
+                    "detail": ("Задайте multicom.webhook_secret (или env "
+                                "ATS_MULTICOM_WEBHOOK_TOKEN) и передавайте его "
+                                "в заголовке X-Multicom-Secret")
+                    }, 403 if why == "webhook_disabled" else 401
         ev = map_multicom_webhook(body)
-        if ev and ENGINE:
-            ENGINE.push_event(ev)
+        if not ev:
+            return {"ok": False, "error": "unrecognized"}, 422
+        # Отпечаток — для дедупликации повторов оператора (движок использует
+        # его как opaque-строку, см. provider_events).
+        ev["fingerprint"] = webhook_fingerprint(ev)
+        print("[multicom] webhook ev={} callid={} dir={}".format(
+            ev.get("event"), ev.get("external_call_id"), ev.get("direction")))
+        # Только в очередь: отвечаем мгновенно, обработку делает тик движка.
+        ENGINE.push_event(ev)
         return OK, 200
+    if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
+        # Вебхук amoCRM — внешний (у amoCRM нет нашей сессии): роутим ДО need_auth.
+        # Защита — fail-closed: без настроенного webhook_token (POST) или
+        # client_secret (GET-хук отключения) маршрут выключен.
+        return _amocrm_webhook_route(body, headers=headers, qparams=qparams)
     if p == ["health"] and method == "GET":
         return _health(), 200
     if p == ["auth", "me"]:
@@ -360,14 +383,26 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
-        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm")})
+        masked = _mask_secrets({k: s.get(k) for k in ("uis", "ami", "megafon_vats", "multicom",
+                                                     "llm", "bitrix24", "amocrm", "crm", "records")})
         return {"provider_config": masked}, 200
     if p == ["settings", "raw"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         s = db.get_settings()
         cfg = body.get("provider_config") or body
-        for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm"):
+        # Провайдер выбирается здесь же, иначе «настроить провайдера одним запросом»
+        # было бы невозможно: секции мержатся циклом ниже, а provider — строка, и
+        # раньше он молча игнорировался (настраиваешь ami, а движок остаётся на старом).
+        if "provider" in cfg:
+            from .telephony import PROVIDER_NAMES
+            pv = str(cfg.get("provider") or "").strip().lower()
+            if pv not in ("",) + tuple(PROVIDER_NAMES):
+                return {"ok": False, "error": "bad_provider",
+                        "detail": "допустимо: " + " / ".join(PROVIDER_NAMES)}, 400
+            s["provider"] = pv        # "" = не выбран (fail-closed, звонков нет)
+        for k in ("uis", "ami", "megafon_vats", "multicom", "llm", "bitrix24", "amocrm", "crm",
+                  "records"):
             if isinstance(cfg.get(k), dict):
                 merged = dict(s.get(k) or {})
                 for fk, fv in cfg[k].items():
@@ -377,7 +412,15 @@ def _route(method, path, body, headers):
                         else:
                             return {"ok": False, "error": f"secret_missing_{fk}",
                                     "detail": f"В поле '{fk}' передана маска звездочек '{fv}', но сохраненный ключ в АТС отсутствует. Вставьте настоящий ключ вместо '{fv}'."}, 400
-                    merged[fk] = str(fv if fv is not None else "").strip()
+                    # Сложные типы храним как есть: dict/list (operator_user_map,
+                    # call_status_map, auto_task_results), bool/int/float флаги.
+                    # str() здесь ломал всё: "False" truthy в Python (галочка не
+                    # снималась), а dict превращался в строку "{'100': 555}".
+                    if isinstance(fv, (dict, list)) or fv is None \
+                            or isinstance(fv, (bool, int, float)):
+                        merged[fk] = fv
+                    else:
+                        merged[fk] = str(fv).strip()
                 s[k] = merged
         db.save_settings(s)
         ENGINE.reload_settings()
@@ -417,6 +460,14 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _multicom_sync_route(body)
+    if p == ["multicom", "simulate-event"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _multicom_simulate_route(body)
+    if p == ["ami", "check"] and method == "POST":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _ami_check_route(body)
     if p == ["amocrm", "check"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -425,8 +476,10 @@ def _route(method, path, body, headers):
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
         return _amocrm_users_sync_route(body)
-    if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
-        return _amocrm_webhook_route(body)
+    if p == ["amocrm", "users"] and method == "GET":
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        return _amocrm_users_list_route()
     if p == ["megafon", "simulate-event"] and method == "POST":
         if sess["role"] != "admin":
             return {"ok": False, "error": "admin_required"}, 403
@@ -973,17 +1026,21 @@ def _health():
     wh_megafon = bool(resolve_secret(s.get("megafon_vats") or {}, "crm_token",
                                      "crm_token_env", "ATS_MEGAFON_CRM_TOKEN"))
     wh_uis = bool((s.get("uis") or {}).get("webhook_secret", ""))
+    wh_multicom = bool(resolve_secret(s.get("multicom") or {}, "webhook_secret",
+                                       "webhook_secret_env", "ATS_MULTICOM_WEBHOOK_TOKEN"))
     eng_ok = ENGINE is not None
     return {"ok": bool(db_ok and eng_ok), "db": db_ok, "engine": eng_ok,
             "telephony": {"provider": pname, "connected": connected},
-            "webhook": bool(wh_megafon or wh_uis), "timestamp": now_iso()}
+            "webhook": bool(wh_megafon or wh_uis or wh_multicom), "timestamp": now_iso()}
 
 
 def _health_details():
     """Расширенный health для админа: маскированный конфиг, счётчики."""
+    from .providers.base import resolve_secret
     h = _health()
     s = db.get_settings()
-    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami")})
+    masked = _mask_secrets({k: s.get(k) for k in ("megafon_vats", "uis", "ami", "multicom",
+                                                   "records")})
     today = now_iso()[:10]
     try:
         calls_today = db.fetch1(
@@ -993,76 +1050,225 @@ def _health_details():
             "SELECT COUNT(*) c FROM campaign_items WHERE status='queued'")["c"]
         ops_free = db.fetch1(
             "SELECT COUNT(*) c FROM operators WHERE status='free'")["c"]
-        pool_total = db.fetch1(
-            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats'")["c"]
-        pool_usable = db.fetch1(
-            "SELECT COUNT(*) c FROM numbers WHERE provider='megafon_vats' "
-            "AND active=1 AND quarantined=0 AND enabled_outgoing=1")["c"]
+        def _pool(pv):
+            t = db.fetch1("SELECT COUNT(*) c FROM numbers WHERE provider=?", (pv,))["c"]
+            u = db.fetch1("SELECT COUNT(*) c FROM numbers WHERE provider=? "
+                          "AND active=1 AND quarantined=0 AND enabled_outgoing=1",
+                          (pv,))["c"]
+            return {"total": t, "usable": u}
+        # пул считаем по провайдерам: у МегаФона и Мультикома разные номера
+        pool_megafon = _pool("megafon_vats")
+        pool_multicom = _pool("multicom")
+        pool_ami = _pool("ami")      # транк оператора: Asterisk/FreeSWITCH по AMI
         vats_users = db.fetch1("SELECT COUNT(*) c FROM vats_users")["c"]
         vats_groups = db.fetch1("SELECT COUNT(*) c FROM vats_groups")["c"]
     except Exception:
         calls_today = items_queued = ops_free = -1
-        pool_total = pool_usable = vats_users = vats_groups = -1
+        pool_ami = pool_megafon = pool_multicom = {"total": -1, "usable": -1}
+        vats_users = vats_groups = -1
     thread_alive = bool(ENGINE is not None and ENGINE.is_running())
     return {"health": h, "engine_thread": thread_alive,
             "provider_config": masked,
             "webhooks": {"megafon": bool(h["webhook"] and
                                          (masked.get("megafon_vats") or {}).get(
                                              "crm_token")),
-                         "uis": bool((s.get("uis") or {}).get("webhook_secret"))},
+                         "uis": bool((s.get("uis") or {}).get("webhook_secret")),
+                         "multicom": bool(resolve_secret(s.get("multicom") or {},
+                                                          "webhook_secret",
+                                                          "webhook_secret_env",
+                                                          "ATS_MULTICOM_WEBHOOK_TOKEN"))},
             "stats": {"calls_today": calls_today, "items_queued": items_queued,
                       "operators_free": ops_free,
-                      "pool_megafon": {"total": pool_total, "usable": pool_usable},
+                      "pool_ami": pool_ami,
+                      "pool_megafon": pool_megafon,
+                      "pool_multicom": pool_multicom,
                       "vats_users": vats_users, "vats_groups": vats_groups},
             "settings": {k: s.get(k) for k in
                          ("provider", "max_channels", "retry_max",
                           "window_start", "window_end")}}
 
 
-def _amocrm_check_route(body=None):
-    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV
+def _amocrm_make_client(mcfg):
+    """Клиент amoCRM из конфигурации роутов (check/users-sync).
+
+    UI присылает маскированные секреты («********») — в этом случае берём
+    ранее сохранённые в настройках (UI уже сделал /settings/raw перед этим).
+    """
+    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV, _is_masked_value
     from .providers.base import resolve_secret
+    mcfg = dict(mcfg or {})
+    saved = (db.get_settings().get("amocrm") or {})
+    for key in ("access_token", "client_secret", "refresh_token"):
+        v = mcfg.get(key)
+        if v is None or _is_masked_value(v):
+            if saved.get(key):
+                mcfg[key] = saved[key]
+            elif key in mcfg:
+                del mcfg[key]
+    subdomain = str(mcfg.get("subdomain") or saved.get("subdomain") or "").strip()
+    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
+    return AmoCrmClient(
+        subdomain=subdomain, access_token=token,
+        client_id=str(mcfg.get("client_id") or saved.get("client_id") or ""),
+        client_secret=resolve_secret(mcfg, "client_secret", "client_secret_env",
+                                     "ATS_AMOCRM_CLIENT_SECRET"),
+        refresh_token=resolve_secret(mcfg, "refresh_token", "refresh_token_env",
+                                     "ATS_AMOCRM_REFRESH_TOKEN"),
+        redirect_uri=str(mcfg.get("redirect_uri") or saved.get("redirect_uri") or ""))
+
+
+def _amocrm_check_route(body=None):
+    # ПРИНЦИП: наружный HTTP 401 означает ТОЛЬКО истёкшую ATS-сессию
+    # (need_auth). Ошибки upstream-провайдеров (в т.ч. 401 от amoCRM —
+    # неверный токен) НИКОГДА не проксируются как HTTP 401 наружу:
+    # frontend/src/api.js при любом 401 сбрасывает сессию и показывает окно
+    # логина. Поэтому AmoCrmApiError всегда отдаём как HTTP 502, а код
+    # amoCRM кладём в поле "http_status" payload'а.
+    from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
     if not mcfg or not mcfg.get("subdomain"):
         s = db.get_settings()
         mcfg = s.get("amocrm") or {}
-    subdomain = str(mcfg.get("subdomain") or "").strip()
-    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
     try:
-        client = AmoCrmClient(subdomain=subdomain, access_token=token)
+        client = _amocrm_make_client(mcfg)
+        # Чистый GET /api/v4/account — документированная проверка связи и
+        # прав токена (недокументированный with=users,pipelines amoCRM v4
+        # молча игнорирует, делая проверку ложно-«успешной»).
         account = client.get_account_info()
-        return {"ok": True, "account": account}, 200
+        summary = {"id": account.get("id"), "name": account.get("name"),
+                   "subdomain": account.get("subdomain"),
+                   "current_user_id": account.get("current_user_id")}
+        return {"ok": True, "account": summary}, 200
+    except AmoCrmApiError as e:
+        return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300],
+                "http_status": getattr(e, "status", None)}, 502
     except Exception as e:
         return {"ok": False, "error": "amocrm_error", "detail": str(e)[:300]}, 502
 
 
+def _amocrm_users_list_route():
+    """Снимок пользователей amoCRM из таблицы amo_users (наполняется users-sync)."""
+    return {"ok": True, "users": db.amo_users_list()}, 200
+
+
 def _amocrm_users_sync_route(body=None):
-    from .providers.amocrm import AmoCrmClient, DEFAULT_AMOCRM_TOKEN_ENV
-    from .providers.base import resolve_secret
+    # Тот же принцип, что и в _amocrm_check_route: upstream-ошибки amoCRM
+    # отдаём как HTTP 502 + http_status в payload, никогда как HTTP 401
+    # (401 наружу = только истёкшая ATS-сессия, иначе UI выкинет из сессии).
+    from .providers.amocrm import AmoCrmApiError
     b = body or {}
     mcfg = b.get("amocrm") if isinstance(b.get("amocrm"), dict) else b
     if not mcfg or not mcfg.get("subdomain"):
         s = db.get_settings()
         mcfg = s.get("amocrm") or {}
-    subdomain = str(mcfg.get("subdomain") or "").strip()
-    token = resolve_secret(mcfg, "access_token", "access_token_env", DEFAULT_AMOCRM_TOKEN_ENV)
     try:
-        client = AmoCrmClient(subdomain=subdomain, access_token=token)
-        users = client.get_users()
-        return {"ok": True, "users": users, "count": len(users)}, 200
+        client = _amocrm_make_client(mcfg)
+        users = client.get_users()  # ошибки не проглатываются — 401/429 = сбой
+        # Персистим справочник: по нему работает operator_user_map и UI.
+        db.amo_users_replace(users)
+        slim = [{"id": u.get("id"), "name": u.get("name"), "email": u.get("email")}
+                for u in users]
+        return {"ok": True, "users": slim, "count": len(slim)}, 200
+    except AmoCrmApiError as e:
+        return {"ok": False, "error": "amocrm_sync_failed", "detail": str(e)[:300],
+                "http_status": getattr(e, "status", None)}, 502
     except Exception as e:
         return {"ok": False, "error": "amocrm_sync_failed", "detail": str(e)[:300]}, 502
 
 
-def _amocrm_webhook_route(body=None):
+def _amocrm_verify_disconnect_signature(client_uuid, account_id, signature, client_secret):
+    """Проверка подлинности хука отключения интеграции amoCRM.
+
+    По документации amoCRM (OAuth → «Хук об отключении интеграции»):
+    signature = HMAC-SHA256(message = client_uuid + account_id, key = client_secret).
+    Принимаем также вариант с разделителем «.» — оба всё равно считаются
+    от секрета интеграции (строгая HMAC-проверка сохраняется).
+    """
+    import hashlib
+    import hmac as hmac_mod
+    secret = str(client_secret or "").encode()
+    sig = str(signature or "").strip().lower()
+    if not secret or not sig:
+        return False
+    msgs = (f"{client_uuid}{account_id}".encode(),
+            f"{client_uuid}.{account_id}".encode())
+    for m in msgs:
+        calc = hmac_mod.new(secret, m, hashlib.sha256).hexdigest()
+        if hmac_mod.compare_digest(calc, sig):
+            return True
+    return False
+
+
+def _amocrm_webhook_route(body=None, headers=None, qparams=None):
+    """Внешний вебхук amoCRM (без X-ATS-сессии):
+
+    GET  — хук отключения интеграции (client_uuid, account_id, signature):
+           проверяем HMAC-подпись от client_secret и выключаем интеграцию.
+    POST — события/клик-дозвон из amoCRM-виджета: защита webhook_token
+           (query ?token= или заголовок X-Amo-Token). Click-to-call пока
+           не реализован в движке — отвечаем явно, а не AttributeError.
+    """
+    from .providers.base import resolve_secret
+    headers = headers or {}
+    qparams = qparams or {}
+    s = db.get_settings()
+    mcfg = s.get("amocrm") or {}
+
+    def _q(name):
+        return str((qparams.get(name) or [""])[0] or "").strip()
+
+    # ---------- GET: хук отключения интеграции ----------
+    client_uuid = _q("client_uuid")
+    account_id = _q("account_id")
+    signature = _q("signature")
+    if client_uuid or account_id or signature:
+        client_secret = resolve_secret(mcfg, "client_secret", "client_secret_env",
+                                       "ATS_AMOCRM_CLIENT_SECRET")
+        if not client_secret:
+            # Fail-closed: без секрета подлинность проверить нельзя.
+            return {"ok": False, "error": "webhook_disabled",
+                    "detail": "Задайте client_secret интеграции для проверки подписи"}, 403
+        if not _amocrm_verify_disconnect_signature(client_uuid, account_id,
+                                                   signature, client_secret):
+            return {"ok": False, "error": "bad_signature"}, 403
+        amo = dict(mcfg)
+        amo["disabled"] = True
+        amo["disabled_reason"] = f"Интеграция отключена в amoCRM (account_id={account_id})"
+        s["amocrm"] = amo
+        db.save_settings(s)
+        try:
+            ENGINE.reload_settings()
+        except Exception:
+            pass
+        print(f"[amocrm] disconnect hook: интеграция выключена (account_id={account_id})")
+        return {"ok": True, "status": "integration_disabled"}, 200
+
+    # ---------- POST: события / клик-дозвон ----------
+    expected = resolve_secret(mcfg, "webhook_token", "webhook_token_env",
+                              "ATS_AMOCRM_WEBHOOK_TOKEN")
+    if not expected:
+        # Fail-closed (как у UIS/МегаФона): вебхук без секрета отключён.
+        return {"ok": False, "error": "webhook_disabled",
+                "detail": "Задайте amocrm.webhook_token"}, 403
+    provided = _q("token") or str(headers.get("X-Amo-Token") or "").strip()
+    import hmac as hmac_mod
+    if not provided or not hmac_mod.compare_digest(provided, expected):
+        return {"ok": False, "error": "bad_secret"}, 403
+
     b = body or {}
     if "call" in b or "phone" in b:
         phone = str(b.get("phone") or (b.get("call") or {}).get("phone") or "").strip()
-        ext = str(b.get("user") or b.get("ext") or "admin").strip()
+        ext = str(b.get("user") or b.get("ext") or "").strip()
         if phone:
-            res = ENGINE.dial(phone=phone, user=ext)
-            return {"ok": True, "result": res}, 200
+            dial = getattr(ENGINE, "dial", None) or getattr(ENGINE, "dial_click", None)
+            if callable(dial):
+                res = dial(phone=phone, user=ext or None)
+                return {"ok": True, "result": res}, 200
+            # Click-to-call в движке не реализован — честный ответ вместо 500.
+            return {"ok": False, "error": "click2call_not_supported",
+                    "detail": "ATS принимает события amoCRM, но click-to-call "
+                              "пока не реализован"}, 501
     return {"ok": True, "status": "received"}, 200
 
 
@@ -1090,11 +1296,37 @@ def _multicom_check_route(body=None):
     return {"ok": False, "error": "multicom_error", "detail": rep.get("detail"), "report": rep}, 502
 
 
+def _ami_check_route(body=None):
+    """POST /api/v2/ami/check — чек-лист связи с Asterisk и транком (без звонков)."""
+    from .telephony import ami_check
+    settings = db.get_settings()
+    b = body or {}
+    incoming = b.get("ami") if isinstance(b.get("ami"), dict) else b
+    merged = dict(settings.get("ami") or {})
+    for k, v in (incoming or {}).items():
+        if k in merged and not _is_masked_value(v):
+            merged[k] = v
+    settings = dict(settings, ami=merged)
+    rep = ami_check(settings)
+    if rep.get("ok"):
+        return {"ok": True, "report": rep}, 200
+    return {"ok": False, "error": rep.get("error") or "ami_check_failed",
+            "detail": next((c["detail"] for c in rep.get("checks", [])
+                            if not c["ok"] and c.get("critical")), ""), "report": rep}, 200
+
+
 def _multicom_sync_route(body=None):
     from .providers.base import ProviderApiError
-    from .telephony import ProviderNotConfigured
+    from .telephony import PROVIDER_NAMES, ProviderNotConfigured
+    b = body or {}
+    # provider — в чей пул кладём номера; для маршрута через Asterisk нужен "ami",
+    # иначе импортированные номера провайдер не увидит (numbers.acquire фильтрует по provider).
+    tag = str(b.get("provider") or "").strip().lower()
+    if tag and tag not in PROVIDER_NAMES:
+        return {"ok": False, "error": "bad_provider",
+                "detail": "provider должен быть одним из: %s" % ", ".join(PROVIDER_NAMES)}, 400
     try:
-        rep = ENGINE.multicom_pool_sync()
+        rep = ENGINE.multicom_pool_sync(dry_run=bool(b.get("dry_run")), provider=tag or None)
         return {"ok": True, "report": rep}, 200
     except ProviderNotConfigured as e:
         return {"ok": False, "error": "multicom_not_configured", "detail": str(e)[:300]}, 400
@@ -1102,6 +1334,23 @@ def _multicom_sync_route(body=None):
         return {"ok": False, "error": "multicom_error", "detail": str(e)[:300]}, 502
     except Exception as e:
         return {"ok": False, "error": "multicom_error", "detail": str(e)[:300]}, 502
+
+
+def _multicom_simulate_route(body=None):
+    """Локальная симуляция вебхука Мультикома (admin, БЕЗ webhook_secret):
+    прогнать событие статуса через движок на стенде, где у агрегатора ещё нет
+    доступа. Только для отладки/демо."""
+    from .providers.multicom import map_multicom_webhook, webhook_fingerprint
+    ev = map_multicom_webhook(body or {})
+    if not ev:
+        return {"ok": False, "error": "unrecognized",
+                "detail": "Нужен внешний id звонка: call_id / id / uuid"}, 422
+    # суффикс -sim: повторная симуляция того же статуса не должна отбрасываться
+    # дедупликатором (provider_events.fingerprint уникален) — на стенде шлют одно
+    # и то же событие по кругу.
+    ev["fingerprint"] = webhook_fingerprint(ev) + "-sim" + uuid.uuid4().hex[:8]
+    ENGINE.push_event(ev)
+    return {"ok": True, "event": {k: v for k, v in ev.items() if k != "raw"}}, 200
 
 
 def _megafon_check_route(body=None):
@@ -1139,6 +1388,9 @@ def _megafon_simulate_route(body):
     ev = map_megafon_webhook(body or {})
     if not ev:
         return {"ok": False, "error": "unrecognized"}, 422
+    # суффикс -sim: повторная симуляция того же статуса не должна отбрасываться
+    # дедупликатором (provider_events.fingerprint уникален) — на стенде шлют одно
+    # и то же событие по кругу.
     ev["fingerprint"] = webhook_fingerprint(ev)
     ENGINE.push_event(ev)
     return {"ok": True, "event": {k: v for k, v in ev.items() if k != "raw"}}, 200
@@ -1423,20 +1675,24 @@ def _settings_save(body, sess=None):
     s = db.get_settings()
     if "provider" in body:
         pv = str(body.get("provider") or "").strip().lower()
-        if pv not in ("", "sim", "uis", "ami", "megafon_vats"):
-            return {"ok": False, "error": "bad_provider"}, 400
+        from .telephony import PROVIDER_NAMES
+        # Единый список провайдеров (app/telephony.py): опечатка → bad_provider,
+        # а «есть в UI, но нет в списке» больше не блокирует выбор провайдера.
+        if pv not in ("",) + tuple(PROVIDER_NAMES):
+            return {"ok": False, "error": "bad_provider",
+                    "detail": "допустимо: " + " / ".join(PROVIDER_NAMES)}, 400
         s["provider"] = pv  # "" = не настроен (fail-closed до явного выбора)
     for k in ("max_channels", "consent_required", "retry_max", "retry_delay_min",
               "line_cooldown_sec", "watchdog_timeout_min", "acd_wait_timeout_sec",
               "vats_conversation_timeout_min",
               "window_start", "window_end", "sim_answer", "auto_quarantine_on_complaints",
-              "sim_outcome", "crm"):
+              "sim_outcome", "crm", "records", "message_max_sec"):
         if k in body:
             if k in ("consent_required",):
                 s[k] = bool(body[k])
             elif k == "sim_outcome" and isinstance(body[k], dict):
                 s[k] = {str(x): int(body[k][x]) for x in body[k]}
-            elif k in ("crm", "uis", "ami", "llm", "bitrix24") and isinstance(body[k], dict):
+            elif k in ("crm", "uis", "ami", "llm", "bitrix24", "records") and isinstance(body[k], dict):
                 s[k] = {**s.get(k, {}), **body[k]}
             else:
                 s[k] = body[k]
@@ -1677,6 +1933,15 @@ def _recording_upload(body):
     call_id = int(body.get("call_id", 0) or 0)
     fname = str(body.get("filename", "")).replace("\\", "/").split("/")[-1][-80:]
     ext = os.path.splitext(fname)[1].lower()
+    if not call_id:
+        # входящий с транка: call_id знает только ATS — диалплан называет файл по
+        # имени канала, поэтому разрешаем звонок по external_call_id
+        ext_id = str(body.get("external_call_id", "") or "").strip()
+        if ext_id:
+            row = db.fetch1("SELECT id FROM calls WHERE external_call_id=? ORDER BY id DESC",
+                            (ext_id[:64],))
+            if row:
+                call_id = int(row["id"])
     if not call_id:
         return {"ok": False, "error": "call_id_required"}, 400
     if ext not in AUDIO_EXT:

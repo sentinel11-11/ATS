@@ -46,9 +46,15 @@ Windows: `run_ats2.bat` (или `py -3 -m app.run`).
 ### Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v     # Linux
-run_tests.bat                                 # Windows
+python3 -m unittest discover -s tests -v     # Linux (309 проверок)
 ```
+
+### Обновление на сервере
+
+```bash
+cd /opt/ats && ./deploy/update.sh <ветка>    # бэкап БД → ff-only merge → тесты → рестарт → health
+```
+Подробности (systemd, секреты, откат, Nginx/SSE, Windows) — `docs/DEPLOY.md`.
 
 ## 3. Структура кода
 
@@ -70,7 +76,7 @@ app/
   server.py     HTTP-сервер: статика app/ui, API, SSE
   run.py        CLI: python -m app.run
   ui/index.html одностраничный UI (vanilla JS)
-tests/          unittest-набор (88 тестов: безопасность, БД, пул, E2E движка, HTTP API,
+tests/          unittest-набор (309 тестов: безопасность, БД, пул, E2E движка, HTTP API,
                 протокол AMI, вебхуки UIS, ACD-watchdog, базы/импорт, hardening,
                 P0-RBAC, AMI-мост/reconnect, ротация пула)
 data_v2/        runtime (БД, логи, записи, CRM-выгрузка) — создаётся автоматически

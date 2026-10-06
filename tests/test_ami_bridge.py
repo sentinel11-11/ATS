@@ -220,7 +220,8 @@ class TestAmiBridge(unittest.TestCase):
         self.assertTrue(p.connect_operator(7, "101"))
         orig = self.fake.actions("Originate")
         self.assertEqual(len(orig), 1)
-        self.assertTrue(orig[0]["Channel"].endswith("/101"))
+        # chan_pjsip: канал собирается как PJSIP/номер@endpoint
+        self.assertIn("101", orig[0]["Channel"])
         self.assertEqual(orig[0].get("Application"), "Wait")
         self.assertTrue(str(orig[0].get("ActionID", "")).startswith("ats-acd-7-"))
         br = self.fake.actions("Bridge")
@@ -271,7 +272,7 @@ class TestAmiBridge(unittest.TestCase):
         self.assertEqual(len(orig), 1)
         self.assertIn("ats-call-9", orig[0]["CallerID"])
         self.assertIn("74950000000", orig[0]["CallerID"])
-        self.assertEqual(orig[0]["Variable"], "ATS_CALL_ID=9")
+        self.assertIn("ATS_CALL_ID=9", orig[0]["Variable"])
 
     def test_dial_success_no_failure_event(self):
         self.fake.originate_responses.append(

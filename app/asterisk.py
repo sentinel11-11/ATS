@@ -10,6 +10,7 @@ tests/test_telephony_extra.py (кодек и базовый клиент на ф
 и tests/test_ami_bridge.py (handshake бриджа, reconnect, таймауты).
 """
 import logging
+import re
 import socket
 import threading
 import time
@@ -40,9 +41,20 @@ def parse_message(blob):
 
 
 def encode_action(name, params=None, action_id=None):
+    """Собрать пакет AMI.
+
+    Значение-список пишется несколькими строками с одним ключом — так в
+    `Originate` передают несколько `Variable:`.
+    """
     action_id = action_id or uuid.uuid4().hex
     lines = ["Action: {}".format(name)]
     for k, v in (params or {}).items():
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                if item is None or item == "":
+                    continue
+                lines.append("{}: {}".format(k, item))
+            continue
         lines.append("{}: {}".format(k, str(v)))
     lines.append("ActionID: {}".format(action_id))
     return "\r\n".join(lines) + "\r\n\r\n", action_id
@@ -69,6 +81,7 @@ class AMIClient:
         self.reconnect_max = 30.0
         self._cond = threading.Condition()
         self.event_handler = None   # callable(event_dict)
+        self.raw_handler = None     # callable(raw_text) — каждый пакет как он есть (диагностика)
         self._buffer = b""
         self._closed = threading.Event()
         self.connected = False
@@ -168,6 +181,39 @@ class AMIClient:
             raise AMIError("AMI {}: {}".format(name, result.get("Message", result)))
         return dict(result)
 
+    def run_command(self, cmd, timeout=2.5):
+        """Выполнить CLI-команду и вернуть её вывод текстом.
+
+        Универсально к обоим форматам ответа: «Response: Follows … --END
+        COMMAND--» (вывод отдельными пакетами, ActionID в нём может и не быть)
+        и «Response: Success» с телом в том же пакете.
+        """
+        box = []
+        done = threading.Event()
+
+        def sink(text):
+            box.append(text)
+            low = text.lower()
+            if "--end command--" in low or "response: success" in low or "response: error" in low:
+                done.set()
+
+        prev, self.raw_handler = self.raw_handler, sink
+        try:
+            # Ответ может прийти пакетом без ActionID (Follows) — тогда ждём не его,
+            # а текст с маркером конца вывода; короткий таймаут действия это допускает.
+            self.action("Command", {"Command": cmd}, timeout=min(0.3, timeout), check=False)
+            done.wait(timeout)
+        finally:
+            self.raw_handler = prev
+        out = "\n".join(box)
+        out = re.sub(r"(?m)^\s*--END [A-Z ]*--\s*$", "", out)   # --END COMMAND-- и аналоги
+        lines = []
+        for line in out.splitlines():
+            if line.lower().startswith(("response:", "privilege:")):
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
     def ping(self):
         return self.action("Ping", check=False)
 
@@ -219,8 +265,16 @@ class AMIClient:
                 continue  # тишина в пределах таймаута сокета — не разрыв
             except Exception:
                 break
+            raw = blob.decode("utf-8", "ignore")
+            if self.raw_handler:
+                # «Command» отвечает блоком Response: Follows … --END COMMAND--, где
+                # строки вывода не являются парами «Key: value» — нужны дословно.
+                try:
+                    self.raw_handler(raw)
+                except Exception:
+                    log.debug("AMI raw handler", exc_info=True)
             try:
-                msg = parse_message(blob.decode("utf-8", "ignore"))
+                msg = parse_message(raw)
             except Exception:
                 continue
             etype = str(msg.get("Event", "")).lower()

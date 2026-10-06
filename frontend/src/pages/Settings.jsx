@@ -13,6 +13,10 @@ export default function Settings({ addToast, refreshKey }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [rawJsonText, setRawJsonText] = useState('');
   const [showRawEditor, setShowRawEditor] = useState(false);
+  const [amoUsers, setAmoUsers] = useState([]);
+  const [amiReport, setAmiReport] = useState(null);
+  const [newOpKey, setNewOpKey] = useState('');
+  const [newAmoId, setNewAmoId] = useState('');
 
   const isMaskedValue = (val) => {
     if (!val) return false;
@@ -22,10 +26,11 @@ export default function Settings({ addToast, refreshKey }) {
 
   const loadAll = async () => {
     setLoading(true);
-    const [rawRes, basicRes, usersRes] = await Promise.all([
+    const [rawRes, basicRes, usersRes, amoUsersRes] = await Promise.all([
       api('/settings/raw'),
       api('/settings'),
-      api('/users')
+      api('/users'),
+      api('/amocrm/users')
     ]);
 
     if (rawRes && rawRes.provider_config) {
@@ -37,6 +42,11 @@ export default function Settings({ addToast, refreshKey }) {
     }
     if (usersRes && usersRes.users) {
       setUsers(usersRes.users);
+    }
+    if (amoUsersRes && Array.isArray(amoUsersRes.users)) {
+      setAmoUsers(amoUsersRes.users);
+    } else {
+      setAmoUsers([]);
     }
     setLoading(false);
   };
@@ -99,7 +109,7 @@ export default function Settings({ addToast, refreshKey }) {
     }
   };
 
-  const runMulticomAction = async (endpoint, name) => {
+  const runProviderAction = async (endpoint, name, section, onReport) => {
     setActionLoading(true);
     let currentProviderCfg = { ...providerConfig };
 
@@ -118,8 +128,12 @@ export default function Settings({ addToast, refreshKey }) {
       api('/settings/save', { body: basicSettings }),
     ]);
 
-    const res = await api(endpoint, { method: 'POST', body: currentProviderCfg.multicom || {} });
+    const res = await api(endpoint, {
+      method: 'POST',
+      body: (section && currentProviderCfg[section]) || currentProviderCfg.multicom || {},
+    });
     setActionLoading(false);
+    if (onReport) onReport(res || null);
     if (res && (res.ok || res.connected || res.status === 'ok')) {
       addToast(`Успешно: ${name}`, 'ok');
     } else {
@@ -127,6 +141,9 @@ export default function Settings({ addToast, refreshKey }) {
       addToast(`Ошибка (${name}): ${detail}`, 'err');
     }
   };
+
+  // единый запуск provider-действий: сохранить конфиг → POST → тост и (опционально) отчёт
+  const runMulticomAction = async (endpoint, name) => runProviderAction(endpoint, name, 'multicom');
 
   const runAmoCrmAction = async (endpoint, name) => {
     setActionLoading(true);
@@ -151,6 +168,13 @@ export default function Settings({ addToast, refreshKey }) {
     setActionLoading(false);
     if (res && (res.ok || res.connected || res.status === 'ok')) {
       addToast(`Успешно: ${name}`, 'ok');
+      // После users-sync обновляем справочник для редактора соответствий
+      if (endpoint.includes('users-sync')) {
+        const amoRes = await api('/amocrm/users');
+        if (amoRes && Array.isArray(amoRes.users)) {
+          setAmoUsers(amoRes.users);
+        }
+      }
     } else {
       const detail = res?.detail || res?.error || 'Не удалось выполнить';
       addToast(`Ошибка (${name}): ${detail}`, 'err');
@@ -237,9 +261,34 @@ export default function Settings({ addToast, refreshKey }) {
   const amocrm = providerConfig.amocrm || {};
   const uis = providerConfig.uis || {};
   const ami = providerConfig.ami || {};
+  const records = providerConfig.records || {};
   const llm = providerConfig.llm || {};
   const crm = providerConfig.crm || {};
   const bitrix24 = providerConfig.bitrix24 || {};
+
+  // --- Соответствие операторов ATS → пользователей amoCRM (operator_user_map) ---
+  const atsOpKey = (u) => String(u.op_vats || u.ext || u.login || '').trim();
+  const amoOpMap = (amocrm.operator_user_map && typeof amocrm.operator_user_map === 'object' && !Array.isArray(amocrm.operator_user_map))
+    ? amocrm.operator_user_map
+    : {};
+  const amoOpMapEntries = Object.entries(amoOpMap);
+  const availableOps = users.filter((u) => {
+    const k = atsOpKey(u);
+    return k && !(k in amoOpMap);
+  });
+  const handleAddOpMap = () => {
+    if (!newOpKey || !newAmoId) {
+      return addToast('Выберите оператора ATS и пользователя amoCRM', 'warn');
+    }
+    updateProvider('amocrm', 'operator_user_map', { ...amoOpMap, [newOpKey]: parseInt(newAmoId, 10) });
+    setNewOpKey('');
+    setNewAmoId('');
+  };
+  const handleDelOpMap = (k) => {
+    const cur = { ...amoOpMap };
+    delete cur[k];
+    updateProvider('amocrm', 'operator_user_map', cur);
+  };
 
   return (
     <div className="flex flex-col gap-6 animate-in fade-in duration-200 pb-12">
@@ -672,6 +721,50 @@ export default function Settings({ addToast, refreshKey }) {
               placeholder={isMaskedValue(multicom.sip_secret) ? 'Сохранён (нажмите, чтобы изменить)' : 'Пароль SIP'}
             />
           </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Сотрудник ATS по умолчанию (user)</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.default_user || ''}
+              onChange={(e) => updateProvider('multicom', 'default_user', e.target.value)}
+              placeholder="ats"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Секрет вебхука (X-Multicom-Secret)</label>
+            <input
+              type="password"
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.webhook_secret || ''}
+              onFocus={(e) => {
+                if (isMaskedValue(e.target.value)) {
+                  updateProvider('multicom', 'webhook_secret', '');
+                }
+              }}
+              onChange={(e) => updateProvider('multicom', 'webhook_secret', e.target.value)}
+              placeholder={isMaskedValue(multicom.webhook_secret) ? 'Сохранён (нажмите, чтобы изменить)' : 'Без него вебхук закрыт (403)'}
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Записывать разговоры на стороне оператора</label>
+            <select
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={multicom.record === false ? '0' : '1'}
+              onChange={(e) => updateProvider('multicom', 'record', e.target.value === '1')}
+            >
+              <option value="1">Да — просить запись в makecall</option>
+              <option value="0">Нет</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-line2 bg-[#0a1628]/60 p-3 text-[11px] text-muted leading-relaxed">
+          <div className="font-semibold text-white mb-1">URL вебхука для Мультикома</div>
+          Отдайте агрегатору адрес{' '}
+          <code className="text-acc2 break-all">{`${window.location.origin}/api/v2/webhooks/multicom`}</code>
+          {' '}и тот же секрет в заголовке <code className="text-acc2">X-Multicom-Secret</code>. ATS принимает
+          статусы <code>ringing / answered / completed / busy / no_answer / failed / canceled</code> и по ним
+          двигает автодозвон, ACD и выгрузку в CRM. Без секрета приём событий закрыт (fail-closed).
         </div>
       </div>
 
@@ -717,6 +810,32 @@ export default function Settings({ addToast, refreshKey }) {
         <h2 className="text-base font-bold text-white flex items-center gap-2">
           <Cpu className="w-5 h-5 text-cy" /> Настройки Asterisk AMI Manager
         </h2>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => runProviderAction('/ami/check', 'Проверка связи с Asterisk', 'ami', setAmiReport)}
+            className="px-3 py-1.5 rounded-xl bg-line/60 hover:bg-line text-white text-xs font-semibold flex items-center gap-1.5"
+          >
+            <CheckCircle className="w-3.5 h-3.5 text-ok" /> Проверить Asterisk и транк
+          </button>
+          <span className="text-muted">
+            Чек-лист: логин AMI, версия, регистрация у оператора, диалплан, кодеки, пул номеров.
+            Звонков не совершается.
+          </span>
+        </div>
+        {amiReport && amiReport.report && amiReport.report.checks && (
+          <div className="rounded-xl border border-line2 p-3 flex flex-col gap-1.5 text-xs">
+            {amiReport.report.checks.map((c) => (
+              <div key={c.name} className="flex items-start gap-2">
+                <span className={c.ok ? 'text-ok font-bold' : c.critical ? 'text-bad font-bold' : 'text-warn font-bold'}>
+                  {c.ok ? '✓' : c.critical ? '✕' : '!'}
+                </span>
+                <span className="text-white font-semibold w-40 shrink-0">{c.name}</span>
+                <span className="text-muted break-all whitespace-pre-wrap">{c.detail || '—'}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="text-muted block mb-1 font-semibold">Хост (IP / Host)</label>
@@ -742,7 +861,7 @@ export default function Settings({ addToast, refreshKey }) {
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={ami.user || ''}
               onChange={(e) => updateProvider('ami', 'user', e.target.value)}
-              placeholder="admin"
+              placeholder="ats (имя секции [ats] в manager.conf)"
             />
           </div>
           <div>
@@ -752,11 +871,163 @@ export default function Settings({ addToast, refreshKey }) {
               className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
               value={ami.secret || ''}
               onChange={(e) => updateProvider('ami', 'secret', e.target.value)}
+              placeholder="secret из /etc/asterisk/manager-ats.conf, НЕ пароль оператора"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Имя SIP-транка на операторе</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.trunk || ''}
+              onChange={(e) => updateProvider('ami', 'trunk', e.target.value)}
+              placeholder="mcm"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Технология канала</label>
+            <select
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.tech || 'PJSIP'}
+              onChange={(e) => updateProvider('ami', 'tech', e.target.value)}
+            >
+              <option value="PJSIP">PJSIP (Asterisk 12+)</option>
+              <option value="SIP">SIP / chan_sip (по документации оператора)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Формат номера для оператора</label>
+            <select
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.number_format || 'raw'}
+              onChange={(e) => updateProvider('ami', 'number_format', e.target.value)}
+            >
+              <option value="raw">как сохранён в базе</option>
+              <option value="ru8">8XXXXXXXXXX (Мультиком, РФ)</option>
+              <option value="e164">+7XXXXXXXXXX (E.164)</option>
+              <option value="d10">XXXXXXXXXX (10 цифр)</option>
+              <option value="digits">только цифры</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Формат подставляемого номера (CLI)</label>
+            <select
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.caller_id_format || 'digits'}
+              onChange={(e) => updateProvider('ami', 'caller_id_format', e.target.value)}
+            >
+              <option value="digits">только цифры</option>
+              <option value="ru8">8XXXXXXXXXX</option>
+              <option value="e164">+7XXXXXXXXXX</option>
+              <option value="d10">XXXXXXXXXX</option>
+              <option value="raw">как сохранён</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Контекст исходящих (диалплан)</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.context || 'ats-out'}
+              onChange={(e) => updateProvider('ami', 'context', e.target.value)}
+              placeholder="ats-out"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Префикс набора (после формата)</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.dial_prefix || ''}
+              onChange={(e) => updateProvider('ami', 'dial_prefix', e.target.value)}
+              placeholder="напр. 0 или пусто"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Контексты входящих (через запятую)</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={ami.inbound_contexts || 'from-mcm,ats-in'}
+              onChange={(e) => updateProvider('ami', 'inbound_contexts', e.target.value)}
+              placeholder="from-mcm,ats-in"
+            />
+          </div>
+          <div className="flex flex-col justify-center gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="amiPlayMessage"
+                checked={ami.play_message !== false}
+                onChange={(e) => updateProvider('ami', 'play_message', e.target.checked)}
+                className="accent-acc w-4 h-4 cursor-pointer"
+              />
+              <label htmlFor="amiPlayMessage" className="text-white font-medium cursor-pointer">
+                Озвучивать текст сообщения через AGI
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="amiInbound"
+                checked={ami.inbound_enabled !== false}
+                onChange={(e) => updateProvider('ami', 'inbound_enabled', e.target.checked)}
+                className="accent-acc w-4 h-4 cursor-pointer"
+              />
+              <label htmlFor="amiInbound" className="text-white font-medium cursor-pointer">
+                Входящие с транка — в журнал и CRM
+              </label>
+            </div>
+          </div>
+        </div>
+        <p className="text-muted leading-relaxed">
+          Поле «Имя SIP-транка» — то, что указано в <code>pjsip.conf</code>/<code>sip.conf</code> как
+          endpoint/peer (например <code>mcm</code>): набор идёт каналом
+          <code> PJSIP/номер@транк</code> или <code> SIP/транк/номер</code>. Формат номера задаёт то, что реально уйдёт
+          оператору: у «Мультиком» исходящий набор — <code>8XXXXXXXXXX</code>, CLI — 10 цифр.
+        </p>
+      </div>
+
+      {/* SECTION 5b: Записи разговоров */}
+      <div className="glass-panel p-6 rounded-2xl flex flex-col gap-4">
+        <h2 className="text-base font-bold text-white flex items-center gap-2">
+          <Cpu className="w-5 h-5 text-cy" /> Записи разговоров и ссылки на них
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Публичный базовый URL АТС</label>
+            <input
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={records.base_url || ''}
+              onChange={(e) => updateProvider('records', 'base_url', e.target.value)}
+              placeholder="https://ats.example.ru"
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Срок жизни ссылки, часов</label>
+            <input
+              type="number"
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={records.link_ttl_hours ?? 72}
+              onChange={(e) => updateProvider('records', 'link_ttl_hours', parseInt(e.target.value, 10) || 0)}
+            />
+          </div>
+          <div>
+            <label className="text-muted block mb-1 font-semibold">Секрет подписи (или переменная ATS_RECORDS_LINK_TOKEN)</label>
+            <input
+              type="password"
+              className="w-full bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+              value={records.link_secret || ''}
+              onChange={(e) => updateProvider('records', 'link_secret', e.target.value)}
               placeholder="••••••••"
             />
           </div>
         </div>
+        <p className="text-muted leading-relaxed">
+          Файлы записей лежат на сервере и наружу напрямую не отдаются. В сделку amoCRM подставляется
+          подписанная ссылка вида <code>/api/v2/records/&lt;звонок&gt;?exp=…&amp;sig=…</code> — она
+          живёт указанный срок и не требует токена сессии. При пустом базовом URL ссылка относительная.
+        </p>
       </div>
+
 
       {/* SECTION 6: LLM & CRM Settings */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -882,6 +1153,77 @@ export default function Settings({ addToast, refreshKey }) {
                     onChange={(e) => updateProvider('amocrm', 'responsible_user_id', parseInt(e.target.value) || 1)}
                     placeholder="1"
                   />
+                </div>
+                <div className="flex flex-col gap-2 pt-2 border-t border-line2/40">
+                  <label className="text-muted font-semibold">Соответствие операторов ATS → пользователей amoCRM</label>
+                  {amoUsers.length === 0 ? (
+                    <p className="text-warn text-xs">Список пользователей amoCRM пуст — сначала нажмите «Синхронизировать пользователей».</p>
+                  ) : (
+                    <>
+                      {amoOpMapEntries.length === 0 ? (
+                        <p className="text-dim text-xs">Соответствий пока нет — добавьте ниже.</p>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          {amoOpMapEntries.map(([atsKey, amoId]) => {
+                            const au = amoUsers.find((x) => String(x.id) === String(amoId));
+                            return (
+                              <div key={atsKey} className="flex items-center justify-between bg-[#0a1628] border border-line2 rounded-xl px-3 py-1.5">
+                                <span className="text-white text-xs font-mono truncate">
+                                  {atsKey} <span className="text-muted">→</span>{' '}
+                                  {au ? `${au.name || 'Без имени'}${au.email ? ` (${au.email})` : ''} [${au.id}]` : `id ${amoId}`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelOpMap(atsKey)}
+                                  className="p-1 rounded-lg text-muted hover:text-bad shrink-0"
+                                  title="Удалить соответствие"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div className="flex gap-2 flex-wrap">
+                        <select
+                          className="flex-1 min-w-[140px] bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+                          value={newOpKey}
+                          onChange={(e) => setNewOpKey(e.target.value)}
+                        >
+                          <option value="">Оператор ATS…</option>
+                          {availableOps.map((u) => {
+                            const k = atsOpKey(u);
+                            return (
+                              <option key={u.id} value={k}>
+                                {u.op_name || u.login} ({k})
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <select
+                          className="flex-1 min-w-[140px] bg-[#0a1628] border border-line2 rounded-xl px-3 py-2 text-white outline-none focus:border-acc"
+                          value={newAmoId}
+                          onChange={(e) => setNewAmoId(e.target.value)}
+                        >
+                          <option value="">Пользователь amoCRM…</option>
+                          {amoUsers.map((au) => (
+                            <option key={au.id} value={au.id}>
+                              {au.name || 'Без имени'}{au.email ? ` (${au.email})` : ''} [{au.id}]
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleAddOpMap}
+                          className="px-4 py-2 rounded-xl bg-acc text-white font-semibold text-xs hover:brightness-110 whitespace-nowrap"
+                        >
+                          Добавить
+                        </button>
+                      </div>
+                      <p className="text-dim text-[11px]">Звонки и задачи операторов будут регистрироваться в amoCRM на выбранных сотрудников. Сохранение — общей кнопкой «Сохранить все настройки».</p>
+                    </>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 pt-2 border-t border-line2/40">
                   <label className="flex items-center gap-2 text-white font-medium cursor-pointer">
