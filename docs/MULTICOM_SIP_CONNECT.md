@@ -225,8 +225,12 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 а `provider` останется прежним; переключают его потом, когда `POST /api/v2/ami/check`
 зелёный (Настройки → «Провайдер/CRM» → Asterisk AMI).
 
-Флаги: `--print` (показать конфиг до записи, пароль маскируется; `--reveal` — без маскировки) | `--dry-run` (ничего не писать) |
-`--check` (только диагностика) | `--firewall` (правила iptables/ufw на сеть оператора) |
+Флаги: `--print` (показать конфиг до записи; `password=`/`secret=` замаскированы, `--reveal` — без маскировки) |
+`--dry-run` (ничего не писать) | `--check` (только диагностика, тоже с маскировкой) |
+`--firewall` (правила iptables/ufw на сеть оператора; если `ufw` выключен — предупреждает,
+что правила ничего не фильтруют) |
+`--pjsip-standalone` (оставить в `/etc/asterisk/pjsip.conf` только наш `#include`, оригинал —
+рядом в `pjsip.conf.dist-<stamp>`; нужно, когда packaged-файл мешает увидеть секции транка) |
 `--ami` (пользователь AMI в `manager-ats.conf` **и** `ATS_AMI_SECRET` в `/etc/ats/ats.env`,
 права 0640 root:ats) |
 `--dialplan` (диалплан ATS + AGI озвучки + каталоги записей + cron раскладки записей — §6) | `--ats` (settings.ami + `provider=ami` через API, перезапуск не нужен) |
@@ -234,9 +238,22 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 `--restart` (перезапустить сервис после `--ats`). Скрипт можно запускать повторно — он
 дописывает/обновляет, а не удваивает строки (`#include`, `ATS_AMI_SECRET`).
 
+`#include` ставится **первой строкой** целевого файла (`ensure_include`), а не в хвост:
+хвостовая строка в дистрибутивных `pjsip.conf`/`extensions.conf` (километры комментариев)
+оказывается внутри чужой секции, молча игнорируется, и `pjsip show endpoints` отвечает
+«No objects found» — ровно так было на живой коробке. После reload скрипт проверяет, что
+`endpoint` появился, и если нет — прямо об этом пишет и не ждёт регистрацию впустую
+(ожидание, кстати, тоже не обрывает установку: шаги `--ats`/`--numbers` выполняются,
+а таймаут превращается в финальный `exit 1`; `REG_TIMEOUT=0` — не ждать вовсе).
+
+Окружение помимо `MCM_*`: `MCM_REVEAL=1`, `REG_TIMEOUT`, `AMIPASS`, `ATS_URL`, `ATS_TOKEN`,
+`ATS_LOGIN`, `ATS_KEEP_PROVIDER=1`, `ALLOW_NONROOT=1` (стенды без root), `AGI_DIR`, `AST_DIR`.
+
 Переопределяемые значения по умолчанию: `MCM_LOGIN` (`00083819`), `MCM_HOST`/`MCM_PORT`
 (`95.128.224.47`/`5060`), `MCM_TRUNK` (`mcm` — имя секции и оно же `settings.ami.trunk`),
-`MCM_NET` (`95.128.224.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (`alaw,ulaw,g729`),
+`MCM_NET` (`95.128.224.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (пусто = `alaw,ulaw`,
+`g729` подмешивается сам, если `asterisk -rx "core show codec"` его знает — в
+`asterisk-modules` Ubuntu 24.04 модуля нет, см. шаг 3 `docs/MULTICOM_SETUP_STEPS.md`),
 `MCM_MAX_CHANNELS` (`15`), `MCM_NUMBERS` (список из письма), `MCM_NUMBER_PROVIDER` (`ami`),
 `MCM_DAILY_LIMIT` (`120`), `AMI_USER` (`ats`), `ATS_ENV_FILE` (`/etc/ats/ats.env`),
 `ATS_URL` (`http://127.0.0.1:9124`), `REG_TIMEOUT` (секунд ждать регистрацию; `0` — не ждать),

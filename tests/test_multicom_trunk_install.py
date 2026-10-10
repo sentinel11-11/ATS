@@ -22,6 +22,7 @@ SCRIPT = ROOT / "deploy" / "asterisk" / "install-multicom-trunk.sh"
 FAKE_ASTERISK = """#!/bin/sh
 case "$*" in
   *"show registrations"*|*"show contacts"*) echo "  00083819@95.128.224.47  200 OK  Registered" ;;
+  *"show endpoints"*) echo "  mcm                                    95.128.224.47:5060" ;;
   *"dialplan show"*) echo "Context 'ats-out'" ;;
   *) echo "ok" ;;
 esac
@@ -137,6 +138,46 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
                          "двойной #include плодит дубли секций при перечитывании")
         self.assertTrue(list(self.dir.glob("pjsip-multicom.conf.bak-*")),
                         "перед перезаписью обязана оставаться резервная копия")
+
+    def test_include_first_line_in_distro_sample(self):
+        """Дистрибутивный pjsip.conf — километровый закомментированный образец. #include,
+        дописанный в его хвост, попадает в чужую секцию и молча игнорируется (живой случай:
+        файл есть, права есть, «No objects found»). Значит include ставим первой строкой."""
+        sample = "\n".join(["; sample %d" % i for i in range(1, 400)]
+                           + ["[global]", "; enabled=yes", "#include pjsip-multicom.conf"]) + "\n"
+        (self.dir / "pjsip.conf").write_text(sample, encoding="utf-8")
+        self.assertEqual(run(env=self.env).returncode, 0)
+        text = (self.dir / "pjsip.conf").read_text(encoding="utf-8")
+        self.assertEqual(text.splitlines()[0], "#include pjsip-multicom.conf")
+        self.assertEqual(text.count("pjsip-multicom.conf"), 1,
+                         "хвостовую строку надо убрать, а не оставить вторую рядом с первой")
+        self.assertIn("[global]", text, "содержимое образца терять нельзя")
+        self.assertEqual(run(env=self.env).returncode, 0)
+        self.assertEqual((self.dir / "pjsip.conf").read_text(encoding="utf-8").count("pjsip-multicom.conf"), 1)
+
+    def test_pjsip_standalone_leaves_only_include(self):
+        """--pjsip-standalone: в pjsip.conf остаётся только наш include, оригинал — рядом."""
+        (self.dir / "pjsip.conf").write_text("[global]\n; long\n; distro\n; sample\n", encoding="utf-8")
+        self.assertEqual(run(["--pjsip-standalone"], env=self.env).returncode, 0)
+        lines = [l for l in (self.dir / "pjsip.conf").read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.assertEqual(lines, ["#include pjsip-multicom.conf"])
+        self.assertTrue(list(self.dir.glob("pjsip.conf.dist-*")), "оригинал обязан быть сохранён")
+        size = (self.dir / "pjsip.conf").stat().st_size
+        self.assertEqual(run(["--pjsip-standalone"], env=self.env).returncode, 0)
+        self.assertEqual((self.dir / "pjsip.conf").stat().st_size, size, "повторный прогон не перезаписывает")
+        self.assertEqual(len(list(self.dir.glob("pjsip.conf.dist-*"))), 1, "бэкап плодить нельзя")
+
+    def test_ami_password_hidden_unless_reveal(self):
+        """Пароль AMI в выводе — утечка в терминал/скриншот; по умолчанию маскируется."""
+        env = dict(self.env, AMIPASS="sup3rsecret-ami", ATS_ENV_FILE=str(self.dir / "ats.env"))
+        p = run(["--ami"], env=env)
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        self.assertNotIn("sup3rsecret-ami", p.stdout + p.stderr)
+        self.assertIn("--reveal", p.stdout + p.stderr, "должно быть сказано, как посмотреть пароль")
+        self.assertIn("sup3rsecret-ami", (self.dir / "ats.env").read_text(encoding="utf-8"),
+                      "маскировка вывода не означает, что секрет не записан")
+        r = run(["--ami", "--reveal"], env=env)
+        self.assertIn("sup3rsecret-ami", r.stdout + r.stderr)
 
     def test_dialplan_flag_installs_dialplan_agi_include(self):
         """--dialplan: контексты ats-out/from-mcm должны попасть в Asterisk, иначе звонков нет."""

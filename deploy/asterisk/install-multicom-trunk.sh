@@ -10,7 +10,8 @@
 #       перенос строки ломает секцию, поэтому такое не должно пролезть ни через
 #       окружение, ни через UI/API;
 #    3) права 0640 root:asterisk, резервная копия предыдущей версии;
-#    4) идемпотентно добавляет #include pjsip-multicom.conf в pjsip.conf;
+#    4) идемпотентно ставит #include pjsip-multicom.conf ПЕРВОЙ строкой pjsip.conf
+#       (в хвосте дистрибутивного файла он попадает в чужую секцию и игнорируется);
 #    5) module reload res_pjsip.so и ожидание регистрации у оператора;
 #    6) --firewall  только allow-правила на сеть оператора (по умолчанию НЕ
 #       трогает файрвол, а печатает команды);
@@ -19,6 +20,13 @@
 #       extensions.conf), ats-tts.conf, AGI ats_say.py, каталоги записей/TTS и
 #       cron на раскладку записей по звонкам. Без этого шага транк регистрируется,
 #       но звонки не ходят: нет контекста ats-out (запись + озвучка) и from-mcm.
+#    9) --pjsip-standalone оставить в /etc/asterisk/pjsip.conf только наш #include
+#       (оригинал сохраняется рядом как pjsip.conf.dist-<stamp>) — когда packaged
+#       pjsip.conf мешает Asterisk увидеть секции транка;
+#   --reveal / MCM_REVEAL=1 печатает реальные секреты (--print, --check, пароль AMI);
+#   по умолчанию все они скрыты — вывод можно спокойно показывать в чате/тикете.
+#   Сгенерированный пароль AMI хранится в $ATS_ENV_FILE (ATS_AMI_SECRET) и в
+#   manager-ats.conf; в веб-интерфейсе поле заполнять не нужно, если юнит читает env.
 #
 #  В репозиторий данные письма не попадают: пароль транка берётся из окружения
 #  (MCM_PASS) или спрашивается с терминала; если он уже есть в установленном
@@ -44,7 +52,7 @@
 #      --numbers-only  только номера: файл транка не трогать, root не нужен
 #  Переменные (значения по умолчанию = данные из письма):
 #      MCM_LOGIN=00083819 MCM_HOST=95.128.224.47 MCM_PORT=5060 MCM_TRUNK=mcm
-#      MCM_NET=95.128.224.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw,g729
+#      MCM_NET=95.128.224.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw
 #      MCM_MAX_CHANNELS=15 REG_TIMEOUT=40 AST_DIR=/etc/asterisk
 #      AGI_DIR=/var/lib/asterisk/agi-bin ATS_ENV_FILE=/etc/ats/ats.env
 #      ATS_KEEP_PROVIDER=1 — settings.ami записать, но текущий провайдер не менять
@@ -63,7 +71,7 @@ MCM_PORT="${MCM_PORT:-5060}"
 MCM_TRUNK="${MCM_TRUNK:-mcm}"
 MCM_NET="${MCM_NET:-95.128.224.0/21}"
 MCM_RTP="${MCM_RTP:-10000-20000}"
-MCM_CODECS="${MCM_CODECS:-alaw,ulaw,g729}"
+MCM_CODECS="${MCM_CODECS:-}"   # пусто = выбираем сами: g729 только если модуль есть в Asterisk
 MCM_MAX_CHANNELS="${MCM_MAX_CHANNELS:-15}"
 REG_TIMEOUT="${REG_TIMEOUT:-40}"
 # Номера из письма (10 цифр, без «7»): идут в пул АТС, а не в Asterisk.
@@ -76,6 +84,7 @@ ATS_URL="${ATS_URL:-http://127.0.0.1:9124}"
 PASS_SENTINEL='__MCM_PASS__'
 
 MCM_REVEAL="${MCM_REVEAL:-0}"
+PJSIP_STANDALONE="${PJSIP_STANDALONE:-0}"
 MODE="install"; FIREWALL=0; WANT_AMI=0; WANT_NUMBERS=0; WANT_ATS=0; WANT_RESTART=0; WANT_DIALPLAN=0
 REG_FAILED=0
 for a in "$@"; do
@@ -86,6 +95,7 @@ for a in "$@"; do
     --check)    MODE="check" ;;
     --firewall) FIREWALL=1 ;;
     --dialplan) WANT_DIALPLAN=1 ;;
+    --pjsip-standalone) PJSIP_STANDALONE=1 ;;
     --ami)      WANT_AMI=1 ;;
     --ats)       WANT_ATS=1 ;;
     --restart)   WANT_RESTART=1; WANT_ATS=1 ;;
@@ -154,6 +164,20 @@ fi
 check_value MCM_PASS "$MCM_PASS" || exit 1
 
 # ------------------------------------------------------------------- кодеки --
+# g729 в список попадает, только если модуль реально установлен: в asterisk-modules
+# Ubuntu 24.04 его нет, а allow=g729 в конфиге потом рождает в логе
+# «Codec 'g729' is not supported» и ничего не даёт при согласовании с оператором.
+resolve_codecs() {
+  [ -n "$MCM_CODECS" ] && return 0
+  MCM_CODECS="alaw,ulaw"
+  if command -v "$ASTERISK_CMD" >/dev/null 2>&1 \
+     && "$ASTERISK_CMD" -rx "core show codec" 2>/dev/null | grep -qw "g729"; then
+    MCM_CODECS="alaw,ulaw,g729"
+    log "кодек g729 найден в Asterisk — добавлен в allow="
+  fi
+}
+resolve_codecs
+
 ALLOW_BLOCK=""
 IFS=',' read -ra _codecs <<< "$MCM_CODECS"
 for c in "${_codecs[@]}"; do
@@ -283,6 +307,22 @@ PYATS
   fi
 }
 
+# #include в конфиг Asterisk — ПЕРВОЙ строкой. Хвостовые include в дистрибутивных
+# pjsip.conf/extensions.conf (это километровые закомментированные примеры) попадают
+# в чужую секцию и молча игнорируются: объекты не создаются, CLI отвечает
+# «No objects found». Если строка уже есть в хвосте — переносим наверх.
+# Идемпотентно: повторный прогон файл не множит, права и владельца сохраняем.
+ensure_include() {
+  local f="$1" inc="$2" tmp rc=0
+  [ -f "$f" ] || return 1
+  if [ "$(head -1 "$f")" = "#include $inc" ]; then return 0; fi
+  tmp="$(mktemp)" || return 1
+  { printf '#include %s\n' "$inc"; grep -vxF "#include $inc" "$f"; } > "$tmp" || rc=1
+  cat "$tmp" > "$f" || rc=1
+  rm -f "$tmp"
+  return $rc
+}
+
 have_asterisk() { command -v "$ASTERISK_CMD" >/dev/null 2>&1; }
 
 registration_state() {
@@ -312,12 +352,23 @@ check_only() {
     done
     awk '/^\[/ {sec=$0} /^allow=/ {found[sec]=found[sec] $0 " "} END {for (s in found) if (found[s] != "") print "  " s found[s]}' "$OUT_PATH"
   fi
-  grep -q 'pjsip-multicom.conf' "$AST_DIR/pjsip.conf" 2>/dev/null \
-    || { warn "в $AST_DIR/pjsip.conf нет '#include pjsip-multicom.conf' — Asterisk файл не увидит"; rc=1; }
+  if [ ! -f "$AST_DIR/pjsip.conf" ]; then
+    warn "нет $AST_DIR/pjsip.conf — включение нашего файла некуда вставлять"; rc=1
+  elif [ "$(head -1 "$AST_DIR/pjsip.conf")" = "#include pjsip-multicom.conf" ]; then
+    log "pjsip.conf: '#include pjsip-multicom.conf' первой строкой — ок"
+  elif grep -q 'pjsip-multicom.conf' "$AST_DIR/pjsip.conf" 2>/dev/null; then
+    # ровно та причина, из-за которой на живой коробке были «No objects found»
+    warn "pjsip.conf: '#include pjsip-multicom.conf' есть, но НЕ первой строкой —" \
+         "в дистрибутивном образце такая строка попадает в чужую секцию и игнорируется"
+    warn "починить: sudo -E ./deploy/asterisk/install-multicom-trunk.sh --pjsip-standalone"
+    rc=1
+  else
+    warn "в $AST_DIR/pjsip.conf нет '#include pjsip-multicom.conf' — Asterisk файл не увидит"; rc=1
+  fi
   if have_asterisk; then
     if "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | grep -qi "No objects found"; then
       warn "Asterisk не загрузил ни одного endpoint'а: секции из $OUT_PATH не прочитаны."
-      warn "смотрите: $ASTERISK_CMD -rx \"module reload res_pjsip.so\" и /var/log/asterisk/full"
+      warn "смотрите: $ASTERISK_CMD -rx \"module reload res_pjsip.so\", /etc/asterisk/pjsip.conf (include первой строкой) и /var/log/asterisk/messages"
       rc=1
     else
       log "endpoint'ы в Asterisk есть"
@@ -356,7 +407,7 @@ fi
 # ALLOW_NONROOT=1 — только для тестов и для случая «нет root, но каталог доступен
 # на запись» (например, контейнер/стенд с AST_DIR в tmpfs). На проде не ставить.
 if [ "$(id -u)" != "0" ] && [ "${ALLOW_NONROOT:-0}" != "1" ]; then
-  die "нужны права root (пишем в $AST_DIR). Запуск: sudo -E $0"
+  die "нужны права root (пишем в $AST_DIR). Запуск: sudo -E $0  (тесты на стенде без root: ALLOW_NONROOT=1)"
 fi
 [ -d "$AST_DIR" ] || die "нет каталога $AST_DIR — сначала: apt-get install -y asterisk asterisk-config asterisk-modules espeak-ng (в Ubuntu 24.04 пакета asterisk-cli нет — CLI входит в asterisk)"
 
@@ -391,10 +442,11 @@ rm -f "$tmp"
 log "установлен $OUT_PATH (0640$( [ "$(id -u)" = "0" ] && echo " root:$grp" )), транк='$MCM_TRUNK', регистрация $MCM_LOGIN@$MCM_HOST:$MCM_PORT"
 
 if [ -f "$AST_DIR/pjsip.conf" ]; then
-  grep -q 'pjsip-multicom.conf' "$AST_DIR/pjsip.conf" \
-    || { printf '#include pjsip-multicom.conf\n' >> "$AST_DIR/pjsip.conf"; log "#include добавлен в pjsip.conf"; }
+  ensure_include "$AST_DIR/pjsip.conf" "pjsip-multicom.conf" \
+    && log "pjsip.conf: '#include pjsip-multicom.conf' обеспечен первой строкой"
 else
-  warn "нет $AST_DIR/pjsip.conf — восстановите конфиг из пакета или создайте пустой файл со строкой #include pjsip-multicom.conf"
+  printf '#include pjsip-multicom.conf\n' > "$AST_DIR/pjsip.conf" \
+    && log "pjsip.conf создан (в нём только '#include pjsip-multicom.conf')"
 fi
 
 # ------------------------------------------------------ диалплан и озвучка ----
@@ -418,9 +470,8 @@ install_dialplan() {
     fi
   done
   if [ -f "$AST_DIR/extensions.conf" ]; then
-    grep -q 'extensions-ats.conf' "$AST_DIR/extensions.conf" \
-      || { printf '#include extensions-ats.conf\n' >> "$AST_DIR/extensions.conf" \
-           && log "#include добавлен в extensions.conf"; }
+    ensure_include "$AST_DIR/extensions.conf" "extensions-ats.conf" \
+      && log "extensions.conf: '#include extensions-ats.conf' обеспечен первой строкой"
   else
     warn "нет $AST_DIR/extensions.conf — добавьте '#include extensions-ats.conf' вручную"
   fi
@@ -485,8 +536,7 @@ if [ "$WANT_AMI" = "1" ]; then
     sed -i "s|^secret *= .*|secret = $(esc "$AMIPASS")|" "$MT"
     chmod 0640 "$MT"
     if [ -f "$AST_DIR/manager.conf" ]; then
-      grep -q 'manager-ats.conf' "$AST_DIR/manager.conf" \
-        || printf '#include manager-ats.conf\n' >> "$AST_DIR/manager.conf"
+      ensure_include "$AST_DIR/manager.conf" "manager-ats.conf"
       sed -i 's/^enabled = no/enabled = yes/' "$AST_DIR/manager.conf"
     else
       warn "нет $AST_DIR/manager.conf — создайте его с секцией [general] enabled = yes и строкой #include manager-ats.conf"
@@ -523,8 +573,13 @@ if [ "$WANT_AMI" = "1" ]; then
           warn "нет каталога $(dirname "$ATS_ENV_FILE") — писать ATS_AMI_SECRET некуда, пароль только в настройках АТС"
         fi ;;
     esac
-    log "AMI: пользователь 'ats'. Пароль (вбить в АТС → Asterisk AMI Manager → «AMI Пароль»):"
-    log "     $AMIPASS"
+    log "AMI: пользователь 'ats' создан; его пароль — в $ATS_ENV_FILE (ATS_AMI_SECRET) и в $AST_DIR/manager-ats.conf"
+    if [ "$MCM_REVEAL" = "1" ]; then
+      log "     $AMIPASS"
+    else
+      log "     *** (полное значение — --reveal). В веб-интерфейсе поле «AMI Пароль» заполнять"
+      log "         не нужно, если юнит читает ats.env: systemctl cat ats | grep EnvironmentFile"
+    fi
   else
     warn "нет $MT — скопируйте deploy/asterisk/manager-ats.conf и повторите --ami"
   fi
@@ -533,6 +588,10 @@ fi
 # ------------------------------------------------------------------- файрвол --
 if [ "$FIREWALL" = "1" ]; then
   if command -v ufw >/dev/null 2>&1; then
+    if ! ufw status 2>/dev/null | head -1 | grep -qi active; then
+      warn "ufw выключен (Status: inactive): правила попадут в список, но фильтровать ничего не будут."
+      warn "включать так — иначе потеряете SSH: ufw allow OpenSSH && ufw allow from $MCM_NET to any port $MCM_PORT proto udp && ufw enable"
+    fi
     for proto in udp tcp; do
       ufw allow from "$MCM_NET" to any port "$MCM_PORT" proto "$proto" >/dev/null 2>&1 \
         && log "ufw: $MCM_NET → $MCM_PORT/$proto"
@@ -552,11 +611,34 @@ else
   log "файрвол не трогал (--firewall). Нужные правила: разрешить $MCM_NET → $MCM_PORT udp+tcp и RTP $MCM_RTP/udp"
 fi
 
+# --pjsip-standalone: заменяем дистрибутивный pjsip.conf на однострочный include
+# нашего файла (оригинал сохраняем рядом). Помогает, когда packaged-пример мешает
+# Asterisk увидеть наши секции: после такого pjsip.conf объектов больше не будет
+# только если причина в содержимом нашего файла, а не в способе подключения.
+if [ "$PJSIP_STANDALONE" = "1" ] && [ -f "$AST_DIR/pjsip.conf" ]; then
+  # перезаписываем, только если в файле есть что-то кроме нашей строки include
+  if ! diff -q <(printf '#include pjsip-multicom.conf\n') <(grep . "$AST_DIR/pjsip.conf") >/dev/null 2>&1; then
+    cp -a "$AST_DIR/pjsip.conf" "$AST_DIR/pjsip.conf.dist-$stamp" \
+      && log "pjsip.conf: оригинал сохранён как pjsip.conf.dist-$stamp"
+    printf '#include pjsip-multicom.conf\n' > "$AST_DIR/pjsip.conf" \
+      && log "pjsip.conf: оставлена только строка '#include pjsip-multicom.conf'"
+  fi
+fi
+
 # ------------------------------------------------------- применить и проверить
 if have_asterisk; then
   "$ASTERISK_CMD" -rx "module reload res_pjsip.so" >/dev/null 2>&1 \
     && log "res_pjsip перечитан" \
     || warn "module reload res_pjsip.so не прошёл (systemctl status asterisk)"
+  # Секции должны появиться сразу после reload. Если их нет — конфиг не прочитан,
+  # и ждать регистрацию бессмысленно: говорим прямо, а не молча крутим цикл.
+  if ! "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | grep -q "$MCM_TRUNK"; then
+    warn "Asterisk не создал endpoint '$MCM_TRUNK' — секции из $OUT_PATH не прочитаны"
+    warn "куда смотреть: /etc/asterisk/pjsip.conf (у нас там #include первой строкой)," \
+         "/var/log/asterisk/messages (в Ubuntu файла full нет; список файлов — в /etc/asterisk/logger.conf)"
+    warn "если дистрибутивный pjsip.conf мешает — перезапустите с --pjsip-standalone (оригинал сохранит рядом)"
+    "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | head -3 | sed 's/^/      /'
+  fi
   if [ "$REG_TIMEOUT" = "0" ]; then
     log "ожидание регистрации пропущено (REG_TIMEOUT=0)"
   else

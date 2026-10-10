@@ -118,7 +118,9 @@ unset MCM_PASS
 `env: «MCM_PASS»: No such file or directory`.
 
 Признак успеха: в `--print` видны `auth_name=…`, `server_uri=sip:…:5060`, `allow=alaw/ulaw/g729`,
-`match=<IP>/32`; `password=` в `--dry-run` скрыт (`***`), ни одной метки `__MCM_` не осталось.
+`match=<IP>/32`; `--dry-run` печатает только план (куда что ляжет), сам конфиг с замаскированным
+`password=` смотрите в `--print`, полное значение — `--print --reveal`. Ни одной метки `__MCM_`
+не осталось.
 `--dry-run` не должен писать «добавлю #include», если include уже есть.
 
 ## Шаг 6. Применить всё разом
@@ -139,6 +141,28 @@ set -o history
 в stderr: 403 (неверный логин/пароль) или `429 too_many_attempts` (защита от перебора:
 подождать `retry_after_sec`). Ручная замена хелперу — `POST /api/v2/auth/login` и поле
 `token` из ответа.
+
+Хелпер умеет читать и со stdin — удобно, когда TTY нет (команда внутри `$(…)`, tmux-буфер,
+paste из чата): `printf 'admin\nПАРОЛЬ\n' | ./deploy/ats-token.sh`. `403 bad_login` означает,
+что пароль ввели не тот (в том числе буквально `ПАРОЛЬ_…` из примера), — сам хелпер в этом
+не виноват. Пароль администратора АТС не помните (или логин заблокирован после перебора)? Сбросьте его с консоли —
+команда и подробности в `docs/SECURITY_CLEANUP.md` §2:
+
+```bash
+sudo -u ats ATS_DATA_DIR=/var/lib/ats /opt/ats/app/venv/bin/python -m app.run --set-password admin
+sudo systemctl restart ats
+```
+
+**Прерванный прогон целиком не повторяют.** Файлы транка и диалплана уже лежат, пароль AMI
+сгенерирован и записан — значит не хватает только `--ats`/`--numbers`:
+
+```bash
+export ATS_TOKEN=$(printf 'admin\n' | ./deploy/ats-token.sh)   # или обычный запуск без pipe
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh --ats --numbers --restart
+```
+
+`--ami` повторно не передавайте — он генерирует новый пароль и перезаписывает
+`/etc/ats/ats.env` (старый звонить перестанет, пока АТС не перезапустится).
 
 **Если по этому же серверу уже идёт боевой обзвон через другого оператора** (в проде так и
 было: `provider=megafon_vats`), переключать провайдера сразу нельзя — дозовите сначала
@@ -189,30 +213,63 @@ sudo tail -30 /var/log/asterisk/messages | grep -iE "regist|40[13]|pjsip"
 или обратное правило на их сеть; контакт есть, но `Non-Corr` — нормально, корреляция появится
 после первого звонка.
 
-### 7а. Если `pjsip show registrations` отвечает «No objects found»
+### 7а. «No objects found» — Asterisk не прочитал наш конфиг
 
-Это **не** «оператор нас не пустил» — это «Asterisk не прочитал наш файл»: объектов нет вообще,
-ни endpoint'а, ни транспорта. Порядок разбора:
+Это **не** «оператор нас не пустил», а «Asterisk не увидел ни одной секции»: объектов нет
+вообще. Проживший пример с коробки: `/etc/asterisk/pjsip.conf` в Ubuntu — километровый
+закомментированный образец, и дописанная в его хвост строка `#include` попадает внутрь чужой
+секции. Asterisk на это не жалуется — он просто не применяет включение, и `pjsip show
+transports` / `show endpoints` / `show registrations` отвечают `No objects found`, хотя файл
+`/etc/asterisk/pjsip-multicom.conf` на месте и права правильные. Скрипт с этой версии ставит
+`#include` **первой строкой** и сам проверяет, что endpoint появился после reload.
 
 ```bash
-asterisk -rx "pjsip show transports"          # есть ли transport-udp
-asterisk -rx "pjsip show endpoints"           # есть ли mcm
-grep -n "include" /etc/asterisk/pjsip.conf     # наша строка на месте?
-ls -l /etc/asterisk/pjsip-multicom.conf       # читается ли группой asterisk
-tail -40 /var/log/asterisk/full | grep -iE "pjsip|syntax|error|warn"
-systemctl restart asterisk                    # перечитать всё и увидеть ошибку в логе
-asterisk -rx "pjsip show endpoints"           # после рестарта
+head -1 /etc/asterisk/pjsip.conf      # должно быть: #include pjsip-multicom.conf
+ls -l /etc/asterisk/pjsip-multicom.conf             # 0640 root:asterisk
+sudo -u asterisk head -3 /etc/asterisk/pjsip-multicom.conf   # демон действительно может читать
+asterisk -rx "module reload res_pjsip.so"
+asterisk -rx "pjsip show endpoints" ; asterisk -rx "pjsip show transports"
 ```
 
-`module reload res_pjsip.so` применяет конфиг не во всех сборках одинаково аккуратно, поэтому
-рестартовать `asterisk` — самый быстрый способ отделить «файл не читается» от «регистратор
-молчит». После рестарта в логе будет точная строка ошибки, если в файле синтаксис
-(например, `;` внутри значения). Если после рестарта endpoint появился, а регистрации нет —
-это уже сеть/пароль/IP, иду дальше по шагам 8–12.
+Если после перезапуска демона всё равно пусто — оставляем в `pjsip.conf` только наше включение
+(оригинал скрипт сохранит рядом как `pjsip.conf.dist-<stamp>`):
 
-Отдельно проверьте файрвол: `ufw status verbose`. Правила `ufw allow …`, добавленные скриптом,
-ничему не применяются, если ufw **выключен** — тогда он просто список правил вхолостую
-(наружу UDP 5060 при этом и так проходит, а вот входящие могут резать).
+```bash
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh --pjsip-standalone
+asterisk -rx "pjsip show endpoints" ; asterisk -rx "pjsip show registrations"
+```
+
+Объектов по-прежнему нет — ищем точную строку ошибки в логе. В Ubuntu пишет
+`/var/log/asterisk/messages`, файла `full` по умолчанию нет (список файлов логов — в
+`/etc/asterisk/logger.conf`):
+
+```bash
+ls -l /var/log/asterisk/
+grep -iE "pjsip|syntax|error" /var/log/asterisk/messages | tail -30
+```
+
+И последний аргумент, когда лог молчит: запустить Asterisk на переднем плане — он сам скажет,
+какие файлы читает и на чём споткнулся:
+
+```bash
+asterisk -rx "core show settings" | grep -iE -m4 "astetcdir|config"   # каталог = /etc/asterisk?
+sudo systemctl stop asterisk
+sudo -u asterisk /usr/sbin/asterisk -vvvvc      # читаем экран; выход — Ctrl-]
+sudo systemctl start asterisk
+```
+
+`-c` без пайпа намеренно: с `| grep` консоль не интерактивная и `Ctrl-]` не работает. Если
+запуск на переднем плане отвечает «Another Asterisk instance is running» — значит второй
+экземпляр всё-таки есть, и `asterisk -rx` говорит именно с ним, а не с тем, что читает ваши
+конфиги. Проверьте `ps aux | grep -c '[a]sterisk'` и `systemctl status asterisk`.
+
+В норме на экране есть `Parsing '/etc/asterisk/pjsip.conf'` и ошибка на строке, если включение
+не применилось. Строки `pjsip-multicom.conf` нет вообще — включение не дошло (проверьте
+`astetcdir` в `/etc/asterisk/asterisk.conf` и запускайте `--pjsip-standalone`).
+
+А вот `401/403` в `pjsip show registrations` — уже другой случай: конфиг прочитан, оператор
+спрашивает пароль/IP. Смотрите `MCM_PASS`, whitelist (`curl -s ifconfig.me` → в письмо
+оператору) и шаг 12.
 
 ## Шаг 8. AMI: доступ АТС к Asterisk
 
@@ -313,7 +370,7 @@ sudo systemctl daemon-reload && sudo systemctl restart ats
 
 | Симптом | Где искать и что делать |
 |---|---|
-| `module reload` «успешен», но `pjsip show endpoints` пуст | `#include` в `pjsip.conf` отсутствует или секция с таким именем уже есть в основном конфиге → `sudo asterisk -rx "module reload res_pjsip.so"` и `grep -rn "\[mcm\]" /etc/asterisk/` |
+| `module reload` «успешен», но `pjsip show endpoints` пуст | §7а: `#include` не первой строкой (дистрибутивный `pjsip.conf` съедает включение) или секция `[mcm]` уже есть в основном конфиге → `grep -rn "\[mcm\]" /etc/asterisk/`, затем `--pjsip-standalone` |
 | `401/403` на регистрации | пароль (не тот, что AMI!) или оператор не добавил ваш IP в whitelist: `curl -s ifconfig.me` → в письмо оператору |
 | Один звук / нет звука | RTP: `MCM_RTP` и `local_net`/`external_signaling_address` в `[transport-udp]`; правило на `95.128.224.0/21` для `10000-20000/udp`; `rtp.conf` |
 | `dialplan show ats-out` пусто | не запускали `--dialplan` (или нет `#include extensions-ats.conf`) → повторить шаг 6 с `--dialplan` |
