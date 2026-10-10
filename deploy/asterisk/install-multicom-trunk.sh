@@ -32,6 +32,7 @@
 #  (sudo ищет её в своём окружении), а read -s — чтобы секрет не попал в ps и историю.
 #  Режимы:
 #      --print     показать результат, ничего не писать
+#      --reveal    в паре с --print: показать и пароль (по умолчанию маскируется)
 #      --dry-run   показать, что будет сделано
 #      --check     только проверка (файл/плейсхолдеры/#include/регистрация)
 #      --firewall  применить правила файрвола
@@ -74,10 +75,13 @@ MCM_DAILY_LIMIT="${MCM_DAILY_LIMIT:-120}"
 ATS_URL="${ATS_URL:-http://127.0.0.1:9124}"
 PASS_SENTINEL='__MCM_PASS__'
 
+MCM_REVEAL="${MCM_REVEAL:-0}"
 MODE="install"; FIREWALL=0; WANT_AMI=0; WANT_NUMBERS=0; WANT_ATS=0; WANT_RESTART=0; WANT_DIALPLAN=0
+REG_FAILED=0
 for a in "$@"; do
   case "$a" in
     --print)    MODE="print" ;;
+    --reveal)   MCM_REVEAL=1 ;;
     --dry-run)  MODE="dry" ;;
     --check)    MODE="check" ;;
     --firewall) FIREWALL=1 ;;
@@ -299,7 +303,11 @@ check_only() {
       line="$(sed -n "s/^$k=//p" "$OUT_PATH" | head -1)"
       case "$line" in
         ''|"$PASS_SENTINEL"|ПАРОЛЬ_ИЗ_ПИСЬМА) warn "поле $k не заполнено"; rc=1 ;;
-        *) log "  $k = $line" ;;
+        *) if [ "$k" = "password" ] || [ "$k" = "secret" ]; then
+             log "  $k = *** (задан, ${#line} симв.)"
+           else
+             log "  $k = $line"
+           fi ;;
       esac
     done
     awk '/^\[/ {sec=$0} /^allow=/ {found[sec]=found[sec] $0 " "} END {for (s in found) if (found[s] != "") print "  " s found[s]}' "$OUT_PATH"
@@ -307,6 +315,13 @@ check_only() {
   grep -q 'pjsip-multicom.conf' "$AST_DIR/pjsip.conf" 2>/dev/null \
     || { warn "в $AST_DIR/pjsip.conf нет '#include pjsip-multicom.conf' — Asterisk файл не увидит"; rc=1; }
   if have_asterisk; then
+    if "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | grep -qi "No objects found"; then
+      warn "Asterisk не загрузил ни одного endpoint'а: секции из $OUT_PATH не прочитаны."
+      warn "смотрите: $ASTERISK_CMD -rx \"module reload res_pjsip.so\" и /var/log/asterisk/full"
+      rc=1
+    else
+      log "endpoint'ы в Asterisk есть"
+    fi
     local st; st="$(registration_state)"
     if printf '%s' "$st" | grep -Eqi "200|registered|avail|bound"; then
       log "регистрация/контакт есть"
@@ -320,7 +335,16 @@ check_only() {
 }
 
 case "$MODE" in
-  print) printf '%s\n' "$rendered"; exit 0 ;;
+  print)
+    # пароль в --print не печатаем: вывод копируют в чаты и баг-репорты (реальное значение —
+    # только по явному --reveal / MCM_REVEAL=1)
+    if [ "$MCM_REVEAL" = "1" ]; then
+      printf '%s\n' "$rendered"
+    else
+      printf '%s\n' "$rendered" | sed -e 's/^password=.*/password=*** (полное значение — --reveal)/' \
+                                   -e 's/^secret *=.*/secret = *** (полное значение — --reveal)/'
+    fi
+    exit 0 ;;
   check) if check_only; then log "всё в порядке"; exit 0; else exit 1; fi ;;
 esac
 
@@ -533,18 +557,26 @@ if have_asterisk; then
   "$ASTERISK_CMD" -rx "module reload res_pjsip.so" >/dev/null 2>&1 \
     && log "res_pjsip перечитан" \
     || warn "module reload res_pjsip.so не прошёл (systemctl status asterisk)"
-  log "жду регистрацию у $MCM_HOST (до ${REG_TIMEOUT}с)…"
-  ok=0
-  for _ in $(seq 1 $((REG_TIMEOUT / 4 + 1))); do
-    if registration_state | grep -Eqi "200|registered|avail|bound"; then ok=1; break; fi
-    sleep 4
-  done
-  if [ "$ok" = "1" ]; then
-    log "регистрация установлена. Дальше: в UI «Проверить Asterisk и транк» должно стать OK."
+  if [ "$REG_TIMEOUT" = "0" ]; then
+    log "ожидание регистрации пропущено (REG_TIMEOUT=0)"
   else
-    warn "регистрации нет. Проверьте: логин/пароль; UDP 5060 наружу; правило на $MCM_NET (--firewall); транспорт 0.0.0.0:$MCM_PORT."
-    registration_state | head -8 | sed 's/^/      /'
-    exit 1
+    log "жду регистрацию у $MCM_HOST (до ${REG_TIMEOUT}с)…"
+    ok=0
+    for _ in $(seq 1 $((REG_TIMEOUT / 4 + 1))); do
+      if registration_state | grep -Eqi "200|registered|avail|bound"; then ok=1; break; fi
+      sleep 4
+    done
+    if [ "$ok" = "1" ]; then
+      log "регистрация установлена. Дальше: в UI «Проверить Asterisk и транк» должно стать OK."
+    else
+      # Регистрация НЕ отменяет остальные шаги: настройки АТС и пул номеров нужны и
+      # тогда, когда оператор ещё не пустил нас (или ругается на конфиг) — иначе один
+      # недоступный регистратор обрывал установку на середине.
+      REG_FAILED=1
+      warn "регистрации нет. Проверьте: логин/пароль; UDP 5060 наружу; правило на $MCM_NET (--firewall); транспорт 0.0.0.0:$MCM_PORT."
+      warn "если вывод начинается с «No objects found» — Asterisk не прочитал наш файл: $ASTERISK_CMD -rx \"pjsip show endpoints\" и /var/log/asterisk/full"
+      registration_state | head -8 | sed 's/^/      /'
+    fi
   fi
 else
   warn "Asterisk не установлен — файл записан, применять его пока нечем: apt-get install -y asterisk asterisk-config asterisk-modules espeak-ng"
@@ -572,3 +604,12 @@ else
 fi
 
 log "готово. Следующие шаги — docs/MULTICOM_SIP_CONNECT.md: §6 диалплан, §7 AMI, §8 провайдер ami, §9 пул из 15 номеров (provider=ami)."
+
+if [ "$REG_FAILED" = "1" ]; then
+  log "файл транка, диалплан, AMI и настройки АТС применены; регистрация у $MCM_HOST"
+  log "не подтверждена — это отдельная проблема (пароль/IP/входящее правило)."
+  log "Диагностика: sudo -E $0 --check ; sudo asterisk -rx \"pjsip show endpoints\" ;"
+  log "             sudo tail -40 /var/log/asterisk/full"
+  exit 1
+fi
+exit 0

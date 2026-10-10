@@ -225,7 +225,7 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 а `provider` останется прежним; переключают его потом, когда `POST /api/v2/ami/check`
 зелёный (Настройки → «Провайдер/CRM» → Asterisk AMI).
 
-Флаги: `--print` (показать конфиг до записи) | `--dry-run` (ничего не писать) |
+Флаги: `--print` (показать конфиг до записи, пароль маскируется; `--reveal` — без маскировки) | `--dry-run` (ничего не писать) |
 `--check` (только диагностика) | `--firewall` (правила iptables/ufw на сеть оператора) |
 `--ami` (пользователь AMI в `manager-ats.conf` **и** `ATS_AMI_SECRET` в `/etc/ats/ats.env`,
 права 0640 root:ats) |
@@ -239,7 +239,12 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 `MCM_NET` (`95.128.224.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (`alaw,ulaw,g729`),
 `MCM_MAX_CHANNELS` (`15`), `MCM_NUMBERS` (список из письма), `MCM_NUMBER_PROVIDER` (`ami`),
 `MCM_DAILY_LIMIT` (`120`), `AMI_USER` (`ats`), `ATS_ENV_FILE` (`/etc/ats/ats.env`),
-`ATS_URL` (`http://127.0.0.1:9124`).
+`ATS_URL` (`http://127.0.0.1:9124`), `REG_TIMEOUT` (секунд ждать регистрацию; `0` — не ждать),
+`ATS_KEEP_PROVIDER` (не менять `provider`), `MCM_REVEAL` (печатать пароль в `--print`).
+
+Сбой регистрации не отменяет остальные шаги: файл транка, диалплан, AMI и настройки АТС
+применяются в любом случае, а в конце скрипт возвращает код 1 с подсказкой диагностики
+(«No objects found» = Asterisk не прочитал файл, см. `docs/MULTICOM_SETUP_STEPS.md` §7а).
 
 Вручную — то же самое, если хочется без скрипта. Пароль при этом не должен попасть
 ни в историю shell, ни в `ps`, ни в `/tmp`:

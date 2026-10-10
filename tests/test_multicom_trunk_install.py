@@ -84,6 +84,15 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(run(["--print"], env={"MCM_PASS": "p@ss;#w0rd!"}).returncode, 0)
         self.assertNotEqual(run(["--print"], env={"MCM_PASS": "p@ss\nw0rd"}).returncode, 0)
 
+    def test_print_hides_password_and_reveal_shows_it(self):
+        """--print копируют в чат/тикет — пароля в выводе быть не должно."""
+        hidden = run(["--print"], env={"MCM_PASS": "Sup3rSIPpass"})
+        self.assertEqual(hidden.returncode, 0)
+        self.assertNotIn("Sup3rSIPpass", hidden.stdout)
+        self.assertIn("password=***", hidden.stdout)
+        shown = run(["--print", "--reveal"], env={"MCM_PASS": "Sup3rSIPpass"})
+        self.assertIn("password=Sup3rSIPpass", shown.stdout)
+
     def test_unknown_flag(self):
         p = run(["--no-such-flag"])
         self.assertEqual(p.returncode, 2)
@@ -302,6 +311,22 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertNotIn("provider", cfg, "провайдер не должен меняться в keep-режиме")
         self.assertEqual(cfg["ami"]["trunk"], "mcm")
         self.assertEqual(cfg["ami"]["context"], "ats-out")
+
+    def test_missing_registration_does_not_stop_the_rest(self):
+        """Без регистрации настройки АТС и номера всё равно должны примениться:
+        раньше exit 1 обрывал установку на середине, и --ats/--numbers не выполнялись."""
+        fake = self.dir / "asterisk-empty"
+        fake.write_text("#!/bin/sh\necho \"No objects found.\"\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        env = dict(self.env, AMIPASS="amipass123", ASTERISK_CMD=str(fake), REG_TIMEOUT="1",
+                   MCM_NUMBERS="9690229926", ATS_KEEP_PROVIDER="1")
+        p = run(["--ats", "--numbers"], env=env)
+        self.assertEqual(p.returncode, 1, "код возврата должен сигнализировать о проблеме")
+        self.assertIn("регистрации нет", p.stderr)
+        paths = [path for path, _h, _b in _ApiHandler.captured]
+        self.assertIn("/api/v2/settings/raw", paths, "настройки не записаны из-за отсутствия регистрации")
+        self.assertIn("/api/v2/numbers/save", paths, "номера не заведены из-за отсутствия регистрации")
+        self.assertIn("не прочитал наш файл", p.stderr, "должно сказать, что Asterisk не загрузил секции")
 
     def test_ats_token_helper_needs_real_token(self):
         """deploy/ats-token.sh: без поля token в ответе — код 1 и причина в stderr."""
