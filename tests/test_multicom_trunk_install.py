@@ -22,6 +22,7 @@ SCRIPT = ROOT / "deploy" / "asterisk" / "install-multicom-trunk.sh"
 FAKE_ASTERISK = """#!/bin/sh
 case "$*" in
   *"show registrations"*|*"show contacts"*) echo "  00083819@95.128.224.47  200 OK  Registered" ;;
+  *"dialplan show"*) echo "Context 'ats-out'" ;;
   *) echo "ok" ;;
 esac
 exit 0
@@ -94,6 +95,7 @@ class _TmpAsteriskDirMixin:
         d = pathlib.Path(tempfile.mkdtemp(prefix="ats_mcm_trunk_"))
         (d / "pjsip.conf").write_text("[general]\n", encoding="utf-8")
         (d / "manager.conf").write_text("[general]\nenabled = no\n", encoding="utf-8")
+        (d / "extensions.conf").write_text("[general]\n", encoding="utf-8")
         fake = d / "asterisk"
         fake.write_text(FAKE_ASTERISK, encoding="utf-8")
         fake.chmod(0o755)
@@ -126,6 +128,39 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
                          "двойной #include плодит дубли секций при перечитывании")
         self.assertTrue(list(self.dir.glob("pjsip-multicom.conf.bak-*")),
                         "перед перезаписью обязана оставаться резервная копия")
+
+    def test_dialplan_flag_installs_dialplan_agi_include(self):
+        """--dialplan: контексты ats-out/from-mcm должны попасть в Asterisk, иначе звонков нет."""
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"))
+        p = run(env=env, args=["--dialplan"])
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-1200:])
+        ext = (self.dir / "extensions-ats.conf").read_text(encoding="utf-8")
+        self.assertIn("[ats-out]", ext)
+        self.assertIn("[from-mcm]", ext)
+        self.assertIn("MixMonitor", ext)
+        self.assertIn("ats_say.py", ext, "озвучка должна вызываться из диалплана")
+        self.assertIn("espeak-ng", (self.dir / "ats-tts.conf").read_text(encoding="utf-8"))
+        self.assertEqual((self.dir / "extensions.conf").read_text().count("extensions-ats.conf"), 1)
+        self.assertTrue((self.dir / "agi-bin" / "ats_say.py").exists())
+        self.assertTrue(oct((self.dir / "agi-bin" / "ats_say.py").stat().st_mode & 0o777).endswith("50"))
+        # повторный прогон: идемпотентность include и бэкап предыдущей версии
+        self.assertEqual(run(env=env, args=["--dialplan"]).returncode, 0)
+        self.assertEqual((self.dir / "extensions.conf").read_text().count("extensions-ats.conf"), 1)
+        self.assertTrue(list(self.dir.glob("extensions-ats.conf.bak-*")))
+
+    def test_dialplan_without_asterisk_still_lays_files(self):
+        """Asterisk не установлен — файлы всё равно раскладываем, но не падаем."""
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"), ASTERISK_CMD=str(self.dir / "nope"))
+        p = run(env=env, args=["--dialplan"])
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        self.assertTrue((self.dir / "extensions-ats.conf").exists())
+
+    def test_help_lists_all_flags(self):
+        p = run(["--help"])
+        self.assertEqual(p.returncode, 0)
+        for flag in ("--print", "--dry-run", "--check", "--firewall", "--ami", "--ats",
+                     "--restart", "--numbers", "--numbers-only", "--dialplan"):
+            self.assertIn(flag, p.stdout, "в справке нет флага %s" % flag)
 
     def test_ami_flag_enables_manager_user(self):
         p = run(env=dict(self.env, AMIPASS="amipass123"), args=["--ami"])

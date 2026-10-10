@@ -210,13 +210,14 @@ ATS_TOKEN=$(curl -s -X POST http://127.0.0.1:9124/api/v2/auth/login \
       -H 'Content-Type: application/json' -d '{"login":"admin","password":"…"}' \
       | sed 's/.*"token":"***"]*\)".*/\1/')  # токен API АТС (нужен для --ats/--numbers)
 sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.sh \
-     --firewall --ami --ats --numbers
+     --dialplan --firewall --ami --ats --numbers
 ```
 
 Флаги: `--print` (показать конфиг до записи) | `--dry-run` (ничего не писать) |
 `--check` (только диагностика) | `--firewall` (правила iptables/ufw на сеть оператора) |
 `--ami` (пользователь AMI в `manager-ats.conf` **и** `ATS_AMI_SECRET` в `/etc/ats/ats.env`,
-права 0640 root:ats) | `--ats` (settings.ami + `provider=ami` через API, перезапуск не нужен) |
+права 0640 root:ats) |
+`--dialplan` (диалплан ATS + AGI озвучки + каталоги записей + cron раскладки записей — §6) | `--ats` (settings.ami + `provider=ami` через API, перезапуск не нужен) |
 `--numbers` (15 номеров письма в пул с `provider=ami`, идемпотентно) | `--numbers-only` |
 `--restart` (перезапустить сервис после `--ats`). Скрипт можно запускать повторно — он
 дописывает/обновляет, а не удваивает строки (`#include`, `ATS_AMI_SECRET`).
@@ -285,6 +286,14 @@ asterisk -rx "sip show peers"       # mcm/…  OK
 chan_sip бывают в Alpine/некоторых образах). В Asterisk 22 chan_sip удалён — только PJSIP.
 
 ## 6. Шаг 3 — диалплан, озвучка, запись
+
+Проще всего одним флагом: `sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dialplan` —
+он ставит `extensions-ats.conf` и `ats-tts.conf` в `/etc/asterisk/` (0640 `root:asterisk`,
+с бэкапом), добавляет `#include` в `extensions.conf`, кладёт AGI `ats_say.py` в
+`/var/lib/asterisk/agi-bin/` (0750), создаёт `/var/spool/asterisk/monitor/ats` и
+`/var/spool/asterisk/ats` (0770 `asterisk:asterisk`), прописывает `/etc/cron.d/ats-records`
+и делает `dialplan reload`, после чего проверяет, что `ats-out` видно в диалплане.
+Ниже — то же самое руками, если хочется понимать, что именно происходит.
 
 ```bash
 cp deploy/asterisk/extensions-ats.conf /etc/asterisk/
@@ -615,8 +624,8 @@ ATS_URL=$ATS ATS_LOGIN=admin ATS_PASSWORD='…' /usr/bin/python3 \
 curl -s $ATS/api/v2/health | python3 -m json.tool
 ```
 
-В `GET /api/v2/health` — `telephony.provider: ami` и `connected: true` (то есть AMI live
-прямо сейчас). В `GET /api/v2/health/details` (admin) — маскированный `provider_config.ami`
+В `GET /api/v2/health/details` (роль admin) — `telephony.provider: ami` и `connected: true`
+(AMI live прямо сейчас), а рядом маскированный `provider_config.ami`
 (проверьте `trunk`/`tech`/`number_format`), `provider_config.records` и счётчики пулов
 `pool_ami` / `pool_multicom` / `pool_megafon` (`usable` — сколько номеров реально можно
 брать в работу). Если `provider` пустой — ATS специально не запускает обзвон

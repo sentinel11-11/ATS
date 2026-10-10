@@ -14,7 +14,11 @@
 #    5) module reload res_pjsip.so и ожидание регистрации у оператора;
 #    6) --firewall  только allow-правила на сеть оператора (по умолчанию НЕ
 #       трогает файрвол, а печатает команды);
-#    7) --ami       заодно генерирует пароль и заводит пользователя AMI «ats».
+#    7) --ami       заодно генерирует пароль и заводит пользователя AMI «ats»;
+#    8) --dialplan  раскладывает диалплан ATS (extensions-ats.conf + #include в
+#       extensions.conf), ats-tts.conf, AGI ats_say.py, каталоги записей/TTS и
+#       cron на раскладку записей по звонкам. Без этого шага транк регистрируется,
+#       но звонки не ходят: нет контекста ats-out (запись + озвучка) и from-mcm.
 #
 #  В репозиторий данные письма не попадают: пароль транка берётся из окружения
 #  (MCM_PASS) или спрашивается с терминала; если он уже есть в установленном
@@ -28,6 +32,7 @@
 #      --check     только проверка (файл/плейсхолдеры/#include/регистрация)
 #      --firewall  применить правила файрвола
 #      --ami       настроить пользователя AMI для ATS
+#      --dialplan  установить диалплан ATS, AGI озвучки, каталоги записей и cron
 #      --ats       записать настройки провайдера ami в саму АТС (API: settings/raw)
 #      --restart   после этого ещё и перезапустить сервис (systemctl restart ats)
 #      --numbers   завести 15 номеров из письма в пул АТС (через API, см. MCM_NUMBERS)
@@ -36,6 +41,7 @@
 #      MCM_LOGIN=00083819 MCM_HOST=95.128.224.47 MCM_PORT=5060 MCM_TRUNK=mcm
 #      MCM_NET=95.128.224.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw,g729
 #      MCM_MAX_CHANNELS=15 REG_TIMEOUT=40 AST_DIR=/etc/asterisk
+#      AGI_DIR=/var/lib/asterisk/agi-bin ATS_ENV_FILE=/etc/ats/ats.env
 # ============================================================================
 set -uo pipefail
 
@@ -63,19 +69,20 @@ MCM_DAILY_LIMIT="${MCM_DAILY_LIMIT:-120}"
 ATS_URL="${ATS_URL:-http://127.0.0.1:9124}"
 PASS_SENTINEL='__MCM_PASS__'
 
-MODE="install"; FIREWALL=0; WANT_AMI=0; WANT_NUMBERS=0; WANT_ATS=0; WANT_RESTART=0
+MODE="install"; FIREWALL=0; WANT_AMI=0; WANT_NUMBERS=0; WANT_ATS=0; WANT_RESTART=0; WANT_DIALPLAN=0
 for a in "$@"; do
   case "$a" in
     --print)    MODE="print" ;;
     --dry-run)  MODE="dry" ;;
     --check)    MODE="check" ;;
     --firewall) FIREWALL=1 ;;
+    --dialplan) WANT_DIALPLAN=1 ;;
     --ami)      WANT_AMI=1 ;;
     --ats)       WANT_ATS=1 ;;
     --restart)   WANT_RESTART=1; WANT_ATS=1 ;;
     --numbers)   WANT_NUMBERS=1 ;;
     --numbers-only) WANT_NUMBERS=1; MODE="numbers" ;;
-    -h|--help)  sed -n '2,33p' "$0"; exit 0 ;;
+    -h|--help)  awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "[mcm-trunk] неизвестный флаг: $a (см. --help)" >&2; exit 2 ;;
   esac
 done
@@ -319,6 +326,7 @@ if [ "$MODE" = "dry" ]; then
     || log "добавлю '#include pjsip-multicom.conf' в $AST_DIR/pjsip.conf"
   [ "$FIREWALL" = "1" ] && log "файрвол: разрешу $MCM_NET → $MCM_PORT tcp/udp и RTP $MCM_RTP/udp"
   [ "$WANT_AMI" = "1" ] && log "AMI: сгенерирую пароль и заведу $AST_DIR/manager-ats.conf"
+  [ "$WANT_DIALPLAN" = "1" ] && log "диалплан: установлю extensions-ats.conf, ats-tts.conf, AGI ats_say.py, каталоги записей и cron"
   [ "$WANT_ATS" = "1" ] && log "АТС: запишу settings.ami (provider=ami, trunk=$MCM_TRUNK, ru8/d10) через $ATS_URL"
   [ "$WANT_NUMBERS" = "1" ] && log "АТС: заведу номера в пул provider=$MCM_NUMBER_PROVIDER ($(printf '%s' "$MCM_NUMBERS" | wc -w) шт., daily_limit=$MCM_DAILY_LIMIT)"
   log "рендер (первые 22 строки, пароль скрыт):"
@@ -346,6 +354,83 @@ if [ -f "$AST_DIR/pjsip.conf" ]; then
     || { printf '#include pjsip-multicom.conf\n' >> "$AST_DIR/pjsip.conf"; log "#include добавлен в pjsip.conf"; }
 else
   warn "нет $AST_DIR/pjsip.conf — восстановите конфиг из пакета или создайте пустой файл со строкой #include pjsip-multicom.conf"
+fi
+
+# ------------------------------------------------------ диалплан и озвучка ----
+# --dialplan: без этого шага транк зарегистрируется, но звонки ходить не будут:
+# контекст ats-out (запись + озвучка), from-mcm (входящие), AGI ats_say.py и
+# раскладка записей по звонкам — всё это файлы Asterisk, а не настройки АТС.
+install_dialplan() {
+  local f src dst rc=0
+  local agi_dir="${AGI_DIR:-/var/lib/asterisk/agi-bin}"
+  for f in extensions-ats.conf ats-tts.conf; do
+    src="$APP_DIR/deploy/asterisk/$f"
+    dst="$AST_DIR/$f"
+    if [ ! -f "$src" ]; then
+      warn "нет $src — нечего ставить в $dst"; rc=1; continue
+    fi
+    [ -f "$dst" ] && cp -a "$dst" "$dst.bak-$stamp"
+    if install "${install_args[@]}" "$src" "$dst"; then
+      log "установлен $dst"
+    else
+      warn "не удалось записать $dst"; rc=1
+    fi
+  done
+  if [ -f "$AST_DIR/extensions.conf" ]; then
+    grep -q 'extensions-ats.conf' "$AST_DIR/extensions.conf" \
+      || { printf '#include extensions-ats.conf\n' >> "$AST_DIR/extensions.conf" \
+           && log "#include добавлен в extensions.conf"; }
+  else
+    warn "нет $AST_DIR/extensions.conf — добавьте '#include extensions-ats.conf' вручную"
+  fi
+  # AGI озвучки (поток message): запускается Asterisk'ом, поэтому root:asterisk 0750
+  src="$APP_DIR/deploy/asterisk/agi/ats_say.py"
+  if [ -f "$src" ]; then
+    mkdir -p "$agi_dir" 2>/dev/null \
+      || warn "не могу создать $agi_dir — скопируйте ats_say.py в каталог AGI вручную"
+    agi_install=(-m 0750)
+    if [ "$(id -u)" = "0" ]; then agi_install+=(-o root -g "$grp"); fi
+    install "${agi_install[@]}" "$src" "$agi_dir/ats_say.py" 2>/dev/null \
+      && log "AGI: $agi_dir/ats_say.py" \
+      || warn "не удалось поставить $agi_dir/ats_say.py"
+  else
+    warn "нет $src — озвучка работать не будет"
+  fi
+  # каталоги: записи (MixMonitor) и временный WAV для TTS
+  for f in /var/spool/asterisk/monitor/ats /var/spool/asterisk/ats; do
+    mkdir -p "$f" 2>/dev/null || continue
+    if [ "$(id -u)" = "0" ] && id -u asterisk >/dev/null 2>&1; then
+      chown asterisk:asterisk "$f" 2>/dev/null || true
+    fi
+    chmod 0770 "$f" 2>/dev/null || true
+    log "каталог $f (0770$( [ "$(id -u)" = "0" ] && echo ", asterisk:asterisk" ))"
+  done
+  # раскладка записей по звонкам: cron раз в 5 минут (права на каталог Asterisk не трогаем)
+  if [ -d /etc/cron.d ] && [ -w /etc/cron.d ]; then
+    printf '*/5 * * * * root %s >> /var/log/ats-records.log 2>&1\n' \
+      "/usr/bin/python3 $APP_DIR/deploy/asterisk/attach_recordings.py" > /etc/cron.d/ats-records 2>/dev/null \
+      && chmod 0644 /etc/cron.d/ats-records 2>/dev/null \
+      && log "cron: /etc/cron.d/ats-records (записи раскладываются каждые 5 мин)" \
+      || warn "не удалось написать /etc/cron.d/ats-records — добавьте задачу cron вручную"
+  else
+    warn "нет доступного /etc/cron.d — раскладку записей настройте вручную:"
+    warn "  */5 * * * * root /usr/bin/python3 $APP_DIR/deploy/asterisk/attach_recordings.py"
+  fi
+  if have_asterisk; then
+    "$ASTERISK_CMD" -rx "dialplan reload" >/dev/null 2>&1 \
+      && log "диалплан перечитан" || warn "dialplan reload не прошёл (systemctl status asterisk)"
+    if ! "$ASTERISK_CMD" -rx "dialplan show ats-out" 2>/dev/null | grep -q 'ats-out'; then
+      warn "контекст ats-out не виден в диалплане — проверьте #include в extensions.conf"
+      rc=1
+    fi
+  else
+    warn "Asterisk не установлен — диалплан перечитывать нечем, файлы раскиданы"
+  fi
+  return $rc
+}
+
+if [ "$WANT_DIALPLAN" = "1" ]; then
+  install_dialplan || warn "диалплан применён не полностью — см. сообщения выше"
 fi
 
 # ------------------------------------------------- пользователь AMI (по флагу)

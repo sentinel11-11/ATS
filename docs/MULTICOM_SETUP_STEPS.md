@@ -1,0 +1,264 @@
+# Мультиком: подключение «с нуля» — пошагово, с проверкой на каждом шаге
+
+Для сервера, на котором **ещё ничего не применялось**. Каждый шаг: зачем → команды →
+что должно получиться → что делать, если не получилось. Порядок важен: сначала диагностика,
+потом изменения. Все пути — из клона `/opt/ats/app` (юнит `ats.service`, данные в `/var/lib/ats`).
+
+Данные, которые понадобятся (из письма оператора): SIP-логин (`00083819` в нашем письме),
+пароль регистрации, адрес регистратора и порт (`95.128.224.47:5060`), сеть оператора
+(`95.128.224.0/21`), кодеки, число каналов, список DID-номеров, формат номера.
+Формат объяснений цифр и зачем что нужно — `docs/MULTICOM_SIP_CONNECT.md` §13 и §1.
+
+---
+
+## Шаг 0. Проверить, что версия кода годится
+
+```bash
+cd /opt/ats/app
+git rev-parse --abbrev-ref HEAD && git log -1 --oneline
+grep -c -- '--dialplan' deploy/asterisk/install-multicom-trunk.sh    # должно быть >= 1
+grep -c -- '--numbers'  deploy/asterisk/install-multicom-trunk.sh    # >= 1
+```
+
+Если файла скрипта нет или `--dialplan` не находится — код старый, идите на шаг 2 и возвращайтесь.
+**Ничего не правьте руками до шага 6:** `pjsip-multicom.conf`, который вы создали сами, будет перезаписан.
+
+## Шаг 1. Диагностика «как есть» (ничего не меняем)
+
+```bash
+cd /opt/ats/app
+git status --short | head                 # локальные правки? (data_v2/* и app/ui — норма)
+sudo systemctl cat ats | sed -n '1,20p'  # юнит: пользователь, порт, EnvironmentFile
+curl -s http://127.0.0.1:9124/api/v2/health; echo
+which asterisk || echo "asterisk нет"     # на «сыром» сервере его обычно нет
+ls /etc/asterisk 2>/dev/null | head       # есть ли уже конфиги, что в них #include
+ss -lunp | grep -E ':5060|:5038' || echo "5060/5038 свободны"
+python3 -c "import sqlite3;db=sqlite3.connect('/var/lib/ats/ats.db');print('numbers:',db.execute('select count(*) from numbers').fetchone()[0]);print('provider:',sqlite3.connect('/var/lib/ats/ats.db').execute(\"select json_extract(data,'\$.provider') from settings where id=1\").fetchone()[0])"
+```
+
+Признак того, что всё понятно: вы видите текущий `provider` (например `megafon_vats` или пустой),
+число номеров и что Asterisk не установлен. Запишите это — на шаге 13 сравниваете с «стало».
+
+## Шаг 2. Подтянуть код и перезапустить сервис
+
+```bash
+cd /opt/ats/app
+sudo cp -a /opt/ats/app /opt/ats/app.bak-$(date +%F)     # страховка на случайconflict
+git fetch origin
+git stash push -m before-multicom -- app/ui data_v2 2>/dev/null || true   # только если git ругается
+git checkout arena/01a0cdee-ats && git pull --ff-only
+./deploy/update.sh arena/01a0cdee-ats
+curl -s http://127.0.0.1:9124/api/v2/health; echo        # "ok": true
+```
+
+`update.sh` сам делает `pip`-шаг, сборку UI (если менялся `frontend/src`), прогон тестов,
+перезапуск и проверку порта; `exit 3` = обновилось, но сервис не перезапущен. Откат —
+`./deploy/update.sh --rollback`.
+
+Если `git checkout` говорит «local changes would be overwritten» — не злите git:
+`git checkout -- app/ui && git clean -fd app/ui/assets` (пересоберём на шаге 2) и повторите.
+**`git clean -fdx` не выполнять ни при каких обстоятельствах** — удалит `venv/` и локальные данные.
+
+## Шаг 3. Установить телефонию
+
+```bash
+sudo apt-get update
+sudo apt-get install -y asterisk asterisk-cli espeak-ng
+asterisk -V                       # версия: >= 18 достаточно; 22 = только chan_pjsip
+sudo systemctl enable --now asterisk
+sudo asterisk -rx "core show version"
+```
+
+Признак успеха: `core show version` отвечает без «Unable to connect». Если Asterisk стартует и
+тут же падает — `sudo journalctl -u asterisk -n 30`. `espeak-ng` нужен озвучке в потоке
+`flow=message`; без него такой поток честно упадёт в `no_media`.
+
+## Шаг 4. Осмотреть `/etc/asterisk`, чтобы не унаследовать чужой транспорт
+
+```bash
+grep -n "include\|^;" /etc/asterisk/pjsip.conf | head
+grep -rn "transport-udp\|^bind" /etc/asterisk/pjsip*.conf | head
+sudo asterisk -rx "module show like res_pjsip" | head -5
+```
+
+Признак успеха: в `pjsip.conf` нет собственной секции `[transport-udp]` (наш файл добавит её).
+Если есть — уберите/переименуйте чужую, иначе `module reload` не применит ничего:
+`asterisk -rx "module reload res_pjsip.so"` молча оставит старый транспорт.
+
+## Шаг 5. Пробный рендер — посмотреть, что скрипт соберёт
+
+```bash
+cd /opt/ats/app
+set +o history
+MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh --print | head -40
+MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dry-run
+```
+
+Признак успеха: в `--print` видны `auth_name=…`, `server_uri=sip:…:5060`, `allow=alaw/ulaw/g729`,
+`match=<IP>/32`; `password=` в `--dry-run` скрыт (`***`), ни одной метки `__MCM_` не осталось.
+`--dry-run` не должен писать «добавлю #include», если include уже есть.
+
+## Шаг 6. Применить всё разом
+
+```bash
+cd /opt/ats/app
+TOK=$(curl -s -X POST http://127.0.0.1:9124/api/v2/auth/login \
+      -H 'Content-Type: application/json' -d '{"login":"admin","password":"ПАРОЛЬ_АДМИНА"}' \
+      | sed 's/.*"token":"***"]*\)".*/\1/')
+MCM_PASS='***' AMIPASS=$(openssl rand -hex 24) ATS_TOKEN="$TOK" \
+sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.sh \
+     --dialplan --firewall --ami --ats --numbers
+set -o history
+```
+
+Что происходит построчно в логе: рендер `pjsip-multicom.conf` (0640 `root:asterisk`, бэкап
+предыдущего) → `#include` в `pjsip.conf` → `extensions-ats.conf` + `ats-tts.conf` +
+AGI `ats_say.py` + каталоги `/var/spool/asterisk/{monitor/ats,ats}` + `#include` в
+`extensions.conf` + `cron /etc/cron.d/ats-records` → правила на сеть оператора → пользователь
+AMI `ats` в `manager-ats.conf` + `ATS_AMI_SECRET` в `/etc/ats/ats.env` → настройки АТС через API
+(`provider=ami`, `trunk=mcm`, `ru8`/`d10`, контексты) → 15 номеров в пул с `provider=ami`.
+
+Признак успеха: скрипт завершился кодом 0, в конце «регистрация установлена», и он же выдал
+строку `пароль AMI записан в /etc/ats/ats.env`. **Пароль из вывода скопируйте себе в менеджер
+паролей** и закройте терминал — в истории его нет (`set +o history`).
+
+## Шаг 7. Транк и регистрация
+
+```bash
+sudo asterisk -rx "pjsip show transports"     # transport-udp  Active  0.0.0.0:5060
+sudo asterisk -rx "pjsip show endpoints"      # mcm → mcm/mcm-aor
+sudo asterisk -rx "pjsip show aors"           # Avail
+sudo asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
+sudo asterisk -rx "pjsip show registrations"  # <Registration: OK> … 200 OK
+sudo tail -30 /var/log/asterisk/messages | grep -iE "regist|40[13]|pjsip"
+```
+
+Признак успеха: `200 OK` и контакт `Avail`. `403` — логин/пароль или нас не пустили по IP
+(спросить оператора, какой IP они видят: `curl -s ifconfig.me`); `408`/пусто — UDP 5060 наружу
+или обратное правило на их сеть; контакт есть, но `Non-Corr` — нормально, корреляция появится
+после первого звонка.
+
+## Шаг 8. AMI: доступ АТС к Asterisk
+
+```bash
+sudo asterisk -rx "manager show user ats"       # Inbound/Read/Write, permit 127.0.0.1
+sudo ss -lntp | grep :5038                      # слушается
+curl -s -X POST -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/ami/check | python3 -m json.tool
+```
+
+Признак успеха: в `ami/check` `ok: true`, зелёные пункты `asterisk`, `manager_login`,
+`registration`, `dialplan`, `numbers_active` (=15). Пункт `secret` укажет источник пароля —
+`ATS_AMI_SECRET` или настройки. Если `manager_login` красный — пароль в `ats.env` и в
+`manager-ats.conf` разошлись (перечитать: `sudo systemctl restart ats`).
+
+## Шаг 9. Что видит сама АТС
+
+```bash
+curl -s -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/settings/raw | python3 -m json.tool | sed -n '/"ami"/,/}/p'
+curl -s -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/health/details \
+  | python3 -m json.tool | sed -n '/"telephony"/,/}/p'
+```
+
+Ожидание: `provider: "ami"`, `trunk: "mcm"`, `number_format: "ru8"`, `caller_id_format: "d10"`,
+`context: "ats-out"`, `inbound_contexts: "from-mcm,ats-in"`, `record_calls: true`,
+`secret: "********"` (или `""` — тогда секрет берётся из `ats.env`, так и задумано). В
+`/api/v2/health/details` (только admin) видно `telephony: {provider: "ami", connected: true}` —
+это и есть «движок реально работает через Asterisk». UI: Настройки → «Провайдер/CRM» → «Asterisk AMI
+Manager» — те же поля, кнопка «Проверить Asterisk и транк» = шаг 8.
+
+## Шаг 10. Номера
+
+```bash
+curl -s -H "X-Ats-Token: $TOK" "http://127.0.0.1:9124/api/v2/numbers" | python3 -m json.tool | head -30
+sqlite3 /var/lib/ats/ats.db "select number,provider,active,daily_limit from numbers order by id" 2>/dev/null \
+  || echo "sqlite3 нет — смотрите вкладку «Номера»"
+```
+
+Признак успеха: 15 строк, `provider=ami`, `active=1`. Движок берёт номера строго по
+`numbers.provider` (`numbers.acquire(provider=…)`), поэтому номер с меткой `multicom`/`sim`
+в работу не попадёт — это самая частая причина «кампания запущена, тишина».
+
+## Шаг 11. Озвучка и запись (то, что «не работает» чаще всего)
+
+```bash
+ls -l /var/lib/asterisk/agi-bin/ats_say.py            # 0750 root:asterisk
+sudo asterisk -rx "dialplan show ats-out"              # MixMonitor + AGI ats_say.py
+sudo asterisk -rx "dialplan show from-mcm"              # Dial(PJSIP/101&PJSIP/102,25)
+ls -ld /var/spool/asterisk/monitor/ats /var/spool/asterisk/ats   # 0770 asterisk:asterisk
+cat /etc/cron.d/ats-records                             # раскладка записей раз в 5 минут
+sudo -u asterisk /usr/bin/espeak-ng -v ru -s 150 -w /tmp/t.wav "проверка" && ls -l /tmp/t.wav && sudo rm -f /tmp/t.wav
+```
+
+Признак успеха: контексты видны, каталоги принадлежат `asterisk`, espeak пишет WAV.
+Если оператор даёт добавочные сотрудников — проверьте, что `PJSIP/101`/`PJSIP/102` реально
+существуют (`pjsip show endpoints`), иначе `Dial()` в `from-mcm` всегда дасть `NO ANSWER`.
+
+## Шаг 12. Живые проверки: по одной на каждую функцию
+
+```bash
+# 1) канал до оператора — без АТС
+sudo asterisk -rx "channel originate PJSIP/ВАШ_МОБИЛЬНЫЙ@mcm application Playback tt-monkeys"
+# 2) исходящий из АТС: тестовая кампания на 1 номер, flow=message
+# 3) тёплый перевод: flow=agent (или оператор на добавочном)
+# 4) входящий: позвонить на один из 15 DID → журнал direction=in + задача в CRM
+```
+
+Для 2–3: создать кампанию с одним контактом (свой номер), `flow=message` с текстом,
+запустить и смотреть:
+
+```bash
+watch -n2 'curl -s -H "X-Ats-Token: '"$TOK"' "http://127.0.0.1:9124/api/v2/calls?limit=3" | head -c 600; echo; sudo asterisk -rx "core show channels concise" | head'
+```
+
+Ожидание по статусам движка: `dialing → ringing → answered → wait_operator/done_ok`
+(для `message` — `done_ok` только после окончания озвучки, `ATS_PLAY` выставляется AGI).
+Отдельная проверка записи: через ≤5 минут после звонка файл в `/var/spool/asterisk/monitor/ats/call-<id>.wav`
+и в журнале появилась ссылка; в `journalctl -u ats` — «запись присоединена».
+
+## Шаг 13. Убрать страховки стенда и зафиксировать состояние
+
+```bash
+# отключить тихий откат на симулятор (иначе «не работает» превратится в «симулируется»)
+sudo grep -n ATS_ALLOW_SIM_FALLBACK /etc/systemd/system/ats.service /etc/ats/ats.env 2>/dev/null
+sudo systemctl edit ats        # в [Service] закомментировать/удалить Environment=ATS_ALLOW_SIM_FALLBACK=1
+sudo systemctl daemon-reload && sudo systemctl restart ats
+./deploy/check.sh ; curl -s http://127.0.0.1:9124/api/v2/health; echo
+```
+
+Признак приёмки (все пять пунктов — «да»):
+
+1. `ami/check` → `ok: true`, `numbers_active: 15`;
+2. `health/details` → `telephony: {provider: "ami", connected: true}`;
+3. тестовый `flow=message` дошёл до `done_ok`, запись в журнале открывается;
+4. тестовый `flow=agent` дождался оператора и зафиксировал `operator_id`/длительность;
+5. входящий на DID создал запись `direction=in` и задачу «Перезвонить клиенту» в CRM.
+
+## Шаг 14. Частые провалы (по коду проверок, а не по примете)
+
+| Симптом | Где искать и что делать |
+|---|---|
+| `module reload` «успешен», но `pjsip show endpoints` пуст | `#include` в `pjsip.conf` отсутствует или секция с таким именем уже есть в основном конфиге → `sudo asterisk -rx "module reload res_pjsip.so"` и `grep -rn "\[mcm\]" /etc/asterisk/` |
+| `401/403` на регистрации | пароль (не тот, что AMI!) или оператор не добавил ваш IP в whitelist: `curl -s ifconfig.me` → в письмо оператору |
+| Один звук / нет звука | RTP: `MCM_RTP` и `local_net`/`external_signaling_address` в `[transport-udp]`; правило на `95.128.224.0/21` для `10000-20000/udp`; `rtp.conf` |
+| `dialplan show ats-out` пусто | не запускали `--dialplan` (или нет `#include extensions-ats.conf`) → повторить шаг 6 с `--dialplan` |
+| `no_media` в `flow=message` | нет `espeak-ng` или AGI: см. шаг 11; проверьте `ats_say.py` и `ats-tts.conf` |
+| Кампания «в ожидании номера» | шаг 10: `provider` у номеров ≠ `ami`, `active=0`, или `daily_limit` исчерпан (`numbers.daily_count`), или карантин после жалоб |
+| `manager_login` красный | пароль: сверить `manager-ats.conf` и `ats.env`, `sudo asterisk -rx "module reload manager.cfm"`, `sudo systemctl restart ats` |
+| AMI вообще недоступен с другого хоста | так и задумано: `permit=127.0.0.1`; для удалённого Asterisk — туннель (`ssh -N -L 5038:127.0.0.1:5038 host`), TLS в AMI-клиенте АТС нет |
+| Записи нет в журнале | `attach_recordings.py` не отработал: `/var/log/ats-records.log`, права на каталог, `ATS_URL` в `/etc/ats/ats.env` |
+
+## Шаг 15. Откат
+
+```bash
+cd /opt/ats/app
+# конфиг транка: вернуть предыдущую версию (скрипт оставляет .bak-<stamp>)
+sudo cp -a /etc/asterisk/pjsip-multicom.conf.bak-<stamp> /etc/asterisk/pjsip-multicom.conf
+sudo asterisk -rx "module reload res_pjsip.so"
+# настройки АТС: вернуть провайдера, который был до (шаг 1)
+curl -s -X POST -H "X-Ats-Token: $TOK" -H 'Content-Type: application/json' \
+  -d '{"provider":"megafon_vats"}' http://127.0.0.1:9124/api/v2/settings/raw
+./deploy/update.sh --rollback      # если нужно вернуть и код
+```
+
+`ats.env` и `manager-ats.conf` скрипт не удаляет — пароль AMI можно оставить: он больше
+никому не мешает, а при возврате на `ami` понадобится снова.
