@@ -249,8 +249,20 @@ apply_ats_settings() {
   # Провайдер и форматы — настройки АТС, их пишем через API (секции settings/raw),
   # а не правкой БД: только так проходит та же валидация, что и через UI.
   [ -n "${ATS_TOKEN:-}" ] || die "нужен ATS_TOKEN (токен администратора АТС): ATS_TOKEN=… $0 --ats"
+  # Прерванный прогон (--ami был, --ats нет) обязан продолжаться без AMIPASS:
+  # пароль уже лежит в ats.env (ATS_AMI_SECRET) и в manager-ats.conf (secret =).
+  if [ -z "${AMIPASS:-}" ] && [ "${ATS_SKIP_DB_SECRET:-0}" != "1" ]; then
+    if [ -f "${ATS_ENV_FILE:-}" ]; then
+      AMIPASS="$(sed -n 's/^ATS_AMI_SECRET=//p' "$ATS_ENV_FILE" | tail -1)"
+      [ -n "$AMIPASS" ] && log "AMI: пароль взят из $ATS_ENV_FILE (ATS_AMI_SECRET)"
+    fi
+    if [ -z "${AMIPASS:-}" ] && [ -f "$AST_DIR/manager-ats.conf" ]; then
+      AMIPASS="$(sed -n 's/^[[:space:]]*secret[[:space:]]*=[[:space:]]*//p' "$AST_DIR/manager-ats.conf" | tail -1)"
+      [ -n "$AMIPASS" ] && log "AMI: пароль взят из $AST_DIR/manager-ats.conf (secret =)"
+    fi
+  fi
   if [ "${ATS_SKIP_DB_SECRET:-0}" != "1" ]; then
-    [ -n "${AMIPASS:-}" ] || die "нужен AMIPASS — тот же пароль, что в manager-ats.conf (--ami его генерирует; можно задать явно)"
+    [ -n "${AMIPASS:-}" ] || die "нужен пароль AMI: задайте AMIPASS=… либо запустите сначала --ami (он сгенерирует его и запишет ATS_AMI_SECRET в ${ATS_ENV_FILE:-/etc/ats/ats.env})"
   fi
   ATS_URL="$ATS_URL" ATS_TOKEN="$ATS_TOKEN" AMIPASS="$AMIPASS" MCM_TRUNK="$MCM_TRUNK" \
   ATS_SKIP_DB_SECRET="${ATS_SKIP_DB_SECRET:-0}" \
@@ -325,6 +337,25 @@ ensure_include() {
 
 have_asterisk() { command -v "$ASTERISK_CMD" >/dev/null 2>&1; }
 
+# Что Asterisk сказал про pjsip, надо искать в реальном файле лога: в Ubuntu 24.04
+# это /var/log/asterisk/messages.log.log (файла full по умолчанию нет), список файлов и
+# что в них писать задаёт /etc/asterisk/logger.conf.
+asterisk_log_hint() {
+  local f l shown=0
+  for f in /var/log/asterisk/messages.log.log /var/log/asterisk/messages.log /var/log/asterisk/queue_log; do
+    [ -r "$f" ] || continue
+    l="$(tail -n 400 "$f" 2>/dev/null \
+         | grep -iE "pjsip|Unable to load|authentication|syntax error|ignoring the rest" | tail -8)"
+    [ -n "$l" ] || continue
+    log "последние строки про pjsip из $f:"
+    printf '%s\n' "$l" | sed 's/^/      /'
+    shown=1
+    break
+  done
+  [ "$shown" = "1" ] || warn "ни один лог в /var/log/asterisk/ не читается (права? что включено — в /etc/asterisk/logger.conf)"
+  return 0
+}
+
 registration_state() {
   local out
   out="$("$ASTERISK_CMD" -rx "pjsip show registrations" 2>&1)"
@@ -339,7 +370,7 @@ check_only() {
     warn "$OUT_PATH не установлен"; rc=1
   else
     log "файл: $(ls -l "$OUT_PATH" | awk '{print $1, $3":"$4}')"
-    for k in auth_name password server_uri from_user match; do
+    for k in username password server_uri from_user match; do
       line="$(sed -n "s/^$k=//p" "$OUT_PATH" | head -1)"
       case "$line" in
         ''|"$PASS_SENTINEL"|ПАРОЛЬ_ИЗ_ПИСЬМА) warn "поле $k не заполнено"; rc=1 ;;
@@ -351,6 +382,13 @@ check_only() {
       esac
     done
     awk '/^\[/ {sec=$0} /^allow=/ {found[sec]=found[sec] $0 " "} END {for (s in found) if (found[s] != "") print "  " s found[s]}' "$OUT_PATH"
+    # auth_name — поле объекта auth из Asterisk 12/13; с 16-й версии такой auth не
+    # загружается, и за ним не появляются endpoint и registration.
+    if grep -q '^auth_name=' "$OUT_PATH" 2>/dev/null; then
+      warn "в $OUT_PATH поле auth_name вместо username: Asterisk 20 не знает auth_name, объект auth не загружается — endpoint и registration за ним тоже"
+      warn "починить: обновить репозиторий (git pull) и перегенерить файл: sudo -E $0"
+      rc=1
+    fi
   fi
   if [ ! -f "$AST_DIR/pjsip.conf" ]; then
     warn "нет $AST_DIR/pjsip.conf — включение нашего файла некуда вставлять"; rc=1
@@ -367,8 +405,9 @@ check_only() {
   fi
   if have_asterisk; then
     if "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | grep -qi "No objects found"; then
-      warn "Asterisk не загрузил ни одного endpoint'а: секции из $OUT_PATH не прочитаны."
-      warn "смотрите: $ASTERISK_CMD -rx \"module reload res_pjsip.so\", /etc/asterisk/pjsip.conf (include первой строкой) и /var/log/asterisk/messages"
+      warn "Asterisk не загрузил ни одного endpoint'а: секции из $OUT_PATH не прочитаны либо не прошли валидацию."
+      warn "смотрите: $ASTERISK_CMD -rx \"module reload res_pjsip.so\", /etc/asterisk/pjsip.conf (include первой строкой) и лог ниже"
+      asterisk_log_hint
       rc=1
     else
       log "endpoint'ы в Asterisk есть"
@@ -633,10 +672,11 @@ if have_asterisk; then
   # Секции должны появиться сразу после reload. Если их нет — конфиг не прочитан,
   # и ждать регистрацию бессмысленно: говорим прямо, а не молча крутим цикл.
   if ! "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | grep -q "$MCM_TRUNK"; then
-    warn "Asterisk не создал endpoint '$MCM_TRUNK' — секции из $OUT_PATH не прочитаны"
-    warn "куда смотреть: /etc/asterisk/pjsip.conf (у нас там #include первой строкой)," \
-         "/var/log/asterisk/messages (в Ubuntu файла full нет; список файлов — в /etc/asterisk/logger.conf)"
+    warn "Asterisk не создал endpoint '$MCM_TRUNK' — секции из $OUT_PATH не прочитаны либо не прошли валидацию"
+    warn "куда смотреть: /etc/asterisk/pjsip.conf (у нас там #include первой строкой) и лог ниже"
     warn "если дистрибутивный pjsip.conf мешает — перезапустите с --pjsip-standalone (оригинал сохранит рядом)"
+    "$ASTERISK_CMD" -rx "pjsip show aors" 2>&1 | head -3 | sed 's/^/      aors: /'
+    asterisk_log_hint
     "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>&1 | head -3 | sed 's/^/      /'
   fi
   if [ "$REG_TIMEOUT" = "0" ]; then
@@ -656,7 +696,7 @@ if have_asterisk; then
       # недоступный регистратор обрывал установку на середине.
       REG_FAILED=1
       warn "регистрации нет. Проверьте: логин/пароль; UDP 5060 наружу; правило на $MCM_NET (--firewall); транспорт 0.0.0.0:$MCM_PORT."
-      warn "если вывод начинается с «No objects found» — Asterisk не прочитал наш файл: $ASTERISK_CMD -rx \"pjsip show endpoints\" и /var/log/asterisk/full"
+      warn "если вывод начинается с «No objects found» — Asterisk не прочитал наш файл: $ASTERISK_CMD -rx \"pjsip show endpoints\" и /var/log/asterisk/messages.log"
       registration_state | head -8 | sed 's/^/      /'
     fi
   fi
@@ -691,7 +731,7 @@ if [ "$REG_FAILED" = "1" ]; then
   log "файл транка, диалплан, AMI и настройки АТС применены; регистрация у $MCM_HOST"
   log "не подтверждена — это отдельная проблема (пароль/IP/входящее правило)."
   log "Диагностика: sudo -E $0 --check ; sudo asterisk -rx \"pjsip show endpoints\" ;"
-  log "             sudo tail -40 /var/log/asterisk/full"
+  log "             sudo tail -40 /var/log/asterisk/messages.log"
   exit 1
 fi
 exit 0

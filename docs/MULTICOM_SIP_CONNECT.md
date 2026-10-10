@@ -303,7 +303,7 @@ asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 - `pjsip show contacts` показывает `Avail`/`Non-Corr` — да, контакт появляется **после**
   успешной исходящей регистрации; при `Unspecified`/пустоте — 403 (логин/пароль/IP) или сеть.
 - Сырой SIP можно посмотреть так: `asterisk -rx "pjsip set logger on host 95.128.224.47"`,
-  затем `tail -f /var/log/asterisk/messages | grep -i "40[13]\|REGISTER"`.
+  затем `tail -f /var/log/asterisk/messages.log | grep -i "40[13]\|REGISTER"`.
 
 Если у вас Asterisk 10–18 и вы хотите ровно как в документации оператора — `chan_sip`:
 
@@ -629,7 +629,7 @@ asterisk -rvvv | grep -i ats_say              # «ats_say: …» при проб
 
 ```bash
 asterisk -rx "dialplan show from-mcm"
-tail -f /var/log/asterisk/full | grep "ATS in"
+tail -f /var/log/asterisk/messages.log | grep "ATS in"
 ```
 
 Позвоните на один из 15 DID: в `Звонках` появляется запись `direction=in` (статус
@@ -674,7 +674,7 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 | «Тишина», вызов идёт, голоса нет | `rtp.conf`, `pjsip show transports`, `tcpdump -i any -n udp portrange 10000-20000` | открыть RTP наружу/пробросить NAT, `direct_media=no`, `rtp_symmetric/force_rport/rewrite_contact` |
 | Слышно только абонента | `external_signaling_address` | указать публичный IP + `local_net`, либо SIP-ALG выключить |
 | Нет фразы оператора на выключенном мобильном, ранний медиастрим | их wiki | `progressinband=yes`, `prematuremedia=no` (chan_sip) |
-| 403 на REGISTER | `/var/log/asterisk/messages`, `pjsip set logger on host …` | пароль/`from_user`/IP не в их allowlist; при смене IP — письмо оператору |
+| 403 на REGISTER | `/var/log/asterisk/messages.log`, `pjsip set logger on host …` | пароль/`from_user`/IP не в их allowlist; при смене IP — письмо оператору |
 | `404 Not Found` при исходящем | формат номера | `number_format=ru8`; проверить `dial_prefix`; у них `8_Код_Номер`, межгород — `810…` |
 | 407/488 на INVITE при исходящем | кодеки | `allow=alaw,ulaw` (+g729 при модуле); `disallow=all` первым |
 | Оператор rejects CLI | `Originate` → `CallerID` | `caller_id_format`: `d10` → `digits` → `e164`; подставлять разрешено только свои 15 номеров |
@@ -756,7 +756,7 @@ IP-телефонный шлюз (Asterisk, chan_pjsip) с исходящими/
 - 152-ФЗ: обзвон только по согласившимся контактам (`consent`), чёрный список и
   тихие часы включены по умолчанию; запись разговора предупреждается в тексте сообщения
   (шаблон) — см. `docs/ATS_HOW_IT_WORKS.md` §6.
-- Логи: `/var/log/asterisk/full`, `/var/log/ats-records.log`, журнал ATS (`docs/ADMIN_LOGS.md`).
+- Логи: `/var/log/asterisk/messages.log`, `/var/log/ats-records.log`, журнал ATS (`docs/ADMIN_LOGS.md`).
 - Обновление сервера: `cd /opt/ats && ./deploy/update.sh arena/01a0cdee-ats`
   (бэкап БД → ff-only → тесты → рестарт → health → автооткат), `docs/DEPLOY.md`.
 

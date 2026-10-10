@@ -46,7 +46,9 @@ class RenderTest(unittest.TestCase):
         left = [l for l in out.splitlines() if "__MCM_" in l
                 and "password=" not in l and not l.lstrip().startswith(";")]
         self.assertEqual(left, [], "незаменённые плейсхолдеры: %s" % left)
-        self.assertIn("auth_name=00083819", out)
+        self.assertIn("username=00083819", out)
+        self.assertIn("auth_type=userpass", out)
+        self.assertNotIn("auth_name=", out, "auth_name — поле из Asterisk 12/13; на 16+ объект auth с ним не загружается")
         self.assertIn("server_uri=sip:00083819@95.128.224.47:5060", out)
         self.assertIn("client_uri=sip:00083819@95.128.224.47:5060", out)
         self.assertIn("from_domain=95.128.224.47", out)
@@ -124,7 +126,8 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         conf_path = self.dir / "pjsip-multicom.conf"
         conf = conf_path.read_text(encoding="utf-8")
         self.assertIn("password=p@ss-w0rd", conf)
-        self.assertIn("auth_name=00083819", conf)
+        self.assertIn("username=00083819", conf)
+        self.assertNotIn("auth_name=", conf)
         self.assertNotIn("__MCM_", conf)
         self.assertGreater(len(conf), 1000, "файл подозрительно короткий — шаблон не отрендерился")
         self.assertEqual(oct(conf_path.stat().st_mode & 0o777), "0o640",
@@ -138,6 +141,24 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
                          "двойной #include плодит дубли секций при перечитывании")
         self.assertTrue(list(self.dir.glob("pjsip-multicom.conf.bak-*")),
                         "перед перезаписью обязана оставаться резервная копия")
+
+    def test_check_flags_legacy_auth_name_field(self):
+        """Живой случай: transport-udp есть, endpoints пустые. Причина — auth_name вместо
+        username: Asterisk 20 такое поле объекта auth не знает, auth не создаётся, и за ним
+        не создаются endpoint и registration, которые на него ссылаются."""
+        self.assertEqual(run(env=self.env).returncode, 0)
+        conf = self.dir / "pjsip-multicom.conf"
+        conf.write_text(conf.read_text(encoding="utf-8").replace("username=00083819", "auth_name=00083819"),
+                        encoding="utf-8")
+        p = run(["--check"], env=self.env)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("auth_name", p.stderr)
+        self.assertIn("endpoint", p.stderr)
+        # исправленный файл проходит поле username без предупреждений
+        self.assertEqual(run(env=self.env).returncode, 0)
+        ok = run(["--check"], env=self.env)
+        self.assertNotIn("поле username не заполнено", ok.stderr)
+        self.assertNotIn("auth_name", ok.stderr)
 
     def test_include_first_line_in_distro_sample(self):
         """Дистрибутивный pjsip.conf — километровый закомментированный образец. #include,
@@ -325,6 +346,26 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         p = run(["--numbers-only"], env=env)
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("ATS_TOKEN", p.stderr)
+
+    def test_ats_resolves_ami_secret_from_env_file(self):
+        """Прерванный прогон (--ami был, --ats нет) обязан работать без AMIPASS: пароль
+        уже лежит в ats.env. Иначе 'нужен AMIPASS' обрывает настройку на середине."""
+        env_file = self.dir / "ats.env"
+        env_file.write_text("ATS_AMI_SECRET=amicc-from-env\n", encoding="utf-8")
+        _ApiHandler.captured = []
+        p = run(["--ats"], env=dict(self.env, ATS_ENV_FILE=str(env_file), ATS_KEEP_PROVIDER="1",
+                                    AMIPASS=""))
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-900:])
+        self.assertIn("пароль взят из", p.stdout + p.stderr)
+        settings = [b for path, _h, b in _ApiHandler.captured if path == "/api/v2/settings/raw"]
+        self.assertEqual(len(settings), 1)
+        self.assertEqual(settings[0]["provider_config"]["ami"]["secret"], "amicc-from-env")
+
+    def test_ats_without_any_secret_explains_both_sources(self):
+        p = run(["--ats"], env=dict(self.env, AMIPASS="", ATS_ENV_FILE=str(self.dir / "нет-такого-файла")))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("нужен пароль AMI", p.stderr)
+        self.assertIn("--ami", p.stderr)
 
     def test_ats_flag_writes_provider_and_ami_settings(self):
         p = run(["--ats"], env=dict(self.env, AMIPASS="amipass123"))

@@ -117,7 +117,8 @@ unset MCM_PASS
 не находит переменную, заданную только для одной команды, — отсюда ошибка
 `env: «MCM_PASS»: No such file or directory`.
 
-Признак успеха: в `--print` видны `auth_name=…`, `server_uri=sip:…:5060`, `allow=alaw/ulaw/g729`,
+Признак успеха: в `--print` видны `auth_type=userpass`, `username=…`, `server_uri=sip:…:5060`,
+`allow=alaw`, `allow=ulaw`,
 `match=<IP>/32`; `--dry-run` печатает только план (куда что ляжет), сам конфиг с замаскированным
 `password=` смотрите в `--print`, полное значение — `--print --reveal`. Ни одной метки `__MCM_`
 не осталось.
@@ -205,7 +206,7 @@ sudo asterisk -rx "pjsip show endpoints"      # mcm → mcm/mcm-aor
 sudo asterisk -rx "pjsip show aors"           # Avail
 sudo asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 sudo asterisk -rx "pjsip show registrations"  # <Registration: OK> … 200 OK
-sudo tail -30 /var/log/asterisk/messages | grep -iE "regist|40[13]|pjsip"
+sudo tail -30 /var/log/asterisk/messages.log | grep -iE "regist|40[13]|pjsip"
 ```
 
 Признак успеха: `200 OK` и контакт `Avail`. `403` — логин/пароль или нас не пустили по IP
@@ -213,15 +214,37 @@ sudo tail -30 /var/log/asterisk/messages | grep -iE "regist|40[13]|pjsip"
 или обратное правило на их сеть; контакт есть, но `Non-Corr` — нормально, корреляция появится
 после первого звонка.
 
-### 7а. «No objects found» — Asterisk не прочитал наш конфиг
+### 7а. «No objects found»: сначала разделим две причины
 
-Это **не** «оператор нас не пустил», а «Asterisk не увидел ни одной секции»: объектов нет
-вообще. Проживший пример с коробки: `/etc/asterisk/pjsip.conf` в Ubuntu — километровый
-закомментированный образец, и дописанная в его хвост строка `#include` попадает внутрь чужой
-секции. Asterisk на это не жалуется — он просто не применяет включение, и `pjsip show
-transports` / `show endpoints` / `show registrations` отвечают `No objects found`, хотя файл
-`/etc/asterisk/pjsip-multicom.conf` на месте и права правильные. Скрипт с этой версии ставит
-`#include` **первой строкой** и сам проверяет, что endpoint появился после reload.
+Это **не** «оператор нас не пустил»: Asterisk либо не увидел файл, либо увидел и отверг
+объект. Разбирается одной командой — посмотрите, есть ли транспорт:
+
+```bash
+asterisk -rx "pjsip show transports"      # есть transport-udp?
+asterisk -rx "pjsip show endpoints"
+asterisk -rx "pjsip show aors"
+```
+
+**Случай A — транспорт ЕСТЬ, а endpoint'а нет: объект не прошёл валидацию.** Ровно то, что
+поймали на проде. Причина — `auth_name=` в `[mcm-auth]`: поле `auth_name` было у объекта
+`auth` в Asterisk 12/13, с 16-й версии его нет, а `username` обязателен и непустой
+(`res/res_pjsip/config_auth.c` — «`mcm-auth`: No authentication username»). Auth не создан —
+и следом не создаются `[mcm]` (`outbound_auth=mcm-auth`) и `[mcm-reg]` (тот же auth): в CLI
+один транспорт и два пустых списка. Шаблон исправлен (`auth_type=userpass` + `username=`),
+`--check` теперь ругается на `auth_name` в установленном файле. Лечение — обновить репозиторий
+и перегенерить файл:
+
+```bash
+cd /opt/ats/app && git pull --ff-only origin arena/01a0cdee-ats
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh
+asterisk -rx "pjsip show endpoints" ; asterisk -rx "pjsip show registrations"
+```
+
+**Случай B — нет ни транспорта, ни endpoint'а: файл вообще не прочитан.** Проживший пример с
+коробки: `/etc/asterisk/pjsip.conf` в Ubuntu — километровый закомментированный образец, и
+дописанная в его хвост строка `#include` попадает внутрь чужой секции. Asterisk на это не
+жалуется — он просто не применяет включение. С этой версии скрипт ставит `#include` **первой
+строкой** и сам проверяет после reload, что endpoint появился.
 
 ```bash
 head -1 /etc/asterisk/pjsip.conf      # должно быть: #include pjsip-multicom.conf
@@ -239,13 +262,13 @@ sudo -E ./deploy/asterisk/install-multicom-trunk.sh --pjsip-standalone
 asterisk -rx "pjsip show endpoints" ; asterisk -rx "pjsip show registrations"
 ```
 
-Объектов по-прежнему нет — ищем точную строку ошибки в логе. В Ubuntu пишет
-`/var/log/asterisk/messages`, файла `full` по умолчанию нет (список файлов логов — в
-`/etc/asterisk/logger.conf`):
+Объектов по-прежнему нет — ищем точную строку ошибки в логе. В Ubuntu 24.04 пишет
+`/var/log/asterisk/messages.log.log` (файлов `messages` и `full` там обычно нет; список файлов и
+что в них лить задаёт `/etc/asterisk/logger.conf`):
 
 ```bash
 ls -l /var/log/asterisk/
-grep -iE "pjsip|syntax|error" /var/log/asterisk/messages | tail -30
+grep -iE "pjsip|syntax|error" /var/log/asterisk/messages.log | tail -30
 ```
 
 И последний аргумент, когда лог молчит: запустить Asterisk на переднем плане — он сам скажет,
@@ -370,7 +393,7 @@ sudo systemctl daemon-reload && sudo systemctl restart ats
 
 | Симптом | Где искать и что делать |
 |---|---|
-| `module reload` «успешен», но `pjsip show endpoints` пуст | §7а: `#include` не первой строкой (дистрибутивный `pjsip.conf` съедает включение) или секция `[mcm]` уже есть в основном конфиге → `grep -rn "\[mcm\]" /etc/asterisk/`, затем `--pjsip-standalone` |
+| `module reload` «успешен», но `pjsip show endpoints` пуст | §7а: сначала `pjsip show transports` — транспорт есть → объект не прошёл валидацию (в `[mcm-auth]` обязателен `username`, `auth_name` Asterisk 16+ не знает); транспорта нет → `#include` не первой строкой (дистрибутивный `pjsip.conf` его съедает), чинится `--pjsip-standalone`; затем `grep -rn "\[mcm\]" /etc/asterisk/` на дубль секции |
 | `401/403` на регистрации | пароль (не тот, что AMI!) или оператор не добавил ваш IP в whitelist: `curl -s ifconfig.me` → в письмо оператору |
 | Один звук / нет звука | RTP: `MCM_RTP` и `local_net`/`external_signaling_address` в `[transport-udp]`; правило на `95.128.224.0/21` для `10000-20000/udp`; `rtp.conf` |
 | `dialplan show ats-out` пусто | не запускали `--dialplan` (или нет `#include extensions-ats.conf`) → повторить шаг 6 с `--dialplan` |
