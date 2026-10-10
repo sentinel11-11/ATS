@@ -20,7 +20,7 @@ ATS отдаёт медиа через Asterisk, поэтому файлы за�
 Учётные данные — из окружения или файла /etc/ats/ats.env:
     ATS_URL=http://127.0.0.1:9124
     ATS_LOGIN=ats_records            # пользователь с ролью admin
-    ATS_PASSWORD=*****
+    ATS_PASSWORD=… (или готовый ATS_TOKEN)**
     ATS_TOKEN=                       # либо готовый токен (тогда вход не нужен)
 """
 import base64

@@ -181,7 +181,8 @@ ip -4 addr show                         # понять, какой адрес у
 ## 4. Шаг 1 — Asterisk
 
 ```bash
-apt-get update && apt-get install -y asterisk asterisk-cli espeak-ng    # espeak = TTS для озвучки
+apt-get update && apt-get install -y asterisk asterisk-config asterisk-modules \
+                        asterisk-core-sounds-en-wav espeak-ng   # espeak = TTS; asterisk-cli в 24.04 нет
 asterisk -rx "core show version"
 asterisk -rx "module show like chan_pjsip"      # должен быть res_pjsip + chan_pjsip
 asterisk -rx "module show like codec_g729"      # пусто — значит G.729 нет (см. §12)
@@ -203,15 +204,26 @@ asterisk -rx "module show like codec_g729"      # пусто — значит G.
 
 ```bash
 cd /opt/ats/app
-set +o history                        # чтобы пароли не ушли в ~/.bash_history
-MCM_PASS='***'              # пароль SIP-регистрации из письма
-AMIPASS=$(openssl rand -hex 24)               # пароль AMI — его придумываем МЫ (его в письме нет)
-ATS_TOKEN=$(curl -s -X POST http://127.0.0.1:9124/api/v2/auth/login \
-      -H 'Content-Type: application/json' -d '{"login":"admin","password":"…"}' \
-      | sed 's/.*"token":"***"]*\)".*/\1/')  # токен API АТС (нужен для --ats/--numbers)
-sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.sh \
+set +o history                                  # чтобы пароли не ушли в ~/.bash_history
+read -s -p "SIP-пароль из письма: " MCM_PASS; echo
+export MCM_PASS                                 # пароль регистрации — из письма оператора
+export AMIPASS=$(openssl rand -hex 24)          # пароль AMI придумываем МЫ (его в письме нет)
+export ATS_TOKEN=$(sudo ./deploy/ats-token.sh)  # токен API для --ats/--numbers
+[ -n "$ATS_TOKEN" ] || echo "токен не получен — проверьте логин/пароль админа" >&2
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh \
      --dialplan --firewall --ami --ats --numbers
+set -o history
 ```
+
+Почему в два приёма, а не одной строкой: `MCM_PASS=… команда` задаёт переменную только этой
+команде и в окружении обычного пользователя, а `sudo -E env MCM_PASS` ищет её в окружении
+sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` + `sudo -E` работает;
+`read -s` — чтобы значение не появилось в `ps` и в истории shell.
+
+Если по этому же серверу уже идёт боевой обзвон через другого оператора, переключать
+провайдера сразу нельзя: `export ATS_KEEP_PROVIDER=1` — тогда `settings.ami` запишется,
+а `provider` останется прежним; переключают его потом, когда `POST /api/v2/ami/check`
+зелёный (Настройки → «Провайдер/CRM» → Asterisk AMI).
 
 Флаги: `--print` (показать конфиг до записи) | `--dry-run` (ничего не писать) |
 `--check` (только диагностика) | `--firewall` (правила iptables/ufw на сеть оператора) |

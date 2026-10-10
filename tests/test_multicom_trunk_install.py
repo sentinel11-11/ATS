@@ -292,6 +292,37 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         # конфиг транка при этом тоже записан — один прогон на весь ввод данных письма
         self.assertTrue((self.dir / "pjsip-multicom.conf").is_file())
 
+    def test_keep_provider_writes_ami_without_switching_provider(self):
+        """ATS_KEEP_PROVIDER=1: настраиваем ami, не роняя боевой обзвон через другого провайдера."""
+        p = run(["--ats"], env=dict(self.env, AMIPASS="amipass123", ATS_KEEP_PROVIDER="1"))
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-1200:])
+        settings = [b for path, _h, b in _ApiHandler.captured if path == "/api/v2/settings/raw"]
+        self.assertEqual(len(settings), 1)
+        cfg = settings[0]["provider_config"]
+        self.assertNotIn("provider", cfg, "провайдер не должен меняться в keep-режиме")
+        self.assertEqual(cfg["ami"]["trunk"], "mcm")
+        self.assertEqual(cfg["ami"]["context"], "ats-out")
+
+    def test_ats_token_helper_needs_real_token(self):
+        """deploy/ats-token.sh: без поля token в ответе — код 1 и причина в stderr."""
+        env_file = self.dir / "pw"
+        env_file.write_text("secret123\n", encoding="utf-8")
+        p = subprocess.run(["bash", str(ROOT / "deploy" / "ats-token.sh")],
+                           env=dict(os.environ, ATS_URL="http://127.0.0.1:%d" % self.port,
+                                    ATS_LOGIN="admin", ATS_PASSWORD_FILE=str(env_file)),
+                           capture_output=True, text=True, timeout=60, cwd=str(ROOT))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("не выдал токен", p.stderr)
+        self.assertEqual(p.stdout.strip(), "", "мусор в stdout сломает конструкцию TOK=$(…)")
+
+    def test_ats_token_helper_reports_unreachable(self):
+        p = subprocess.run(["bash", str(ROOT / "deploy" / "ats-token.sh")],
+                           env=dict(os.environ, ATS_URL="http://127.0.0.1:1",
+                                    ATS_LOGIN="admin", ATS_PASSWORD_FILE="/etc/hostname"),
+                           capture_output=True, text=True, timeout=60, cwd=str(ROOT))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("не прошёл", p.stderr)
+
     def test_ats_requires_ami_password(self):
         env = {k: v for k, v in self.env.items() if k != "AMIPASS"}
         p = run(["--ats"], env=env)

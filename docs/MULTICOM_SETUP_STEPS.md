@@ -63,15 +63,30 @@ curl -s http://127.0.0.1:9124/api/v2/health; echo        # "ok": true
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y asterisk asterisk-cli espeak-ng
-asterisk -V                       # версия: >= 18 достаточно; 22 = только chan_pjsip
+sudo apt-get install -y asterisk asterisk-config asterisk-modules \
+                        asterisk-core-sounds-en-wav espeak-ng
+asterisk -V                       # в Ubuntu 24.04 (noble) это Asterisk 20.6
 sudo systemctl enable --now asterisk
 sudo asterisk -rx "core show version"
 ```
 
+Важно про имена пакетов: **в Ubuntu 24.04 пакета `asterisk-cli` нет** — `asterisk -r` и
+`asterisk -rx` входят в сам пакет `asterisk` (в Debian и Ubuntu 22.04 `asterisk-cli` был
+отдельным пакетом, отсюда и `E: Unable to locate package`). Если apt всё же ругнётся на
+любое имя из списка, ставьте по одному: `apt-get install -y asterisk`, потом остальное.
+Звуки (`asterisk-core-sounds-en-wav`) нужны тестовому `Playback(tt-monkeys)` и
+`vm-noavail` из диалплана; `asterisk-config` даёт базовые `/etc/asterisk/*.conf`, без него
+не будет `extensions.conf`/`pjsip.conf`, куда скрипт добавляет `#include`.
+`asterisk-espeak` ставить не нужно: озвучка у нас идёт через AGI + `espeak-ng`.
+
 Признак успеха: `core show version` отвечает без «Unable to connect». Если Asterisk стартует и
 тут же падает — `sudo journalctl -u asterisk -n 30`. `espeak-ng` нужен озвучке в потоке
 `flow=message`; без него такой поток честно упадёт в `no_media`.
+
+**G.729.** В пакет Ubuntu 24.04 проприетарный `codec_g729` не входит. Если в письме указан
+G.729, а лицензии/модуля у вас нет — оставьте `MCM_CODECS=alaw,ulaw`: строка `allow=g729`
+в конфиге не ошибка, но согласовать этот кодек Asterisk не сможет, и при жёстком требовании
+оператора звонок сорвётся. Проверяется так: `sudo asterisk -rx "module show like codec_g729"`.
 
 ## Шаг 4. Осмотреть `/etc/asterisk`, чтобы не унаследовать чужой транспорт
 
@@ -90,9 +105,17 @@ sudo asterisk -rx "module show like res_pjsip" | head -5
 ```bash
 cd /opt/ats/app
 set +o history
-MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh --print | head -40
-MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dry-run
+read -s -p "SIP-пароль из письма: " MCM_PASS; echo
+export MCM_PASS
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh --print | head -40
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dry-run
+unset MCM_PASS
 ```
+
+`read -s` — пароль не попадёт ни в историю, ни в `ps` (в отличие от
+`MCM_PASS='…' command`, где он виден в аргументах). Экспорт обязателен: `sudo -E env MCM_PASS …`
+не находит переменную, заданную только для одной команды, — отсюда ошибка
+`env: «MCM_PASS»: No such file or directory`.
 
 Признак успеха: в `--print` видны `auth_name=…`, `server_uri=sip:…:5060`, `allow=alaw/ulaw/g729`,
 `match=<IP>/32`; `password=` в `--dry-run` скрыт (`***`), ни одной метки `__MCM_` не осталось.
@@ -102,14 +125,34 @@ MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dry-run
 
 ```bash
 cd /opt/ats/app
-TOK=$(curl -s -X POST http://127.0.0.1:9124/api/v2/auth/login \
-      -H 'Content-Type: application/json' -d '{"login":"admin","password":"ПАРОЛЬ_АДМИНА"}' \
-      | sed 's/.*"token":"***"]*\)".*/\1/')
-MCM_PASS='***' AMIPASS=$(openssl rand -hex 24) ATS_TOKEN="$TOK" \
-sudo -E env MCM_PASS AMIPASS ATS_TOKEN ./deploy/asterisk/install-multicom-trunk.sh \
+export MCM_PASS          # уже введено на шаге 5 read -s; иначе повторите read -s …
+export AMIPASS=$(openssl rand -hex 24)
+export ATS_TOKEN=$(sudo ./deploy/ats-token.sh)   # спросит логин/пароль, напечатает токен
+[ -n "$ATS_TOKEN" ] && echo "токен есть" || echo "ТОКЕН ПУСТ — см. stderr ats-token.sh"
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh \
      --dialplan --firewall --ami --ats --numbers
 set -o history
 ```
+
+Проверка токена обязательна: с пустым `ATS_TOKEN` АТС отвечает `auth_required`, и настройки
+просто не запишутся. `deploy/ats-token.sh` печатает токен на stdout, а причины неудачи —
+в stderr: 403 (неверный логин/пароль) или `429 too_many_attempts` (защита от перебора:
+подождать `retry_after_sec`). Ручная замена хелперу — `POST /api/v2/auth/login` и поле
+`token` из ответа.
+
+**Если по этому же серверу уже идёт боевой обзвон через другого оператора** (в проде так и
+было: `provider=megafon_vats`), переключать провайдера сразу нельзя — дозовите сначала
+`ami/check`. Замените последнюю строку на:
+
+```bash
+export ATS_KEEP_PROVIDER=1
+sudo -E ./deploy/asterisk/install-multicom-trunk.sh \
+     --dialplan --firewall --ami --ats --numbers
+```
+
+Тогда `settings.ami` запишется, а `provider` останется прежним; переключаете потом —
+Настройки → «Провайдер/CRM» → «Asterisk AMI» (или `POST /api/v2/settings/raw` с ключом
+`provider`), тем же способом и откатываетесь.
 
 Что происходит построчно в логе: рендер `pjsip-multicom.conf` (0640 `root:asterisk`, бэкап
 предыдущего) → `#include` в `pjsip.conf` → `extensions-ats.conf` + `ats-tts.conf` +
@@ -119,8 +162,11 @@ AMI `ats` в `manager-ats.conf` + `ATS_AMI_SECRET` в `/etc/ats/ats.env` → н�
 (`provider=ami`, `trunk=mcm`, `ru8`/`d10`, контексты) → 15 номеров в пул с `provider=ami`.
 
 Признак успеха: скрипт завершился кодом 0, в конце «регистрация установлена», и он же выдал
-строку `пароль AMI записан в /etc/ats/ats.env`. **Пароль из вывода скопируйте себе в менеджер
-паролей** и закройте терминал — в истории его нет (`set +o history`).
+строку `пароль AMI записан в /etc/ats/ats.env`.
+
+Пароль AMI из вывода (если он печатался) скопируйте в менеджер паролей и закройте вкладку.
+Поскольку `MCM_PASS` вводился через `read -s`, а история на время отключена, в
+`~/.bash_history` секретов быть не должно; проверить: `grep -c MCM_PASS ~/.bash_history` → 0.
 
 ## Шаг 7. Транк и регистрация
 

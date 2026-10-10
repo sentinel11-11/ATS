@@ -25,7 +25,11 @@
 #  файле — переиспользуется (тогда можно просто проверить конфигурацию).
 #
 #  Запуск (root, из клона АТС на сервере):
-#      MCM_PASS='***' sudo -E ./deploy/asterisk/install-multicom-trunk.sh
+#      read -s -p "SIP-пароль: " MCM_PASS; export MCM_PASS
+#      export ATS_TOKEN=$(sudo ./deploy/ats-token.sh)
+#      sudo -E ./deploy/asterisk/install-multicom-trunk.sh --dialplan --firewall --ami --ats --numbers
+#  Значения задаются через export: конструкция VAR=… sudo -E ./… переменную не передаёт
+#  (sudo ищет её в своём окружении), а read -s — чтобы секрет не попал в ps и историю.
 #  Режимы:
 #      --print     показать результат, ничего не писать
 #      --dry-run   показать, что будет сделано
@@ -42,6 +46,7 @@
 #      MCM_NET=95.128.224.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw,g729
 #      MCM_MAX_CHANNELS=15 REG_TIMEOUT=40 AST_DIR=/etc/asterisk
 #      AGI_DIR=/var/lib/asterisk/agi-bin ATS_ENV_FILE=/etc/ats/ats.env
+#      ATS_KEEP_PROVIDER=1 — settings.ami записать, но текущий провайдер не менять
 # ============================================================================
 set -uo pipefail
 
@@ -221,6 +226,7 @@ apply_ats_settings() {
   fi
   ATS_URL="$ATS_URL" ATS_TOKEN="$ATS_TOKEN" AMIPASS="$AMIPASS" MCM_TRUNK="$MCM_TRUNK" \
   ATS_SKIP_DB_SECRET="${ATS_SKIP_DB_SECRET:-0}" \
+  ATS_KEEP_PROVIDER="${ATS_KEEP_PROVIDER:-0}" \
   AMI_HOST="${AMI_HOST:-127.0.0.1}" AMI_PORT="${AMI_PORT:-5038}" AMI_USER="${AMI_USER:-ats}" \
   python3 - <<'PYATS'
 import json, os, urllib.request
@@ -242,8 +248,14 @@ ami = {
     "play_message": True,
     "inbound_enabled": True,
 }
+keep = os.environ.get("ATS_KEEP_PROVIDER") == "1"
+# ATS_KEEP_PROVIDER=1 — настройки ami пишем, а текущий провайдер НЕ трогаем:
+# так Asterisk настраивают, когда обзвон уже идёт через другого оператора.
+cfg = {"ami": ami}
+if not keep:
+    cfg["provider"] = "ami"
 url = os.environ["ATS_URL"].rstrip("/") + "/api/v2/settings/raw"
-body = json.dumps({"provider_config": {"provider": "ami", "ami": ami}}).encode()
+body = json.dumps({"provider_config": cfg}).encode()
 req = urllib.request.Request(url, data=body, method="POST",
                              headers={"Content-Type": "application/json",
                                       "X-Ats-Token": os.environ["ATS_TOKEN"]})
@@ -259,7 +271,12 @@ PYATS
   if [ "$rc" != "0" ]; then
     die "не удалось записать настройки АТС ($ATS_URL) — проверьте ATS_TOKEN и доступность сервиса"
   fi
-  log "настройки АТС записаны: provider=ami, транк='$MCM_TRUNK', number_format=ru8, caller_id_format=d10"
+  if [ "${ATS_KEEP_PROVIDER:-0}" = "1" ]; then
+    log "настройки ami записаны (транк='$MCM_TRUNK', ru8/d10), провайдер НЕ менялся"
+    log "переключение провайдера — когда ami/check зелёный: Настройки → «Провайдер/CRM» → Asterisk AMI (или /api/v2/settings/raw с ключом provider)"
+  else
+    log "настройки АТС записаны: provider=ami, транк='$MCM_TRUNK', number_format=ru8, caller_id_format=d10"
+  fi
 }
 
 have_asterisk() { command -v "$ASTERISK_CMD" >/dev/null 2>&1; }
@@ -317,7 +334,7 @@ fi
 if [ "$(id -u)" != "0" ] && [ "${ALLOW_NONROOT:-0}" != "1" ]; then
   die "нужны права root (пишем в $AST_DIR). Запуск: sudo -E $0"
 fi
-[ -d "$AST_DIR" ] || die "нет каталога $AST_DIR — сначала: apt-get install -y asterisk asterisk-cli espeak-ng"
+[ -d "$AST_DIR" ] || die "нет каталога $AST_DIR — сначала: apt-get install -y asterisk asterisk-config asterisk-modules espeak-ng (в Ubuntu 24.04 пакета asterisk-cli нет — CLI входит в asterisk)"
 
 if [ "$MODE" = "dry" ]; then
   log "файл: $OUT_PATH (копия $OUT_PATH.bak-<stamp>)"
@@ -530,7 +547,7 @@ if have_asterisk; then
     exit 1
   fi
 else
-  warn "Asterisk не установлен — файл записан, применять его пока нечем: apt-get install -y asterisk asterisk-cli espeak-ng"
+  warn "Asterisk не установлен — файл записан, применять его пока нечем: apt-get install -y asterisk asterisk-config asterisk-modules espeak-ng"
 fi
 
 if [ "$WANT_ATS" = "1" ]; then
