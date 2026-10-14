@@ -320,8 +320,9 @@ import_numbers() {
   done
   log "пул номеров (provider=$MCM_NUMBER_PROVIDER, daily_limit=$MCM_DAILY_LIMIT): добавлено $added, уже было $exists, проблем $bad"
   if [ "$added" = "0" ] && [ "$exists" = "0" ]; then
-    log "в пуле не оказалось ни одного номера: проверьте ATS_TOKEN (echo \"len=${#ATS_TOKEN}\") и то," 
-         "что $ATS_URL отвечает: curl -s $ATS_URL/api/v2/health; 401 auth_required — перевыпустите токен"
+    log "в пуле не оказалось ни одного номера: проверьте ATS_TOKEN (echo \"len=${#ATS_TOKEN}\") "
+    log "и то, что сервис отвечает: $ATS_URL/api/v2/health; 401 auth_required = токен пуст или протух —"
+    log "перевыпустить его нужно через deploy/ats-token.sh (он спросит логин и пароль)"
   fi
   [ "$bad" = "0" ] || return 1
   return 0
@@ -391,7 +392,7 @@ print("ATS_OK " + out[:160])
 PYATS
   local rc=$?
   if [ "$rc" != "0" ]; then
-    die "не удалось записать настройки АТС ($ATS_URL) — проверьте ATS_TOKEN и доступность "         "сервиса; auth_required/401 = токен пуст или протух, перевыпустите: export ATS_TOKEN=$(./deploy/ats-token.sh)"
+    die "не удалось записать настройки АТС ($ATS_URL): 401 auth_required = токен пуст или протух — перевыпустите deploy/ats-token.sh; если ответ пустой/000 — сервис не отвечает"
   fi
   if [ "${ATS_KEEP_PROVIDER:-0}" = "1" ]; then
     log "настройки ami записаны (транк='$MCM_TRUNK', ru8/d10), провайдер НЕ менялся"
@@ -434,7 +435,7 @@ asterisk_log_hint() {
     shown=1
     break
   done
-  [ "$shown" = "1" ] || warn "ни один лог в /var/log/asterisk/ не читается (права? что включено — в /etc/asterisk/logger.conf)"
+  [ "$shown" = "1" ] || warn "ни один лог в $AST_LOG_DIR не читается (права? что включено — в $AST_DIR/logger.conf)"
   return 0
 }
 

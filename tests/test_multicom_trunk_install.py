@@ -39,6 +39,40 @@ def run(args=(), env=None):
                           capture_output=True, text=True, timeout=90, input="")
 
 
+class ScriptStaticTest(unittest.TestCase):
+    """Статические проверки самого скрипта — до запуска."""
+
+    def test_bash_syntax(self):
+        r = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[:400])
+
+    def test_no_dangling_string_continuations(self):
+        """Соседние строки-литералы bash склеивает в одну команду только через «\\»: без него
+        следующая строка становится отдельной командой, и «command not found» всплывает в
+        рантайме (в syntax-чеке при этом всё чисто). Реальный случай: подсказка про ATS_TOKEN
+        после переноса без слэша сломала бы вывод ровно там, где он важнее всего."""
+        lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+        bad = []
+        for i, line in enumerate(lines[:-1]):
+            if not re.match(r'^\s*(log|warn|die|info)\s+"', line):
+                continue
+            if line.rstrip().endswith("\\"):
+                continue
+            if re.match(r'^\s*"[^"]*"\s*$', lines[i + 1]):
+                bad.append(i + 1)
+        self.assertEqual(bad, [], "строки продолжения без слэша: %s" % bad)
+
+    def test_no_hardcoded_asterisk_log_path_in_messages(self):
+        """Пути к логу берутся из AST_LOG_DIR: на коробке файла с «угаданным» именем нет,
+        и человек сутки ходил по несуществующему messages.log."""
+        txt = SCRIPT.read_text(encoding="utf-8")
+        offenders = [l.strip()[:90] for l in txt.splitlines()
+                     if "/var/log/asterisk/" in l and not l.strip().startswith("#")
+                     and 'AST_LOG_DIR:-/var/log/asterisk' not in l
+                     and "Ubuntu" not in l]
+        self.assertEqual(offenders, [], "хардкод пути лога в выводах: %s" % offenders)
+
+
 class RenderTest(unittest.TestCase):
     def test_placeholders_filled_from_letter(self):
         p = run(["--print"])
