@@ -481,6 +481,47 @@ asterisk_log_path() {
   return 0
 }
 
+# Чем именно «не получается» — по логу, потому что статус Rejected на это не указывает:
+# им подписывают и отказ (401/403), и «попытки кончились» после серии таймаутов. Разница
+# принципиальная: в первом случае мы виноваты (пароль/логин), во втором нас просто не пускают
+# (дроп на их edge, неактивный аккаунт, другой порт/транспорт) — и ротация секрета ничего не
+# даст. Возвращает <вид>|<последняя релевантная строка>.
+registration_failure_kind() {
+  local f txt=""
+  for f in "$AST_LOG_DIR/messages.log" "$AST_LOG_DIR/messages.log.log" "$AST_LOG_DIR/full"; do
+    [ -r "$f" ] || continue
+    txt="$(tail -n 400 "$f" 2>/dev/null \
+            | grep -aE "No response received|Fatal response|Forbidden|Unreachable|Server failure|Maximum retries" \
+            | tail -12)"
+    [ -n "$txt" ] && break
+  done
+  if [ -z "$txt" ]; then
+    printf 'unknown|в логе строк про исходящую регистрацию нет'
+  elif printf '%s\n' "$txt" | grep -qaE "Fatal response|Forbidden|Unreachable|Server failure"; then
+    printf 'refused|%s' "$(printf '%s\n' "$txt" | grep -aE "Fatal response|Forbidden|Unreachable|Server failure" | tail -1)"
+  else
+    printf 'silent|%s' "$(printf '%s\n' "$txt" | tail -1)"
+  fi
+  return 0
+}
+
+# Как смотреть пакеты: только через pcap. `tcpdump -A | grep REGISTER` непригоден — ASCII-дамп
+# переносит строки каждые 16 байт, слово рвётся, и grep молчит при живом трафике (проверено).
+registration_probe_hint() {
+  log "проба по пакетам (не 'tcpdump -A | grep REGISTER' — вывод рвёт слово по строкам):"
+  log "  timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port $MCM_PORT and host $MCM_HOST'"
+  log "  grep -ac 'REGISTER sip' /tmp/sip5060.pcap        # сколько наших REGISTER ушло"
+  log "  grep -aoE 'SIP/2.0 [0-9]{3}' /tmp/sip5060.pcap | sort | uniq -c   # что ответили (пусто = молчат)"
+  return 0
+}
+
+# Живёт ли порт у оператора. TCP-SYN без ответа (rc=124) вместе с таймаутами REGISTER —
+# это дроп по IP-политике, а не «порт закрыт» (тогда пришёл бы RST и rc=1 сразу).
+port_probe_cmd() {
+  printf 'timeout 6 bash -c %s ; echo tcp=$?' "'</dev/tcp/$MCM_HOST/$MCM_PORT'"
+  return 0
+}
+
 # Установленный файл может остаться от прошлой версии шаблона: значения тогда корректны,
 # но новых полей нет. Практический смысл: без max_retries/auth_rejection_permanent из
 # текущего шаблона Asterisk после 10 неудачных REGISTER перестаёт пробовать вовсе, и
@@ -583,6 +624,13 @@ check_only() {
       log "регистрация: ${v%%|*} — ${v#*|}"
     else
       warn "регистрация не подтверждена: статус ${v%%|*} — ${v#*|}"
+      _k="$(registration_failure_kind)"
+      case "${_k%%|*}" in
+        silent) warn "по логу это тишина, а не отказ (${_k#*|}): $MCM_HOST:$MCM_PORT не отвечает вообще — пароль тут ни при чём"
+                warn "живёт ли порт: $(port_probe_cmd)   # 124 = фильтруют молча, 1 = порт закрыт (отказ), 0 = открыт"
+                registration_probe_hint ;;
+        refused) warn "по логу это отказ: ${_k#*|}" ;;
+      esac
       registration_log_hint
       [ "${v%%|*}" = "Rejected" ] && registration_retry_hint
       rc=1
@@ -871,14 +919,27 @@ if have_asterisk; then
           # Rejected — это НЕ обязательно «нам отказали». Так же CLI подписывает и
           # «Maximum retries reached» после серии таймаутов, то есть тишину в ответ.
           # Различает их только лог: там есть и 'Fatal response 4NN', и «No response received».
-          warn "попытка закрыта со статусом Rejected (${verdict#*|}) — настоящий смысл в логе ниже: «No response received» = ответа нет вовсе (их edge, allowlist или маршрут), «Fatal response 401» = пароль/логин, «Fatal response 403» = активация/IP"
+          kind="$(registration_failure_kind)"
+          case "${kind%%|*}" in
+            silent)
+              warn "ответа нет вовсе: REGISTER уходит на $MCM_HOST:$MCM_PORT, обратно — тишина (${kind#*|})"
+              warn "это НЕ пароль и не наш конфиг: пакеты дропают до того, как их успеют разобрать."
+              warn "их IP-allowlist (самое частое), неактивированный логин, или другой порт/транспорт registrar'а"
+              warn "проверка, живёт ли порт: $(port_probe_cmd)   # 0 — открыт, 1 — отказ (порт закрыт), 124 — фильтруют молча"
+              warn "если 124 по TCP и тишина по UDP — это дроп по их политике: писать оператору про allowlist, адрес/порт и транспорт registrar'а"
+              registration_probe_hint
+              ;;
+            refused)
+              warn "регистратор ответил отказом (${kind#*|}) — 401 = сверить username/password с письмом, 403 = активация логина или наш IP в allowlist"
+              ;;
+            *)
+              warn "попытка закрыта со статусом Rejected (${verdict#*|}) — настоящий смысл в логе ниже: «No response received» = ответа нет вовсе (их edge, allowlist или маршрут), «Fatal response 401» = пароль/логин, «Fatal response 403» = активация/IP"
+              ;;
+          esac
           registration_log_hint
           registration_retry_hint
-          warn "проба по пакетам (в pcap, а не в tcpdump -A: ASCII-вывод рвёт «REGISTER» по строкам, и grep молчит при живом трафике):"
-          warn "  timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port $MCM_PORT and host $MCM_HOST'"
-          warn "  grep -ac 'REGISTER sip' /tmp/sip5060.pcap        # сколько наших REGISTER ушло"
-          warn "  grep -aoE 'SIP/2.0 [0-9]{3}' /tmp/sip5060.pcap | sort | uniq -c   # что ответили (пусто = молчат)"
           warn "в захвате есть исходящие REGISTER и нет входящих — пакет до них не доходит или их edge его дропает (это к оператору); нет и исходящих — попытки исчерпаны, нужен reload res_pjsip"
+          registration_probe_hint
           ;;
         Unregistered|Trying|unknown)
           warn "регистрация не подтверждена (${verdict%%|*}): ${verdict#*|}"

@@ -606,6 +606,39 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertIn("--numbers-only", out, "должно предложить команду повтора")
         self.assertEqual(len(_ApiHandler.captured), 0, "без живого порта слать POST незачем")
 
+    def test_silence_and_refusal_are_different_problems(self):
+        """Rejected — общий статус, а чинить надо разное. По логу различаем «молчат» (их
+        allowlist/порт/транспорт — пароль ни при чём) и «ответили отказом» (наш username/
+        password). Иначе на тишину отвечают ротацией секрета и теряют ещё сутки."""
+        fake = self.dir / "ast-rej"
+        fake.write_text(
+            '#!/bin/sh\ncase "$*" in\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060  mcm-auth  Rejected  (exp. 55s)" ;;\n'
+            '  *) echo "  Endpoint: mcm  Unavailable  0 of 15" ;;\nesac\nexit 0\n', encoding="utf-8")
+        fake.chmod(0o755)
+        logs = self.dir / "logs"
+        logs.mkdir(exist_ok=True)
+        env = dict(self.env, ASTERISK_CMD=str(fake), AST_LOG_DIR=str(logs), REG_TIMEOUT="1")
+        (logs / "messages.log").write_text(
+            "[Oct 14 21:31:43] WARNING[700904] res_pjsip_outbound_registration.c: No response received "
+            "from 'sip:00083819@95.128.224.47:5060' on registration attempt to "
+            "'sip:00083819@95.128.224.47:5060', retrying in '60'\n", encoding="utf-8")
+        p = run(["--check"], env=env)
+        out = p.stdout + p.stderr
+        self.assertIn("по логу это тишина", out)
+        self.assertIn("пароль тут ни при чём", out)
+        self.assertIn("/dev/tcp/95.128.224.47/5060", out, "нужна команда пробы порта")
+        self.assertIn("timeout 90 tcpdump", out, "и проба по pcap")
+        self.assertNotEqual(p.returncode, 0)
+        (logs / "messages.log").write_text(
+            "[Oct 14 21:40:00] WARNING[1] res_pjsip_outbound_registration.c: Fatal response '401' received "
+            "from 'sip:00083819@95.128.224.47:5060' on registration attempt to '…', stopping outbound "
+            "registration\n", encoding="utf-8")
+        q = run(["--check"], env=env)
+        self.assertIn("по логу это отказ", q.stdout + q.stderr)
+        self.assertNotIn("пароль тут ни при чём", q.stdout + q.stderr,
+                         "на отказе нельзя утверждать, что пароль ни при чём")
+
     def test_check_says_when_installed_file_is_older_than_template(self):
         """Конфиг на коробке переживает обновление репозитория: поля валидны, но новых нет —
         без max_retries Asterisk после 10 неудач перестаёт пробовать, и статус выглядит
