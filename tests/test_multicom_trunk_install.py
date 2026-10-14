@@ -8,6 +8,7 @@
 конфига, испорченный значением из окружения, и provider у импортированных номеров.
 """
 import json
+import socket
 import os
 import pathlib
 import shutil
@@ -386,6 +387,8 @@ class _ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    response = {"ok": True}
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(n) if n else b"{}"
@@ -394,7 +397,7 @@ class _ApiHandler(BaseHTTPRequestHandler):
         except ValueError:
             body = {"_raw": raw.decode("utf-8", "ignore")}
         type(self).captured.append((self.path, dict(self.headers), body))
-        self._json({"ok": True})
+        self._json(type(self).response)
 
 
 class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
@@ -535,7 +538,22 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.chmod(0o755)
         p = run(env=dict(self.env, ASTERISK_CMD=str(fake), REG_TIMEOUT="1"))
         self.assertEqual(p.returncode, 1)
-        self.assertIn("отверг REGISTER", p.stderr)
+        self.assertIn("ответил отказом на REGISTER", p.stderr)
+        # код отказа Asterisk пишет в лог сам — скрипт обязан его показать, а не
+        # отправлять человека гадать, пароль виноват или allowlist
+        logs = self.dir / "logs"
+        (logs / "messages.log").parent.mkdir(exist_ok=True)
+        (logs / "messages.log").write_text(
+            "[2026-10-14 20:49:02] WARNING[1234]: res_pjsip_outbound_registration.c: "
+            "Fatal response '401' received from 'sip:00083819@95.128.224.47:5060' on "
+            "registration attempt to 'sip:00083819@95.128.224.47:5060', stopping outbound registration\n",
+            encoding="utf-8")
+        c = run(["--check"], env=dict(self.env, ASTERISK_CMD=str(fake), AST_LOG_DIR=str(logs)))
+        self.assertEqual(c.returncode, 1)
+        self.assertIn("Fatal response '401'", c.stdout + c.stderr)
+        self.assertIn("stopping outbound registration", c.stdout + c.stderr)
+        self.assertIn("module reload res_pjsip.so", c.stdout + c.stderr,
+                      "должно сказать, что Asterisk больше не повторяет попытку")
 
     def test_missing_registration_does_not_stop_the_rest(self):
         """Без регистрации настройки АТС и номера всё равно должны примениться:
@@ -555,6 +573,35 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
                     "должно сказать, что Asterisk не загрузил секции")
         self.assertIn("объектов регистрации нет", p.stderr,
                       "по статусу видно, что секция [mcm-reg] вообще не создана")
+
+    def test_error_answer_is_not_counted_as_added(self):
+        """Ответ 'ok: false' — это провал, а не успех: поиск по подстроке '\"ok\"'
+        засчитывал добавление номера даже когда API отказался его принимать."""
+        _ApiHandler.response = {"ok": False, "error": "bad_number"}
+        try:
+            p = run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="9690229926"))
+        finally:
+            _ApiHandler.response = {"ok": True}
+        self.assertEqual(p.returncode, 1, (p.stdout + p.stderr)[-500:])
+        out = p.stdout + p.stderr
+        self.assertIn("добавлено 0", out)
+        self.assertIn("HTTP 200", out, "в отчёте должен быть и код ответа, и текст ошибки")
+        self.assertIn("bad_number", out)
+
+    def test_gives_up_when_service_is_unreachable(self):
+        """Молчаливый ноль вместо «добавлено 0, проблем 15»: если порт не отвечает,
+        надо сказать про перезапуск сервиса, а не слать 15 заведомо пустых запросов."""
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        dead_port = probe.getsockname()[1]
+        probe.close()
+        p = run(["--numbers-only"], env=dict(self.env, ATS_URL="http://127.0.0.1:%d" % dead_port,
+                                             ATS_UP_TIMEOUT="1", MCM_NUMBERS="9690229926"))
+        self.assertEqual(p.returncode, 1)
+        out = p.stdout + p.stderr
+        self.assertIn("не отвечает", out)
+        self.assertIn("--numbers-only", out, "должно предложить команду повтора")
+        self.assertEqual(len(_ApiHandler.captured), 0, "без живого порта слать POST незачем")
 
     def test_ats_token_helper_needs_real_token(self):
         """deploy/ats-token.sh: без поля token в ответе — код 1 и причина в stderr."""

@@ -316,20 +316,28 @@ sudo systemctl start asterisk
 не применилось. Строки `pjsip-multicom.conf` нет вообще — включение не дошло (проверьте
 `astetcdir` в `/etc/asterisk/asterisk.conf` и запускайте `--pjsip-standalone`).
 
-**Случай D — все объекты есть, но `pjsip show registrations` = `Unregistered`.** Это наш
-финальный случай на проде: endpoint, aor, identify и auth на месте, ACO-ошибок в логе нет —
-значит конфигурация наша закончена и дальше только регистратор оператора. Статусы:
-`Registered` — ок, `Expiring` — ок (перерегистрируется), `Unregistered` — нет ответа или не
-пустили, `Rejected` — 401/403 поDigest. Проверяется одним `tcpdump` (75 секунд, пока не
-пройдёт цикл `retry_interval=60`):
+**Случай D — все объекты есть, но `pjsip show registrations` = `Unregistered` или `Rejected`.**
+Это наш финальный случай на проде: endpoint, aor, identify и auth на месте, ACO-ошибок в логе
+нет — значит конфигурация наша закончена и дальше только регистратор оператора. Статусы:
+`Registered` и `Expiring` — работает, `Unregistered` — ответа нет вообще, `Rejected` — ответ
+пришёл и нам отказали (значит не «сети нет»: `401` = пароль/логин, `403` = аккаунт не
+активирован или IP не в allowlist). Проверяется так:
 
 ```bash
+grep -aE "Fatal response|Forbidden|Maximum retries|stopping outbound registration" /var/log/asterisk/messages.log | tail -10
+asterisk -rx "pjsip show registrations"          # дважды, с интервалом ~70 секунд
 timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
 ```
 
-Нет ответа вовсе — их сторона/маршрут; `401` с `WWW-Authenticate` и повторный REGISTER тоже
-`401` — пароль или `username`; `403` — аккаунт не активирован или IP не в allowlist. Разбор и
-готовые формулировки для письма — `docs/MULTICOM_SIP_CONNECT.md` §12а и §13. Обратите внимание:
+Первая команда важнее второй: код отказа пишет в лог сам Asterisk (`LOG_WARNING`), и `--check`
+его тоже печатает. Про `tcpdump` — ловушка: если в логе есть `stopping outbound registration`,
+статус `Rejected` не меняется и `exp.` только растёт, то REGISTER не уходит не потому, что
+оператор молчит, а потому что **Asterisk сдался**: с дефолтами `auth_rejection_permanent=yes`,
+`fatal_retry_interval=0`, `forbidden_retry_interval=0`, `max_retries=10` после финального отказа
+попыток больше нет вовсе. Шаблон `pjsip-multicom.conf` теперь выставляет `auth_rejection_permanent=no`
+и повторы раз в минуту; на уже настроенной коробке попытки возвращает
+`asterisk -rx "module reload res_pjsip.so"`. Дальше по коду: `401` — сверять `username`/`password`
+с письмом, `403` — письмо оператору (формулировки — §12а и §13). Обратите внимание:
 `pjsip show endpoints` при этом показывает `State: Unavailable` — для транка это норма (у
 исходящего транка нет входящего контакта), на набор `PJSIP/<номер>@mcm` не влияет.
 
@@ -344,7 +352,12 @@ curl -s -X POST -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/ami/check | 
 Признак успеха: в `ami/check` `ok: true`, зелёные пункты `asterisk`, `manager_login`,
 `registration`, `dialplan`, `numbers_active` (=15). Пункт `registration` сверяет точные слова
 статуса (`Registered`/`Expiring`/`Avail`), поэтому при `Unregistered` он честно красный — и
-красный он будет, пока Мультиком не ответил на REGISTER, даже если AMI полностью рабочий. Пункт `secret` укажет источник пароля —
+красный он будет, пока Мультиком не ответил на REGISTER, даже если AMI полностью рабочий. Если
+лог Asterisk читается, в детали пункта так же, как в `--check`, печатается строка с причиной
+(`Fatal response '401'` = пароль, `403 Forbidden` = активация/IP, `stopping outbound
+registration` = попытки кончились и нужен reload) — смотреть её удобнее в JSON, чем переключаться
+между окнами: `curl -s -X POST -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/ami/check |
+python3 -m json.tool | grep -A3 registration`. Пункт `secret` укажет источник пароля —
 `ATS_AMI_SECRET` или настройки. Если `manager_login` красный — пароль в `ats.env` и в
 `manager-ats.conf` разошлись (перечитать: `sudo systemctl restart ats`).
 
@@ -371,7 +384,12 @@ sqlite3 /var/lib/ats/ats.db "select number,provider,active,daily_limit from numb
   || echo "sqlite3 нет — смотрите вкладку «Номера»"
 ```
 
-Признак успеха: 15 строк, `provider=ami`, `active=1`. Движок берёт номера строго по
+Признак успеха: 15 строк, `provider=ami`, `active=1`. Если установщик выдал
+`добавлено 0 … проблем 15` или «АТС не отвечает на …/api/v2/health» — это не отказ API, а окно
+перезапуска: `systemctl restart ats` закрывает порт на 1–3 с, и запросы в этом окне терялись
+(на проде так и пропали все 15 номеров). Скрипт теперь проверяет, что сервис отвечает, прежде
+чем писать в пул, а `--restart` выполняется в самом конце; завести только номера —
+`--numbers-only` при тех же `ATS_TOKEN` (и `ATS_URL`, если он нестандартный). Движок берёт номера строго по
 `numbers.provider` (`numbers.acquire(provider=…)`), поэтому номер с меткой `multicom`/`sim`
 в работу не попадёт — это самая частая причина «кампания запущена, тишина».
 

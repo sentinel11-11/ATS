@@ -63,6 +63,10 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AST_DIR="${AST_DIR:-/etc/asterisk}"
 TPL="${TPL:-$APP_DIR/deploy/asterisk/pjsip-multicom.conf}"
 ASTERISK_CMD="${ASTERISK_CMD:-asterisk}"
+# Куда Asterisk пишет лог. На Ubuntu 24.04 из коробки это messages.log; если в logger.conf
+# категория названа «messages.log», файл получается messages.log.log — перебираем оба.
+# Переменная нужна ещё и тестам: на стенде каталог другой.
+AST_LOG_DIR="${AST_LOG_DIR:-/var/log/asterisk}"
 OUT_PATH="$AST_DIR/pjsip-multicom.conf"
 
 MCM_LOGIN="${MCM_LOGIN:-00083819}"
@@ -253,6 +257,23 @@ if [ "$MODE" = "install" ]; then
   rm -f "$_vf"
 fi
 
+# После systemctl restart ats порт открывается не сразу: сервис поднимается 1–3 с, и в этом
+# окне curl возвращает пустоту (код 000). На живой коробке так и потерялись все 15 номеров:
+# пул дёргался сразу после рестарта.
+wait_ats_up() {
+  local limit="${1:-25}" deadline code
+  command -v curl >/dev/null 2>&1 || return 0
+  deadline=$(( $(date +%s) + limit ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' "$ATS_URL/api/v2/health" 2>/dev/null || true)"
+    # Любой внятный HTTP-код = порт живой (ждать ровно 200 незачем: на старом ATS или с
+    # самописным стабом может быть и 404, и 501). Ответом не считаются только пустота/000.
+    [ -n "$code" ] && [ "$code" != "000" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
 import_numbers() {
   # Номера — в БД АТС через API, а не в конфиг Asterisk: их назначение — CLI
   # исходящих и DID входящих. Суточный лимит 120 на номер — безопасный старт для
@@ -263,22 +284,44 @@ import_numbers() {
     sim|uis|ami|megafon_vats|multicom) : ;;
     *) die "MCM_NUMBER_PROVIDER должен быть одним из: sim uis ami megafon_vats multicom" ;;
   esac
-  local n body res added=0 exists=0 bad=0
+  local n body res code added=0 exists=0 bad=0 try
+  if ! wait_ats_up "${ATS_UP_TIMEOUT:-45}"; then
+    warn "АТС не отвечает на $ATS_URL/api/v2/health за ${ATS_UP_TIMEOUT:-25} с — в пул ничего не писал, " \
+         "чтобы не выдать ложное «добавлено 0». Сначала systemctl status ats, затем повтор: $0 --numbers-only"
+    return 1
+  fi
   for n in $MCM_NUMBERS; do
     case "$n" in ''|*[!0-9]*) warn "пропускаю «$n»: ожидал 10 цифр без «7»"; bad=$((bad+1)); continue ;; esac
     body="{\"number\":\"+7$n\",\"label\":\"MCM $n\",\"kind\":\"mobile\",\"provider\":\"$MCM_NUMBER_PROVIDER\",\"daily_limit\":$MCM_DAILY_LIMIT}"
-    res="$(curl -s -m 20 -X POST "$ATS_URL/api/v2/numbers/save" \
-             -H "X-Ats-Token: $ATS_TOKEN" -H 'Content-Type: application/json' -d "$body" 2>/dev/null || true)"
+    res=""; code=""
+    for try in 1 2 3; do
+      # код ответа приклеиваем маркером, а не переводом строки: ${var##*\n} в bash — это
+      # «самое длинное совпадение со звёздкой и буквой n», а не «до конца строки».
+      res="$(curl -s -m 20 -w ' ATSHTTP=%{http_code}' -X POST "$ATS_URL/api/v2/numbers/save" \
+               -H "X-Ats-Token: $ATS_TOKEN" -H 'Content-Type: application/json' -d "$body" 2>/dev/null || true)"
+      code="${res##* ATSHTTP=}"
+      res="${res% ATSHTTP=*}"
+      # пустой ответ или 000 = соединение разорвано (сервис как раз перезапускался) — ещё попытка
+      if { [ -z "$res" ] || [ "$code" = "000" ]; } && [ "$try" != "3" ]; then sleep 2; continue; fi
+      break
+    done
     if printf '%s' "$res" | grep -q 'number_exists'; then
       exists=$((exists+1))
-    elif printf '%s' "$res" | grep -q '"ok"'; then
+    elif printf '%s' "$res" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'; then
+      # просто «"ok"» искать нельзя: ответ об ошибке — это тоже "ok": false
       added=$((added+1))
+    elif [ "$code" = "000" ] || [ -z "$res" ]; then
+      warn "номер $n: АТС не ответила (код ${code:-000}) — похоже, сервис перезапускался; повторите $0 --numbers-only"
+      bad=$((bad+1))
     else
-      warn "номер $n: непонятный ответ: $(printf '%s' "$res" | head -c 160)"
+      warn "номер $n: HTTP $code: $(printf '%s' "$res" | head -c 160)"
       bad=$((bad+1))
     fi
   done
   log "пул номеров (provider=$MCM_NUMBER_PROVIDER, daily_limit=$MCM_DAILY_LIMIT): добавлено $added, уже было $exists, проблем $bad"
+  if [ "$added" = "0" ] && [ "$exists" = "0" ]; then
+    log "в пуле не оказалось ни одного номера: проверьте ATS_TOKEN и то, что $ATS_URL отвечает: curl -s $ATS_URL/api/v2/health"
+  fi
   [ "$bad" = "0" ] || return 1
   return 0
 }
@@ -375,12 +418,12 @@ ensure_include() {
 
 have_asterisk() { command -v "$ASTERISK_CMD" >/dev/null 2>&1; }
 
-# Что Asterisk сказал про pjsip, надо искать в реальном файле лога: в Ubuntu 24.04
-# это /var/log/asterisk/messages.log.log (файла full по умолчанию нет), список файлов и
-# что в них писать задаёт /etc/asterisk/logger.conf.
+# Что Asterisk сказал про pjsip, надо искать в реальном файле лога (на живой коробке это
+# /var/log/asterisk/messages.log; файла full по умолчанию нет). Список файлов и уровни
+# задаёт /etc/asterisk/logger.conf — имя файла в нём и есть итоговое имя в каталоге.
 asterisk_log_hint() {
   local f l shown=0
-  for f in /var/log/asterisk/messages.log.log /var/log/asterisk/messages.log /var/log/asterisk/queue_log; do
+  for f in "$AST_LOG_DIR/messages.log" "$AST_LOG_DIR/messages.log.log" "$AST_LOG_DIR/queue_log"; do
     [ -r "$f" ] || continue
     l="$(tail -n 400 "$f" 2>/dev/null \
          | grep -iE "pjsip|Unable to load|Could not create an object|Could not find option|Error parsing|authentication|syntax error|ignoring the rest" | tail -8)"
@@ -391,6 +434,36 @@ asterisk_log_hint() {
     break
   done
   [ "$shown" = "1" ] || warn "ни один лог в /var/log/asterisk/ не читается (права? что включено — в /etc/asterisk/logger.conf)"
+  return 0
+}
+
+# Почему именно отказали — пишет в лог сам res_pjsip (уровень warning, то есть эти строки
+# есть в messages.log даже при отключённом verbose). По коду в них видно, чинить нам пароль
+# или оператору allowlist: «Fatal response '401'» — Digest, «403 Forbidden fatal response» —
+# аккаунт/IP, «Maximum retries reached» — Asterisk больше не пробует вовсе.
+registration_log_hint() {
+  local f l shown=0
+  for f in "$AST_LOG_DIR/messages.log" "$AST_LOG_DIR/messages.log.log" "$AST_LOG_DIR/full"; do
+    [ -r "$f" ] || continue
+    l="$(grep -aE "outbound registration|registration attempt|Fatal response|Forbidden|Maximum retries|Failed to create authenticated REGISTER" "$f" 2>/dev/null | tail -5)"
+    [ -n "$l" ] || continue
+    log "что ответил регистратор (строки из $f):"
+    printf '%s\n' "$l" | sed 's/^/      /'
+    shown=1
+    break
+  done
+  [ "$shown" = "1" ] || log "в $AST_LOG_DIR/ строк про исходящую регистрацию нет: либо Asterisk ещё не пробовал, либо лог пишется в другой файл (см. /etc/asterisk/logger.conf)"
+  return 0
+}
+
+# Первая попытка REGISTER получает 401 с вызовом (это норма, Digest), Asterisk повторяет
+# REGISTER уже с подписью; вот второй 401 — значит пароль/логин не прошли. При дефолтных
+# auth_rejection_permanent=yes и нулевых fatal/forbidden_retry_interval попыток после отказа
+# больше нет — нужен reload. С порогами из шаблона ([mcm-reg]) Asterisk стучится сам, но
+# убедиться стоит: «exp.» в выводе CLI должно меняться от минуты к минуте.
+registration_retry_hint() {
+  log "проверить, что попытка повторяется: $ASTERISK_CMD -rx 'pjsip show registrations' — поле exp. должно меняться каждую минуту;"
+  log "если стоит на месте: $ASTERISK_CMD -rx 'module reload res_pjsip.so' (перечитает конфиг и запустит регистрацию заново)"
   return 0
 }
 
@@ -477,7 +550,10 @@ check_only() {
     if registration_up "${v%%|*}"; then
       log "регистрация: ${v%%|*} — ${v#*|}"
     else
-      warn "регистрация не подтверждена: статус ${v%%|*} — ${v#*|}"; rc=1
+      warn "регистрация не подтверждена: статус ${v%%|*} — ${v#*|}"
+      registration_log_hint
+      [ "${v%%|*}" = "Rejected" ] && registration_retry_hint
+      rc=1
     fi
   else
     warn "cli '$ASTERISK_CMD' не найдена — Asterisk не установлен или не запущен"; rc=1
@@ -759,7 +835,15 @@ if have_asterisk; then
       REG_FAILED=1
       verdict="$(registration_verdict)"
       case "${verdict%%|*}" in
-        Rejected) warn "оператор отверг REGISTER (${verdict#*|}) — это пароль, from_user или IP не в их allowlist" ;;
+        Rejected)
+          # Rejected — это НЕ «сетей нет»: регистратор ответил. Спрашивать надо про
+          # пароль (401) или про активацию/IP (403), и код ответа уже в логе Asterisk.
+          warn "оператор ответил отказом на REGISTER (${verdict#*|}) — пароль, from_user или IP не в их allowlist; код ответа — в логе ниже"
+          registration_log_hint
+          registration_retry_hint
+          warn "сирые SIP-пакеты: timeout 75 tcpdump -nn -A -i any 'udp port $MCM_PORT and host $MCM_HOST' | grep -aE 'REGISTER|SIP/2.0' | head -20"
+          warn "если в захвате только входящие или пусто — Asterisk уже сдался (см. строку со «stopping outbound registration» в логе), нужен reload"
+          ;;
         Unregistered|Trying|unknown)
           warn "регистрация не подтверждена (${verdict%%|*}): ${verdict#*|}"
           warn "обычно это их сторона: IP не добавлен в allowlist, аккаунт не активирован, или REGISTER не доходит"
@@ -776,23 +860,34 @@ fi
 
 if [ "$WANT_ATS" = "1" ]; then
   apply_ats_settings
-  if [ "$WANT_RESTART" = "1" ]; then
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl restart ats 2>/dev/null && log "сервис ats перезапущен (провайдер пересоздан)" \
-        || warn "systemctl restart ats не прошёл — выполните вручную"
-    else
-      warn "systemctl не найден — перезапустите АТС сами, иначе settings.ami не применятся"
-    fi
-  else
+  if [ "$WANT_RESTART" != "1" ]; then
     log "провайдер пересоздаётся сразу (settings/raw дёргает reload_settings); рестарт"
     log "понадобится только если меняли /etc/ats/ats.env или сам юнит"
   fi
 fi
 
 if [ "$WANT_NUMBERS" = "1" ]; then
-  import_numbers || warn "номера завелись не все — проверьте ATS_TOKEN и доступность $ATS_URL"
+  import_numbers || warn "номера завелись не все — проверьте ATS_TOKEN и доступность $ATS_URL (повтор: $0 --numbers-only)"
 else
   log "номера из письма пока не заведены: перезапустите с --numbers (или добавьте во вкладке «Номера» с провайдером $MCM_NUMBER_PROVIDER)."
+fi
+
+# Рестарт — последним: systemctl restart ats закрывает порт на 1–3 с, и все обращения к API
+# в этом окне теряются (именно так пропали 15 номеров). После рестарта ждём, пока сервис
+# снова начнёт отвечать, — иначе следующая за скриптом команда (например ami/check)
+# получит пустой ответ вместо JSON.
+if [ "$WANT_ATS" = "1" ] && [ "$WANT_RESTART" = "1" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart ats 2>/dev/null && log "сервис ats перезапущен (провайдер пересоздан)" \
+      || warn "systemctl restart ats не прошёл — выполните вручную"
+    if wait_ats_up "${ATS_UP_TIMEOUT:-30}"; then
+      log "$ATS_URL отвечает — дальше можно дергать /api/v2/ami/check"
+    else
+      warn "ats не отвечает на $ATS_URL через ${ATS_UP_TIMEOUT:-30} с: journalctl -u ats -n 40 --no-pager"
+    fi
+  else
+    warn "systemctl не найден — перезапустите АТС сами, иначе settings.ami не применятся"
+  fi
 fi
 
 log "готово. Следующие шаги — docs/MULTICOM_SIP_CONNECT.md: §6 диалплан, §7 AMI, §8 провайдер ami, §9 пул из 15 номеров (provider=ami)."

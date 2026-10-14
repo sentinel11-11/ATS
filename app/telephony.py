@@ -731,6 +731,45 @@ def ami_check(settings: dict) -> dict:
                     return True
         return False
 
+    def _log_reason():
+        """Причина отказа — из лога Asterisk: CLI показывает только состояние.
+
+        «Unregistered», «Rejected» и «мы уже перестали пробовать» на CLI выглядят почти
+        одинаково, а res_pjsip_outbound_registration пишет в лог (LOG_WARNING) конкретный код:
+        «Fatal response '401' received from ...», «403 Forbidden fatal response ... retrying in
+        N seconds», «Maximum retries reached ... stopping registration attempt», «Failed to
+        create authenticated REGISTER». Первое — пароль/логин, второе — активация и allowlist,
+        третье — Asterisk больше не стучится (нужен module reload res_pjsip.so). Читается хвост
+        файла (64 КиБ), чтобы не вычитывать мегабайты лога на каждом чек-листе. Каталог
+        переопределяется ATS_AST_LOG_DIR (нестандартный logger.conf, тесты).
+        """
+        import os
+        d = os.environ.get("ATS_AST_LOG_DIR") or "/var/log/asterisk"
+        for name in ("messages.log", "messages.log.log", "full"):
+            try:
+                with open(os.path.join(d, name), "rb") as fh:
+                    fh.seek(0, 2)
+                    fh.seek(max(0, fh.tell() - 65536))
+                    chunk = fh.read().decode("utf-8", "ignore")
+            except OSError:
+                continue
+            rows = []
+            for ln in chunk.splitlines():
+                if not re.search(r"Fatal response|Forbidden|Maximum retries|stopping outbound "
+                                 r"registration|Failed to create authenticated REGISTER",
+                                 ln, re.I):
+                    continue
+                # строка лога длинная (время, уровень, два URI) — в detail полезны только
+                # текст предупреждения и код; URI в деталь тащить незачем, их и так видно
+                # в pjsip show registrations
+                txt = ln.split("]: ", 1)[-1]
+                txt = re.sub(r"'sip:[^']*'", "регистратора", txt)
+                txt = re.sub(r"\s+", " ", txt).strip()
+                rows.append(txt[:200])
+            if rows:
+                return " | ".join(rows[-3:])
+        return ""
+
     def command(cmd, timeout=2.5):
         """CLI через AMI (формат ответа может различаться) — только текстом."""
         try:
@@ -755,9 +794,14 @@ def ami_check(settings: dict) -> dict:
         add("trunk_configured", trunk_ok,
             ("транк '{}' найден в выводе".format(trunk) if trunk_ok else
              "транк '{}' не найден — проверьте pjsip.conf/sip.conf и имя в настройках".format(trunk)))
-        add("registration", registered, reg.strip() or
-            "регистрации/контакта нет: ждём Registered (для contacts — Avail); "
-            "Unregistered/Rejected — не принял регистратор, смотрите allowlist оператора")
+        reg_detail = reg.strip() or ("регистрации/контакта нет: ждём Registered (для contacts — "
+                                     "Avail); из статусов: Unregistered — регистратор не ответил, "
+                                     "Rejected — ответил отказом (401 пароль/логин, 403 активация/IP)")
+        if not registered:
+            why = _log_reason()
+            if why:
+                reg_detail += " | в логе Asterisk: " + why
+        add("registration", registered, reg_detail)
         def context_ok(text, ctx):
             low = (text or "").lower()
             if any(bad in low for bad in ("no such context", "cannot exist", "no context matched")):

@@ -713,18 +713,48 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 `Unregistered` — это не наша конфигурация, а handshake с регистратором. Порядок:
 
 ```bash
+grep -aE "Fatal response|Forbidden|Maximum retries|stopping outbound registration|Failed to create authenticated REGISTER" \
+  /var/log/asterisk/messages.log | tail -10
+asterisk -rx "pjsip show registrations"
 timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
-asterisk -rx "pjsip show registrations"        # статус меняется каждые retry_interval=60 с
-grep -aiE "SIP/2.0 (4|5)[0-9]{2}|registration" /var/log/asterisk/messages.log | tail -15
 ```
 
-Три разных случая, и они различаются именно по tcpdump:
+Смысл статусов (`res/res_pjsip/outbound_reg.c`) — читать надо их, а не догадываться:
 
-| Что видно | Вывод |
-|---|---|
-| REGISTER уходит, ответа нет вообще | пакет режет их сторона или наш исходящий путь (у VPS Timeweb внешние правила на 5060 usually нет, но UDP-трафик на их прокси может молча дропаться) — письмо оператору с нашим IP и временем попытки |
-| ответ `401 Unauthorized` с `WWW-Authenticate` и второй REGISTER уходит, снова `401` | пароль/`auth_name`: сверить `username`/`password` в `[mcm-auth]` с письмом (регистр, опечатки); Digest считается от `sip:00083819@95.128.224.47` |
-| ответ `403 Forbidden/Not authorised here` | нас видят, но аккаунт не активирован или IP не в их allowlist — только через оператора |
+| Статус в CLI | Что это значит | Куда смотреть |
+|---|---|---|
+| `Registered`, `Expiring` | оператор ответил `200 OK`, срок подтверждения активен | готово |
+| `Trying` | REGISTER отправлен, ответ ещё не пришёл | через минуту станет `Registered`, `Unregistered` или `Rejected` |
+| `Unregistered` | ответа нет вообще (или был `408 Request Timeout`) | сеть/маршрут: их сторона или наш исходящий путь |
+| `Rejected` | **ответ пришёл и нам отказали** — это уже не «сети нет» | код отказа в логе (команда выше) |
+
+`Rejected` — общее название двух внутренних состояний (`REJECTED_TEMPORARY` и
+`REJECTED_PERMANENT`); за ним всегда стоит конкретный SIP-код, и Asterisk пишет его в лог
+предупреждением, так что по строке выше видно, чья очередь чинить:
+
+* `Fatal response '401' received from ...` — Digest не принят **повторно**. Первый `401` с
+  `WWW-Authenticate` — это вызов, норма: Asterisk сам повторяет REGISTER уже с подписью.
+  Значит не совпали `username`/`password` в `[mcm-auth]` с письмом (регистр, лишний пробел,
+  другой логин) — правим у себя и делаем `module reload res_pjsip.so`.
+* `403 Forbidden fatal response received from ...` — нас видят и знают, но не пускают:
+  аккаунт не активирован либо IP `89.223.127.145` не в их allowlist. Только через оператора.
+* `Failed to create authenticated REGISTER request` — нечем подписывать: пустой/кривой
+  `outbound_auth`, то есть секция `[mcm-auth]` не загрузилась.
+* `Maximum retries reached ... stopping registration attempt` — попытки исчерпаны (`max_retries`).
+
+И отдельно — про повторы, потому что на них путают «оператор молчит» и «мы перестали
+стучаться». Дефолты Asterisk 20: `auth_rejection_permanent=yes`, `forbidden_retry_interval=0`,
+`fatal_retry_interval=0`, `max_retries=10`. При них **после первого финального отказа исходящая
+регистрация останавливается полностью**: в логе «stopping outbound registration», статус
+замирает (`Rejected`), `exp.` только растёт, и `tcpdump` за минуту не увидит ни одного REGISTER —
+это не их молчание, это наша остановка. Следующую попытку вернёт только `module reload
+res_pjsip.so`. Шаблон `deploy/asterisk/pjsip-multicom.conf` выставляет
+`auth_rejection_permanent=no`, `forbidden_retry_interval=60`, `fatal_retry_interval=60`,
+`max_retries=100000`, чтобы транк продолжал пробовать раз в минуту — иначе, пока оператор
+ищет причину у себя, транк уже не поднимется без перезагрузки модуля.
+Проверка: `asterisk -rx "pjsip show registrations"` дважды с интервалом ~70 с — поле `exp.`
+должно меняться. `install-multicom-trunk.sh --check` печатает и статус, и эти строки лога, и
+команду reload.
 
 Отдельно: строка вида `ERROR pjproject: sip_parser.c Error parsing '2531229586': String value was greater
 than the maximum allowed value` в логе — это мусор от сканеров на открытом 5060, а не про наш транк.

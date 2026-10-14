@@ -752,6 +752,43 @@ class AmiCheckLiveTest(unittest.TestCase):
         self.assertFalse(rep["ok"])
         self.assertTrue(by_name["trunk_configured"]["ok"], "сам транк на месте — ругаться надо только на статус")
 
+    def test_rejected_registration_quotes_the_operator_answer(self):
+        """Из карточки должно быть видно, ЧЕМ именно отказали: CLI даёт одно слово Rejected,
+        а код ответа Asterisk пишет в лог — его и подставляем в detail (и молчим, если
+        лог не читается, а не выдумываем причину)."""
+        logs = tempfile.mkdtemp(prefix="ats_ast_logs_")
+        with open(os.path.join(logs, "messages.log"), "w", encoding="utf-8") as fh:
+            fh.write("[2026-10-14 20:49:02] WARNING[1]: res_pjsip_outbound_registration.c: "
+                     "Fatal response '401' received from 'sip:00083819@95.128.224.47:5060' on "
+                     "registration attempt to 'sip:00083819@95.128.224.47:5060', stopping "
+                     "outbound registration\n")
+        self.srv.outputs = dict(self.OUTPUTS, **{
+            "pjsip show contacts": "  Contact:  <Aor/ContactUri>\n",
+            "pjsip show endpoints": "  Endpoint: mcm  Unavailable  0 of 15\n"
+                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "  mcm-auth  Rejected (exp. 3s)",
+        })
+        saved = os.environ.pop("ATS_AST_LOG_DIR", None)
+        try:
+            rep = self._check()
+            os.environ["ATS_AST_LOG_DIR"] = logs
+            rep2 = self._check()
+        finally:
+            os.environ.pop("ATS_AST_LOG_DIR", None)
+            if saved is not None:
+                os.environ["ATS_AST_LOG_DIR"] = saved
+        by = {c["name"]: c for c in rep["checks"]}
+        self.assertFalse(by["registration"]["ok"])
+        self.assertNotIn("Fatal response", by["registration"]["detail"])
+        by2 = {c["name"]: c for c in rep2["checks"]}
+        self.assertFalse(by2["registration"]["ok"])
+        self.assertIn("Fatal response '401'", by2["registration"]["detail"])
+        self.assertIn("stopping outbound registration", by2["registration"]["detail"])
+        self.assertLessEqual(len(by2["registration"]["detail"]), 600)
+        self.assertNotIn("00083819@95.128.224.47:5060", by2["registration"]["detail"],
+                         "URI регистратора только съедает лимит детали")
+        self.assertTrue(by2["trunk_configured"]["ok"], "ругаться надо на статус, а не на транк")
+
     def test_expiring_registration_still_counts(self):
         self.srv.outputs = dict(self.OUTPUTS, **{
             "pjsip show contacts": "  Contact:  (Line: 0) sip:00083819@95.128.224.47:5060  Avail",
