@@ -424,15 +424,28 @@ sqlite3 /var/lib/ats/ats.db "select number,provider,active,daily_limit from numb
 ```bash
 ls -l /var/lib/asterisk/agi-bin/ats_say.py            # 0750 root:asterisk
 sudo asterisk -rx "dialplan show ats-out"              # MixMonitor + AGI ats_say.py
-sudo asterisk -rx "dialplan show from-mcm"              # Dial(PJSIP/101&PJSIP/102,25)
+sudo asterisk -rx "dialplan show from-mcm"              # Dial(<MCM_INBOUND_DIAL>,30)
 ls -ld /var/spool/asterisk/monitor/ats /var/spool/asterisk/ats   # 0770 asterisk:asterisk
 cat /etc/cron.d/ats-records                             # раскладка записей раз в 5 минут
 sudo -u asterisk /usr/bin/espeak-ng -v ru -s 150 -w /tmp/t.wav "проверка" && ls -l /tmp/t.wav && sudo rm -f /tmp/t.wav
 ```
 
 Признак успеха: контексты видны, каталоги принадлежат `asterisk`, espeak пишет WAV.
-Если оператор даёт добавочные сотрудников — проверьте, что `PJSIP/101`/`PJSIP/102` реально
-существуют (`pjsip show endpoints`), иначе `Dial()` в `from-mcm` всегда дасть `NO ANSWER`.
+
+**Куда уходят входящие — проверить до регистрации, а не после.** Канал набора в
+`from-mcm` подставляется установщиком из `MCM_INBOUND_DIAL`, по умолчанию это
+`PJSIP/101&PJSIP/102`. Если таких софтфонов на коробке нет (на VPS обычно нет), входящий
+даст `NO ANSWER`, и это будет выглядеть как «Мультиком не передаёт вызов». `--check` и
+`--dialplan` предупреждают, когда `101/102` не найдены в `pjsip show endpoints`. Варианты:
+
+```bash
+# переадресация на мобильный сотрудника через тот же транк (одна линия на разговор):
+sudo -E MCM_INBOUND_DIAL='PJSIP/89161234567@mcm' ./deploy/asterisk/install-multicom-trunk.sh --dialplan
+# или на несколько устройств сразу:
+sudo -E MCM_INBOUND_DIAL='PJSIP/101&PJSIP/102&SIP/office' ./deploy/asterisk/install-multicom-trunk.sh --dialplan
+```
+
+Номер — 10 цифр без «7» (так их выдаёт оператор), `@mcm` — имя транка из `settings.ami.trunk`.
 
 ## Шаг 12. Живые проверки: по одной на каждую функцию
 

@@ -77,6 +77,10 @@ MCM_NET="${MCM_NET:-95.128.224.0/21}"
 MCM_RTP="${MCM_RTP:-10000-20000}"
 MCM_CODECS="${MCM_CODECS:-}"   # пусто = выбираем сами: g729 только если модуль есть в Asterisk
 MCM_MAX_CHANNELS="${MCM_MAX_CHANNELS:-15}"
+# Куда уходить входящему с транка (контекст from-mcm). По умолчанию — софтфоны Asterisk
+# 101/102; на VPS их обычно нет, и тогда входящий звонок «не работает» по нашей же вине.
+# Для переадресации на мобильный через тот же транк: MCM_INBOUND_DIAL='PJSIP/8916…@mcm'.
+MCM_INBOUND_DIAL="${MCM_INBOUND_DIAL:-PJSIP/101&PJSIP/102}"
 REG_TIMEOUT="${REG_TIMEOUT:-40}"
 # Номера из письма (10 цифр, без «7»): идут в пул АТС, а не в Asterisk.
 MCM_NUMBERS="${MCM_NUMBERS:-9690229926 9690229930 9690229937 9690229938 9690229942 \
@@ -621,6 +625,7 @@ check_only() {
     else
       log "endpoint'ы в Asterisk есть"
     fi
+    inbound_target_check
     local v; v="$(registration_verdict)"
     if registration_up "${v%%|*}"; then
       log "регистрация: ${v%%|*} — ${v#*|}"
@@ -712,7 +717,7 @@ fi
 # контекст ats-out (запись + озвучка), from-mcm (входящие), AGI ats_say.py и
 # раскладка записей по звонкам — всё это файлы Asterisk, а не настройки АТС.
 install_dialplan() {
-  local f src dst rc=0
+  local f src dst rc=0 tmpx dial_esc
   local agi_dir="${AGI_DIR:-/var/lib/asterisk/agi-bin}"
   for f in extensions-ats.conf ats-tts.conf; do
     src="$APP_DIR/deploy/asterisk/$f"
@@ -721,6 +726,21 @@ install_dialplan() {
       warn "нет $src — нечего ставить в $dst"; rc=1; continue
     fi
     [ -f "$dst" ] && cp -a "$dst" "$dst.bak-$stamp"
+    if [ "$f" = "extensions-ats.conf" ]; then
+      # единственный, где у нас есть подстановка; «&» и «|» экранируем, иначе sed
+      # вставит вместо & весь найденный текст, а | разорвёт выражение
+      tmpx="$(mktemp)" || { warn "mktemp не удался"; rc=1; continue; }
+      dial_esc="$(printf '%s' "$MCM_INBOUND_DIAL" | sed -e 's/[\\&|]/\\&/g')"
+      if sed -e "s|__MCM_INBOUND_DIAL__|$dial_esc|g" "$src" > "$tmpx" \
+         && ! grep -q "__MCM_" "$tmpx"; then
+        install "${install_args[@]}" "$tmpx" "$dst" && log "установлен $dst (входящие → $MCM_INBOUND_DIAL)" \
+          || { warn "не удалось записать $dst"; rc=1; }
+      else
+        warn "не удалось подставить MCM_INBOUND_DIAL в $f — $dst не установлен"; rc=1
+      fi
+      rm -f "$tmpx"
+      continue
+    fi
     if install "${install_args[@]}" "$src" "$dst"; then
       log "установлен $dst"
     else
@@ -779,8 +799,25 @@ install_dialplan() {
   return $rc
 }
 
+# Отдельная ловушка, из-за которой «входящие не работают» при живом транке: from-mcm
+# звонит на софтфоны 101/102, а на коробке их никто не заводил.
+inbound_target_check() {
+  case "$MCM_INBOUND_DIAL" in
+    *PJSIP/101*|*PJSIP/102*) : ;;
+    *) return 0 ;;
+  esac
+  have_asterisk || return 0
+  "$ASTERISK_CMD" -rx "pjsip show endpoints" 2>/dev/null | grep -Eq "[[:space:]]10[12]([[:space:]]|$)" && return 0
+  warn "входящие из from-mcm идут на Dial($MCM_INBOUND_DIAL), а таких endpoint'ов в Asterisk нет:"
+  warn "  звонок от слушателя упрётся в 480/503 — это выглядит как «Мультиком не передаёт номер»."
+  warn "  заведите софтфоны (pjsip.conf) или маршрутизируйте на мобильный через транк:"
+  warn "  sudo -E MCM_INBOUND_DIAL='PJSIP/<10-значный номер>@$MCM_TRUNK' $0 --dialplan"
+  return 0
+}
+
 if [ "$WANT_DIALPLAN" = "1" ]; then
   install_dialplan || warn "диалплан применён не полностью — см. сообщения выше"
+  inbound_target_check
 fi
 
 # ------------------------------------------------- пользователь AMI (по флагу)

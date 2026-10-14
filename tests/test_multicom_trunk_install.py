@@ -350,6 +350,35 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertEqual((self.dir / "extensions.conf").read_text().count("extensions-ats.conf"), 1)
         self.assertTrue(list(self.dir.glob("extensions-ats.conf.bak-*")))
 
+    def test_dialplan_substitutes_inbound_target(self):
+        """Куда уходят входящие — параметр, а не вечный «101&102»: на коробке софтфонов нет,
+        и входящий с транка упирался бы в 480/503 прямо после регистрации."""
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"),
+                   MCM_INBOUND_DIAL="PJSIP/89161234567@mcm")
+        p = run(env=env, args=["--dialplan"])
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-600:])
+        ext = (self.dir / "extensions-ats.conf").read_text(encoding="utf-8")
+        self.assertIn("Dial(PJSIP/89161234567@mcm,30)", ext)
+        self.assertNotIn("__MCM_INBOUND_DIAL__", ext, "незаменённая метка = невалидный диалплан")
+        self.assertIn("входящие → PJSIP/89161234567@mcm", p.stdout)
+
+    def test_default_inbound_dial_keeps_the_ampersand(self):
+        """В значении есть «&» — спецсимвол правой части sed. Без экранирования вместо
+        «101&PJSIP/102» в файл попадёт скопированный кусок строки."""
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"))
+        self.assertEqual(run(env=env, args=["--dialplan"]).returncode, 0)
+        ext = (self.dir / "extensions-ats.conf").read_text(encoding="utf-8")
+        self.assertIn("Dial(PJSIP/101&PJSIP/102,30)", ext)
+
+    def test_warns_only_when_inbound_target_is_absent(self):
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"))
+        p = run(env=env, args=["--dialplan"])
+        self.assertIn("таких endpoint'ов в Asterisk нет", p.stdout + p.stderr,
+                      "101/102 никуда не денутся, если их не заводить")
+        q = run(env=dict(env, MCM_INBOUND_DIAL="PJSIP/89161234567@mcm"), args=["--dialplan"])
+        self.assertNotIn("таких endpoint'ов", q.stdout + q.stderr,
+                         "явный целевой канал — предупреждать не о чем")
+
     def test_dialplan_without_asterisk_still_lays_files(self):
         """Asterisk не установлен — файлы всё равно раскладываем, но не падаем."""
         env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"), ASTERISK_CMD=str(self.dir / "nope"))
