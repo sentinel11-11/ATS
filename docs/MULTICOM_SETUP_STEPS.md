@@ -324,20 +324,35 @@ sudo systemctl start asterisk
 активирован или IP не в allowlist). Проверяется так:
 
 ```bash
-grep -aE "Fatal response|Forbidden|Maximum retries|stopping outbound registration" /var/log/asterisk/messages.log | tail -10
+grep -aE "No response received|Fatal response|Forbidden|Maximum retries|stopping outbound registration" \
+  /var/log/asterisk/messages.log | tail -10
 asterisk -rx "pjsip show registrations"          # дважды, с интервалом ~70 секунд
-timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
+timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host 95.128.224.47'
+grep -ac "REGISTER sip" /tmp/sip5060.pcap
+grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c
 ```
 
-Первая команда важнее второй: код отказа пишет в лог сам Asterisk (`LOG_WARNING`), и `--check`
-его тоже печатает. Про `tcpdump` — ловушка: если в логе есть `stopping outbound registration`,
-статус `Rejected` не меняется и `exp.` только растёт, то REGISTER не уходит не потому, что
-оператор молчит, а потому что **Asterisk сдался**: с дефолтами `auth_rejection_permanent=yes`,
-`fatal_retry_interval=0`, `forbidden_retry_interval=0`, `max_retries=10` после финального отказа
-попыток больше нет вовсе. Шаблон `pjsip-multicom.conf` теперь выставляет `auth_rejection_permanent=no`
-и повторы раз в минуту; на уже настроенной коробке попытки возвращает
-`asterisk -rx "module reload res_pjsip.so"`. Дальше по коду: `401` — сверять `username`/`password`
-с письмом, `403` — письмо оператору (формулировки — §12а и §13). Обратите внимание:
+Первая команда важнее всех остальных: что именно произошло — пишет в лог сам Asterisk, и `--check`
+эти строки печатает. Три ловушки, на которых мы и стояли:
+
+1. `Rejected` **не** означает «отказали по паролю». Так же CLI подписывает случай, когда ответа
+   нет вовсе и `max_retries=10` исчерпан — на проде в логе было `No response received … retrying
+   in '60'` ×3, потом `Maximum retries reached … stopping registration attempt`.
+2. После `stopping registration attempt` попытки прекращаются: статус замирает, `exp.` только
+   растёт, и новый захват пакетов пуст — это мы молчим, а не они. Возвращает попытки
+   `asterisk -rx "module reload res_pjsip.so"`, а шаблоновые `auth_rejection_permanent=no`,
+   `forbidden_retry_interval=60`, `fatal_retry_interval=60`, `max_retries=100000` делают это
+   насовсем. Эти поля появляются в файле только после перегенерации
+   (`sudo -E ./deploy/asterisk/install-multicom-trunk.sh` без флагов); `--check` не пишет, но
+   скажет «нет полей, которые есть в шаблоне репозитория», если файл старый.
+3. `tcpdump -A | grep REGISTER` непригоден: ASCII-дамп переносит строки каждые 16 байт, слово
+   `REGISTER` рвётся, и grep молчит при живом трафике (11 пакетов в захвате — 0 совпадений).
+   Поэтому `-w` в файл и `grep` по файлу.
+
+`401` в логе — сверять `username`/`password` с письмом; `403` — письмо оператору; `No response
+received` — тоже письмо оператору, но сначала `ip route get 95.128.224.47` (исходящий адрес) и
+`timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo "tcp=$?"` (124 = фильтруют, 0 = открыть
+TCP-транспорт). Формулировки — §12а и §13. Обратите внимание:
 `pjsip show endpoints` при этом показывает `State: Unavailable` — для транка это норма (у
 исходящего транка нет входящего контакта), на набор `PJSIP/<номер>@mcm` не влияет.
 

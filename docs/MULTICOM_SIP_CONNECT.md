@@ -312,10 +312,12 @@ asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 ```
 
 - `pjsip show contacts` показывает `Avail`/`Non-Corr` — да, контакт появляется **после**
-  успешной исходящей регистрации; при `Unspecified`/пустоте — 403 (логин/пароль/IP) или сеть.
+  успешной исходящей регистрации; при `Unspecified`/пустоте причин две: отказ (`403`) и тишина
+  в сети. Различает их только лог.
 - Единственный прямой индикатор — статус в `pjsip show registrations`: `Registered` и
-  `Expiring` = работает, `Unregistered` = ответа нет или не пустили, `Rejected` = 401/403,
-  `Trying` = ждём. И `install-multicom-trunk.sh`, и `POST /api/v2/ami/check` сверяют **точные
+  `Expiring` = работает, `Unregistered` = пока не получилось, `Trying` = ждём ответ,
+  `Rejected` = попытка закрыта (финальный отказ `401`/`403` **или** `Maximum retries reached`
+  после серии таймаутов — на CLI эти два случая неотличимы, см. §12а). И `install-multicom-trunk.sh`, и `POST /api/v2/ami/check` сверяют **точные
   слова** статуса, а не подстроку: `Unregistered` содержит `registered`, `Unavailable` —
   `avail`, и наивный поиск рапортовал успех на полностью нерабочем транке (проверено на проде).
 - `State: Unavailable` у endpoint'а транка — норма: исходящему транку нечего показывать, пока
@@ -709,52 +711,71 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 ## 12а. Если объекты созданы, а регистрация не подтверждена
 
 `pjsip show endpoints` показывает `mcm`, `OutAuth: mcm-auth/00083819`, `Aor: mcm-aor`,
-`Identify: mcm-identify/mcm Match: <IP>/32`, но `pjsip show registrations` =
-`Unregistered` — это не наша конфигурация, а handshake с регистратором. Порядок:
+`Identify: mcm-identify/mcm Match: <IP>/32`, но `pjsip show registrations` = `Unregistered` или
+`Rejected` — это не наша конфигурация, а handshake с регистратором. Порядок:
 
 ```bash
-grep -aE "Fatal response|Forbidden|Maximum retries|stopping outbound registration|Failed to create authenticated REGISTER" \
+# 1) что именно произошло — пишет сам res_pjsip уровнем warning
+grep -aE "No response received|Fatal response|Forbidden|Maximum retries|Failed to create authenticated REGISTER" \
   /var/log/asterisk/messages.log | tail -10
 asterisk -rx "pjsip show registrations"
-timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
+# 2) уходит ли REGISTER и что ответили — только по pcap
+timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host 95.128.224.47'
+grep -ac "REGISTER sip" /tmp/sip5060.pcap                          # сколько наших попыток ушло
+grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c    # что ответили (пусто = молчат)
 ```
 
-Смысл статусов (`res/res_pjsip/outbound_reg.c`) — читать надо их, а не догадываться:
+> Не делайте `tcpdump -A | grep REGISTER`: ASCII-дамп переносит строки каждые 16 байт, и слово
+> `REGISTER` оказывается разрезанным между ними — на живой коробке при 11 захваченных пакетах
+> grep не нашёл ничего, хотя трафик был. В pcap (`-w`) байты сырые, `REGISTER sip:… SIP/2.0`
+> там не рвётся, потому что переносы строк — только сами CRLF протокола.
 
-| Статус в CLI | Что это значит | Куда смотреть |
+Статусы CLI (`res/res_pjsip/outbound_reg.c`) и что за ними стоит:
+
+| Статус | Значение | Чем отличается |
 |---|---|---|
-| `Registered`, `Expiring` | оператор ответил `200 OK`, срок подтверждения активен | готово |
-| `Trying` | REGISTER отправлен, ответ ещё не пришёл | через минуту станет `Registered`, `Unregistered` или `Rejected` |
-| `Unregistered` | ответа нет вообще (или был `408 Request Timeout`) | сеть/маршрут: их сторона или наш исходящий путь |
-| `Rejected` | **ответ пришёл и нам отказали** — это уже не «сети нет» | код отказа в логе (команда выше) |
+| `Registered`, `Expiring` | оператор ответил `200 OK`, срок активен | готово |
+| `Trying` | REGISTER отправлен, ответа ещё нет | через минуту станет одним из нижних |
+| `Unregistered` | регистрации нет (первая серия попыток) | — |
+| `Rejected` | попытка закрыта: финальный отказ **или** `max_retries` после таймаутов | различает только лог |
 
-`Rejected` — общее название двух внутренних состояний (`REJECTED_TEMPORARY` и
-`REJECTED_PERMANENT`); за ним всегда стоит конкретный SIP-код, и Asterisk пишет его в лог
-предупреждением, так что по строке выше видно, чья очередь чинить:
+Последняя строка — это то, что на проде читалось как «нам отказали», а было вот чем:
 
-* `Fatal response '401' received from ...` — Digest не принят **повторно**. Первый `401` с
-  `WWW-Authenticate` — это вызов, норма: Asterisk сам повторяет REGISTER уже с подписью.
-  Значит не совпали `username`/`password` в `[mcm-auth]` с письмом (регистр, лишний пробел,
-  другой логин) — правим у себя и делаем `module reload res_pjsip.so`.
-* `403 Forbidden fatal response received from ...` — нас видят и знают, но не пускают:
-  аккаунт не активирован либо IP `89.223.127.145` не в их allowlist. Только через оператора.
-* `Failed to create authenticated REGISTER request` — нечем подписывать: пустой/кривой
-  `outbound_auth`, то есть секция `[mcm-auth]` не загрузилась.
-* `Maximum retries reached ... stopping registration attempt` — попытки исчерпаны (`max_retries`).
+```
+WARNING res_pjsip_outbound_registration.c: No response received from 'sip:00083819@95.128.224.47:5060'
+        on registration attempt to '…', retrying in '60'        ← 20:45:38, 20:47:10, 20:48:42
+WARNING res_pjsip_outbound_registration.c: Maximum retries reached when attempting outbound
+        registration to '…', stopping registration attempt      ← 20:50:14
+```
+
+Ни `401`, ни `403`: на `REGISTER` не ответили вообще, и после десяти попыток Asterisk счёл
+дальнейшее бессмысленным. Значит пароль — последняя из версий, а проверять надо по порядку:
+
+1. уходит ли пакет оттуда, откуда ждут: `ip route get 95.128.224.47` (в `src` — публичный
+   `89.223.127.145`, а не адрес внутреннего интерфейса) и `ss -lnup sport = :5060`
+   (иначе ответы и исходящие идут с неожиданного адреса, и их не узнают);
+2. нет ли наших правил на исход: `nft list ruleset | head -30`, `iptables -S | head -20` —
+   `ufw inactive` не значит, что filter-таблица пуста;
+3. жив ли порт у них: `timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo "tcp=$?"` →
+   `0` = TCP открыт (у части площадок Мультикома регистрация принимается только по TCP — тогда нужен
+   `[transport-tcp]` и `transport=transport-tcp` в `[mcm-reg]`), `1` с `Connection refused` =
+   порт закрыт, но хост отвечает, `124` = пакеты фильтруют молча (это и есть «тишина» в логе);
+4. если 1–3 чистые — причина у них: IP не в allowlist (обычно дропают без ответа, что и выглядит
+   как тишина), аккаунт не активирован, или REGISTER ждут на другом адресе/порту/транспорте.
+   Текст письма с таймстампами из лога — §13.
 
 И отдельно — про повторы, потому что на них путают «оператор молчит» и «мы перестали
 стучаться». Дефолты Asterisk 20: `auth_rejection_permanent=yes`, `forbidden_retry_interval=0`,
-`fatal_retry_interval=0`, `max_retries=10`. При них **после первого финального отказа исходящая
-регистрация останавливается полностью**: в логе «stopping outbound registration», статус
-замирает (`Rejected`), `exp.` только растёт, и `tcpdump` за минуту не увидит ни одного REGISTER —
-это не их молчание, это наша остановка. Следующую попытку вернёт только `module reload
-res_pjsip.so`. Шаблон `deploy/asterisk/pjsip-multicom.conf` выставляет
-`auth_rejection_permanent=no`, `forbidden_retry_interval=60`, `fatal_retry_interval=60`,
-`max_retries=100000`, чтобы транк продолжал пробовать раз в минуту — иначе, пока оператор
-ищет причину у себя, транк уже не поднимется без перезагрузки модуля.
-Проверка: `asterisk -rx "pjsip show registrations"` дважды с интервалом ~70 с — поле `exp.`
-должно меняться. `install-multicom-trunk.sh --check` печатает и статус, и эти строки лога, и
-команду reload.
+`fatal_retry_interval=0`, `max_retries=10`. При них после `Maximum retries reached` исходящая
+регистрация **останавливается**: статус замирает (`Rejected`), `exp.` только растёт, и следующий
+захват не покажет ни одного пакета. Попытки возвращает `module reload res_pjsip.so`; чтобы не
+зависеть от этого, шаблон выставляет `auth_rejection_permanent=no`, `forbidden_retry_interval=60`,
+`fatal_retry_interval=60`, `max_retries=100000` (0 = «не повторять вовсе», «бесконечно» не
+предусмотрено). Поля попадают в `/etc/asterisk/pjsip-multicom.conf` только при перегенерации
+(`install-multicom-trunk.sh` без флагов) — `--check` ничего не пишет, зато скажет, если
+установленный файл старше шаблона: «нет полей, которые есть в шаблоне репозитория: … max_retries».
+Проверка, что попытки идут: два `asterisk -rx "pjsip show registrations"` с интервалом ~70 с —
+поле `exp.` должно меняться. `--check` печатает статус, строки лога и обе команды reload/проверки.
 
 Отдельно: строка вида `ERROR pjproject: sip_parser.c Error parsing '2531229586': String value was greater
 than the maximum allowed value` в логе — это мусор от сканеров на открытом 5060, а не про наш транк.

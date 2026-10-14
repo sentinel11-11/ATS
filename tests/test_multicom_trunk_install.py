@@ -8,6 +8,7 @@
 конфига, испорченный значением из окружения, и provider у импортированных номеров.
 """
 import json
+import re
 import socket
 import os
 import pathlib
@@ -538,7 +539,9 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.chmod(0o755)
         p = run(env=dict(self.env, ASTERISK_CMD=str(fake), REG_TIMEOUT="1"))
         self.assertEqual(p.returncode, 1)
-        self.assertIn("ответил отказом на REGISTER", p.stderr)
+        self.assertIn("попытка закрыта со статусом Rejected", p.stderr)
+        self.assertIn("No response received", p.stderr,
+                    "Rejected бывает и от таймаутов — надо показывать обе версии")
         # код отказа Asterisk пишет в лог сам — скрипт обязан его показать, а не
         # отправлять человека гадать, пароль виноват или allowlist
         logs = self.dir / "logs"
@@ -602,6 +605,42 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertIn("не отвечает", out)
         self.assertIn("--numbers-only", out, "должно предложить команду повтора")
         self.assertEqual(len(_ApiHandler.captured), 0, "без живого порта слать POST незачем")
+
+    def test_check_says_when_installed_file_is_older_than_template(self):
+        """Конфиг на коробке переживает обновление репозитория: поля валидны, но новых нет —
+        без max_retries Asterisk после 10 неудач перестаёт пробовать, и статус выглядит
+        как «оператор молчит». --check обязан это сказать и не показать при этом пароль."""
+        self.assertEqual(run(env=self.env).returncode, 0)
+        f = self.dir / "pjsip-multicom.conf"
+        keep = [l for l in f.read_text(encoding="utf-8").splitlines()
+                if not re.match(r"^(max_retries|auth_rejection_permanent|forbidden_retry_interval"
+                                r"|fatal_retry_interval)=", l)]
+        self.assertLess(len(keep), len(f.read_text(encoding="utf-8").splitlines()))
+        f.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        p = run(["--check"], env=self.env)
+        out = p.stdout + p.stderr
+        self.assertIn("нет полей, которые есть в шаблоне", out)
+        self.assertIn("max_retries", out)
+        self.assertNotIn("p@ss-w0rd", out, "сравнение имён полей не должно печатать значения")
+        # и не ругается, когда файл свежий
+        self.assertEqual(run(env=self.env).returncode, 0)
+        self.assertNotIn("нет полей, которые есть в шаблоне", run(["--check"], env=self.env).stdout)
+
+    def test_final_hint_names_a_log_file_that_exists(self):
+        """Финальная подсказка не должна звать в выдуманный путь: на проде файла
+        /var/log/asterisk/messages.log не было (там messages.log.log), и grep падал."""
+        fake = self.dir / "ast-empty"
+        fake.write_text('#!/bin/sh\necho "No objects found."\nexit 0\n', encoding="utf-8")
+        fake.chmod(0o755)
+        logs = self.dir / "varlog"
+        logs.mkdir(exist_ok=True)
+        (logs / "messages.log.log").write_text("x\n", encoding="utf-8")
+        env = dict(self.env, ASTERISK_CMD=str(fake), AST_LOG_DIR=str(logs), REG_TIMEOUT="1")
+        p = run(env=env)
+        out = p.stdout + p.stderr
+        self.assertNotEqual(p.returncode, 0, "регистрации нет — код должен быть 1")
+        self.assertIn(str(logs / "messages.log.log"), out)
+        self.assertNotIn("/var/log/asterisk/messages.log", out)
 
     def test_ats_token_helper_needs_real_token(self):
         """deploy/ats-token.sh: без поля token в ответе — код 1 и причина в stderr."""

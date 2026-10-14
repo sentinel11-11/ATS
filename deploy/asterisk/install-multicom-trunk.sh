@@ -445,14 +445,16 @@ registration_log_hint() {
   local f l shown=0
   for f in "$AST_LOG_DIR/messages.log" "$AST_LOG_DIR/messages.log.log" "$AST_LOG_DIR/full"; do
     [ -r "$f" ] || continue
-    l="$(grep -aE "outbound registration|registration attempt|Fatal response|Forbidden|Maximum retries|Failed to create authenticated REGISTER" "$f" 2>/dev/null | tail -5)"
+    l="$(grep -aE "outbound registration|registration attempt|No response received|Fatal response|Forbidden|Maximum retries|Failed to create authenticated REGISTER" "$f" 2>/dev/null | tail -5)"
     [ -n "$l" ] || continue
-    log "что ответил регистратор (строки из $f):"
+    log "строки про исходящую регистрацию из $f (их пишет сам res_pjsip):"
     printf '%s\n' "$l" | sed 's/^/      /'
     shown=1
     break
   done
   [ "$shown" = "1" ] || log "в $AST_LOG_DIR/ строк про исходящую регистрацию нет: либо Asterisk ещё не пробовал, либо лог пишется в другой файл (см. /etc/asterisk/logger.conf)"
+  log "как читать: «No response received» — ответа нет вовсе (их drop или маршрут); «Fatal response 401» — пароль/логин;"
+  log "«Fatal response 403» — аккаунт не активирован или IP не в allowlist; «Maximum retries reached» — попытки кончились"
   return 0
 }
 
@@ -464,6 +466,35 @@ registration_log_hint() {
 registration_retry_hint() {
   log "проверить, что попытка повторяется: $ASTERISK_CMD -rx 'pjsip show registrations' — поле exp. должно меняться каждую минуту;"
   log "если стоит на месте: $ASTERISK_CMD -rx 'module reload res_pjsip.so' (перечитает конфиг и запустит регистрацию заново)"
+  return 0
+}
+
+# Реальный файл лога: в Ubuntu 24.04 из коробки это messages.log, а если в logger.conf
+# категория названа «messages.log» — messages.log.log. Указывать в подсказках путь «на
+#угад» нельзя: на живой коробке человек сутки ходил по несуществующему messages.log.
+asterisk_log_path() {
+  local f
+  for f in "$AST_LOG_DIR/messages.log" "$AST_LOG_DIR/messages.log.log" "$AST_LOG_DIR/full" \
+           "$AST_LOG_DIR/asterisk.log" "$AST_LOG_DIR/messages"; do
+    [ -e "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 0
+}
+
+# Установленный файл может остаться от прошлой версии шаблона: значения тогда корректны,
+# но новых полей нет. Практический смысл: без max_retries/auth_rejection_permanent из
+# текущего шаблона Asterisk после 10 неудачных REGISTER перестаёт пробовать вовсе, и
+# «pjsip show registrations» показывает мёртвый Rejected с растущим «exp. …s ago».
+# Сравниываем только имена полей — значения (включая пароль) нигде не печатаются.
+installed_vs_template() {
+  local have want missing
+  [ -n "${rendered:-}" ] && [ -f "$OUT_PATH" ] || return 0
+  want="$(printf '%s\n' "$rendered" | sed -n 's/^[[:space:]]*\([a-zA-Z_][a-zA-Z_0-9]*\)=.*/\1/p' | sort -u)"
+  have="$(sed -n 's/^[[:space:]]*\([a-zA-Z_][a-zA-Z_0-9]*\)=.*/\1/p' "$OUT_PATH" | sort -u)"
+  missing="$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have") | tr '\n' ' ' | sed 's/ $//')"
+  [ -n "$missing" ] || return 0
+  log "в $OUT_PATH нет полей, которые есть в шаблоне репозитория: $missing"
+  log "перегенерируйте без флагов (значения подтянутся из текущего файла): $0"
   return 0
 }
 
@@ -520,6 +551,7 @@ check_only() {
       esac
     done
     awk '/^\[/ {sec=$0} /^allow=/ {found[sec]=found[sec] $0 " "} END {for (s in found) if (found[s] != "") print "  " s found[s]}' "$OUT_PATH"
+    installed_vs_template
     # устаревшие и чужие имена полей — ровно то, из-за чего на коробке сутки было
     # «transport-udp есть, а endpoints пустые»
     validate_against_asterisk20 "$OUT_PATH" || rc=1
@@ -836,22 +868,27 @@ if have_asterisk; then
       verdict="$(registration_verdict)"
       case "${verdict%%|*}" in
         Rejected)
-          # Rejected — это НЕ «сетей нет»: регистратор ответил. Спрашивать надо про
-          # пароль (401) или про активацию/IP (403), и код ответа уже в логе Asterisk.
-          warn "оператор ответил отказом на REGISTER (${verdict#*|}) — пароль, from_user или IP не в их allowlist; код ответа — в логе ниже"
+          # Rejected — это НЕ обязательно «нам отказали». Так же CLI подписывает и
+          # «Maximum retries reached» после серии таймаутов, то есть тишину в ответ.
+          # Различает их только лог: там есть и 'Fatal response 4NN', и «No response received».
+          warn "попытка закрыта со статусом Rejected (${verdict#*|}) — настоящий смысл в логе ниже: «No response received» = ответа нет вовсе (их edge, allowlist или маршрут), «Fatal response 401» = пароль/логин, «Fatal response 403» = активация/IP"
           registration_log_hint
           registration_retry_hint
-          warn "сирые SIP-пакеты: timeout 75 tcpdump -nn -A -i any 'udp port $MCM_PORT and host $MCM_HOST' | grep -aE 'REGISTER|SIP/2.0' | head -20"
-          warn "если в захвате только входящие или пусто — Asterisk уже сдался (см. строку со «stopping outbound registration» в логе), нужен reload"
+          warn "проба по пакетам (в pcap, а не в tcpdump -A: ASCII-вывод рвёт «REGISTER» по строкам, и grep молчит при живом трафике):"
+          warn "  timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port $MCM_PORT and host $MCM_HOST'"
+          warn "  grep -ac 'REGISTER sip' /tmp/sip5060.pcap        # сколько наших REGISTER ушло"
+          warn "  grep -aoE 'SIP/2.0 [0-9]{3}' /tmp/sip5060.pcap | sort | uniq -c   # что ответили (пусто = молчат)"
+          warn "в захвате есть исходящие REGISTER и нет входящих — пакет до них не доходит или их edge его дропает (это к оператору); нет и исходящих — попытки исчерпаны, нужен reload res_pjsip"
           ;;
         Unregistered|Trying|unknown)
           warn "регистрация не подтверждена (${verdict%%|*}): ${verdict#*|}"
           warn "обычно это их сторона: IP не добавлен в allowlist, аккаунт не активирован, или REGISTER не доходит"
-          warn "уходит ли REGISTER и есть ли ответ: timeout 75 tcpdump -nn -A -i any 'udp port $MCM_PORT and host $MCM_HOST' | grep -aE 'REGISTER|SIP/2.0' | head -20"
+          warn "проба по пакетам: timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port $MCM_PORT and host $MCM_HOST'; grep -ac 'REGISTER sip' /tmp/sip5060.pcap; grep -aoE 'SIP/2.0 [0-9]{3}' /tmp/sip5060.pcap | sort | uniq -c"
+          warn "(не 'tcpdump -A | grep REGISTER': ASCII-вывод рвёт слово по строкам, и grep молчит даже когда REGISTER уходит каждые 60 с)"
           ;;
         *) warn "статус регистрации: ${verdict#*|}" ;;
       esac
-      warn "статусы: Registered — подтверждена; Expiring — подтверждена, скоро перерегистрится; Unregistered — не приняли или ответа нет; Rejected — 401/403; Trying — ждём ответ"
+      warn "статусы: Registered — подтверждена; Expiring — подтверждена, скоро перерегистрится; Unregistered — ещё не получилось; Rejected — попытка закрыта (отказ 401/403 ИЛИ «Maximum retries» после таймаутов); Trying — ждём ответ"
     fi
   fi
 else
@@ -894,9 +931,16 @@ log "готово. Следующие шаги — docs/MULTICOM_SIP_CONNECT.md:
 
 if [ "$REG_FAILED" = "1" ]; then
   log "файл транка, диалплан, AMI и настройки АТС применены; регистрация у $MCM_HOST"
-  log "не подтверждена — это отдельная проблема (пароль/IP/входящее правило)."
-  log "Диагностика: sudo -E $0 --check ; sudo asterisk -rx \"pjsip show endpoints\" ;"
-  log "             sudo tail -40 /var/log/asterisk/messages.log"
+  log "не подтверждена — это отдельная проблема: их ответ (401 — пароль, 403 — активация/IP)"
+  log "или полная тишина. Как различить — docs/MULTICOM_SIP_CONNECT.md §12а: там же, почему"
+  log "tcpdump -A | grep REGISTER врёт, и что писать оператору."
+  _lp="$(asterisk_log_path)"
+  log "Диагностика: sudo -E $0 --check (статус + строки лога) ; asterisk -rx \"pjsip show registrations\""
+  if [ -n "$_lp" ]; then
+    log "             grep -aE 'No response received|Fatal response|Maximum retries' $_lp | tail -10"
+  else
+    log "             файл лога не найден в $AST_LOG_DIR — имя смотрите в /etc/asterisk/logger.conf"
+  fi
   exit 1
 fi
 exit 0
