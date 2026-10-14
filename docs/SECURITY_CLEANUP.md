@@ -85,6 +85,23 @@ printf 'ATS_HOST=127.0.0.1\n' | sudo tee -a /etc/ats/ats.env && sudo systemctl r
 прокси и в историю браузера. AMI при этом остаётся закрытым: `permit = 127.0.0.1` в
 `manager-ats.conf` — так и задумано.
 
+## 2а. Сессии и токены API (что изменилось)
+
+Токены `/api/v2/auth/login` раньше жили только в словаре процесса (`security.SESSIONS`):
+любой `systemctl restart ats` выкидывал UI из сессии и обнулял `ATS_TOKEN`, с которым
+работают `install-multicom-trunk.sh --ats/--numbers` и `deploy/attach_recordings.py`.
+Теперь сессии в таблице `sessions` (срок `SESSION_TTL` = 8 ч, скользящий, продление не чаще
+раза в 5 минут), а в БД попадает только `SHA-256(token)`: дамп `/var/lib/ats/ats.db` и
+резервные копии `deploy/backup.sh` не выдают живых токенов доступа. Что с этим связано:
+
+- `drop_token` (logout) и `drop_sessions_for` (смена/сброс пароля, деактивация) удаляют и
+  строку в БД — «разлогинить всё» по-прежнему значит `sqlite3 /var/lib/ats/ats.db
+  'DELETE FROM sessions'` плюс `systemctl restart ats`, если нужен и сброс `_LOGIN_ATTEMPTS`;
+- если кто-то подозревает утечку токена (scp/чаты/логи прокси) — достаточно
+  `DELETE FROM sessions WHERE login='admin'`, пароли пользователей это не трогает;
+- БД без таблиц/недоступна — аутентификация деградирует в память, а не падает (проверено
+  тестом), так что рестарт из-за `auth_required` делать не нужно.
+
 ## 3. Удалить из репозитория (после того как всё заведено и заработало)
 
 ```bash

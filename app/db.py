@@ -359,6 +359,18 @@ CREATE TABLE IF NOT EXISTS crm_outbox(
   updated TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_crm_outbox_due ON crm_outbox(status, next_attempt_at);
+-- Сессии API (токены) — в БД, а не только в памяти процесса: systemctl restart ats
+-- раз в неделю (и рестарт внутри install-multicom-trunk.sh) не должен выкидывать
+-- администратора из UI и обнулять ATS_TOKEN, под которым API дёргают из shell.
+-- Хранится только хэш токена: дамп БД не выдаёт живой пароль-к-доступу.
+CREATE TABLE IF NOT EXISTS sessions(
+  token_hash TEXT PRIMARY KEY,
+  login      TEXT NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'operator',
+  exp        REAL NOT NULL,
+  slid       REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_sessions_login ON sessions(login);
 """
 
 DEFAULT_SCENARIO = {

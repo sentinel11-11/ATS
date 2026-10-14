@@ -320,7 +320,8 @@ import_numbers() {
   done
   log "пул номеров (provider=$MCM_NUMBER_PROVIDER, daily_limit=$MCM_DAILY_LIMIT): добавлено $added, уже было $exists, проблем $bad"
   if [ "$added" = "0" ] && [ "$exists" = "0" ]; then
-    log "в пуле не оказалось ни одного номера: проверьте ATS_TOKEN и то, что $ATS_URL отвечает: curl -s $ATS_URL/api/v2/health"
+    log "в пуле не оказалось ни одного номера: проверьте ATS_TOKEN (echo \"len=${#ATS_TOKEN}\") и то," 
+         "что $ATS_URL отвечает: curl -s $ATS_URL/api/v2/health; 401 auth_required — перевыпустите токен"
   fi
   [ "$bad" = "0" ] || return 1
   return 0
@@ -390,7 +391,7 @@ print("ATS_OK " + out[:160])
 PYATS
   local rc=$?
   if [ "$rc" != "0" ]; then
-    die "не удалось записать настройки АТС ($ATS_URL) — проверьте ATS_TOKEN и доступность сервиса"
+    die "не удалось записать настройки АТС ($ATS_URL) — проверьте ATS_TOKEN и доступность "         "сервиса; auth_required/401 = токен пуст или протух, перевыпустите: export ATS_TOKEN=$(./deploy/ats-token.sh)"
   fi
   if [ "${ATS_KEEP_PROVIDER:-0}" = "1" ]; then
     log "настройки ami записаны (транк='$MCM_TRUNK', ru8/d10), провайдер НЕ менялся"
