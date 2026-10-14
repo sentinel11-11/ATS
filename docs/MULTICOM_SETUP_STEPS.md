@@ -118,7 +118,7 @@ unset MCM_PASS
 `env: «MCM_PASS»: No such file or directory`.
 
 Признак успеха: в `--print` видны `auth_type=userpass`, `username=…`, `server_uri=sip:…:5060`,
-`allow=alaw`, `allow=ulaw`,
+`dtmf_mode=rfc4733`, `allow=alaw`, `allow=ulaw`,
 `match=<IP>/32`; `--dry-run` печатает только план (куда что ляжет), сам конфиг с замаскированным
 `password=` смотрите в `--print`, полное значение — `--print --reveal`. Ни одной метки `__MCM_`
 не осталось.
@@ -262,7 +262,33 @@ sudo -E ./deploy/asterisk/install-multicom-trunk.sh --pjsip-standalone
 asterisk -rx "pjsip show endpoints" ; asterisk -rx "pjsip show registrations"
 ```
 
-Объектов по-прежнему нет — ищем точную строку ошибки в логе. В Ubuntu 24.04 пишет
+**Случай C — транспорт и AOR есть, а endpoint'а и регистрации нет: поле не прошло ACO.**
+Asterisk разбирает секцию построчно и на первой непонятной опции бросает **категорию целиком**
+(`aco_process_category_options` → `return -1`), поэтому в логе одна строка, а в CLI — пусто.
+Ровно так было на проде, уже после починки `username`:
+
+```
+ERROR config_options.c: Error parsing dtmf_mode=rfc2833 at line 65 of /etc/asterisk/pjsip-multicom.conf
+ERROR res_sorcery_config.c: Could not create an object of type 'endpoint' with id 'mcm' from configuration file 'pjsip.conf'
+ERROR config_options.c: Could not find option suitable for category 'mcm-reg' named 'line_request' at line 42
+ERROR res_sorcery_config.c: Could not create an object of type 'registration' with id 'mcm-reg' ...
+```
+
+Обе строки — наследие вики оператора, она описывает chan_sip и Asterisk 10-16:
+
+| Как в вики | Как в chan_pjsip на Asterisk 20 |
+|---|---|
+| `dtmf_mode=rfc2833` | `rfc4733` (RFC 4733 отменил RFC 2833); всего допустимо `auto, auto_info, info, inband, none, rfc4733` |
+| `line_request=registration` | такой опции нет вовсе; `line=yes` + `endpoint=mcm` ставят осознанно, если device state endpoint'а должен следовать за регистрацией |
+| `auth_name=` | `username=` плюс `auth_type=userpass` |
+| `secret=`, `insecure=`, `type=peer`, `directmedia=`, `dtmfmode=` | объект `auth` с `password=` и ссылка `outbound_auth=`; `force_rport`+`rewrite_contact`; `direct_media`; `dtmf_mode` |
+
+Скрипт больше не дожидается встречи с логом: `validate_against_asterisk20` сверяет рендер со
+списком запрещённых строк **до записи** и отказывается ставить нерабочий конфиг, а `--check`
+повторяет ту же проверку по установленному файлу.
+
+Объектов по-прежнему нет — ищем точную строку ошибки в логе (в `--check` и сразу после reload
+скрипт печатает её сам). В Ubuntu 24.04 пишет
 `/var/log/asterisk/messages.log.log` (файлов `messages` и `full` там обычно нет; список файлов и
 что в них лить задаёт `/etc/asterisk/logger.conf`):
 
@@ -380,6 +406,25 @@ sudo systemctl edit ats        # в [Service] закомментировать/�
 sudo systemctl daemon-reload && sudo systemctl restart ats
 ./deploy/check.sh ; curl -s http://127.0.0.1:9124/api/v2/health; echo
 ```
+
+Порт 5060 сейчас открыт наружу (`ufw: Status: inactive`), и лог это подтверждает — чужие хосты
+уже шлют REGISTER на ваш IP: «Request 'REGISTER' from '<sip:433@89.223.127.145>' failed for
+'45.61.184.132:51366' — No matching endpoint found». Пока своих endpoint'ов нет, отказ дешёвый;
+с рабочим транком это обычная попытка угнать минуты через ваш аккаунт. Включать файрвол так
+(первое правило — чтобы не потерять SSH):
+
+```bash
+ufw default deny incoming && ufw default allow outgoing
+ufw allow OpenSSH
+ufw allow from 95.128.224.0/21 to any port 5060 proto udp
+ufw allow from 95.128.224.0/21 to any port 5060 proto tcp
+ufw allow from 95.128.224.0/21 to any port 10000:20000 proto udp   # RTP
+ufw enable && ufw status numbered
+```
+
+Последнее правило нужно потому, что `direct_media=no`: медиа всегда идёт через серверы
+оператора, поэтому одного их диапазона сети достаточно. После включения `ufw` проверьте
+тестовый звонок ещё раз — односторонний звук означал бы, что RTP-порт не совпал с `MCM_RTP`.
 
 Признак приёмки (все пять пунктов — «да»):
 

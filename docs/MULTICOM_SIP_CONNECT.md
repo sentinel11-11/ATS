@@ -247,7 +247,18 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 а таймаут превращается в финальный `exit 1`; `REG_TIMEOUT=0` — не ждать вовсе).
 
 Окружение помимо `MCM_*`: `MCM_REVEAL=1`, `REG_TIMEOUT`, `AMIPASS`, `ATS_URL`, `ATS_TOKEN`,
-`ATS_LOGIN`, `ATS_KEEP_PROVIDER=1`, `ALLOW_NONROOT=1` (стенды без root), `AGI_DIR`, `AST_DIR`.
+`ATS_LOGIN`, `ATS_KEEP_PROVIDER=1`, `ALLOW_NONROOT=1` (стенды без root), `AGI_DIR`, `AST_DIR`,
+`TPL` (путь к шаблону секций — по умолчанию `deploy/asterisk/pjsip-multicom.conf`).
+
+Перед записью рендер проходит `validate_against_asterisk20`: строки `line_request=`,
+`auth_name=`, `dtmf_mode=rfc2833|invite`, `type=peer|user`, `secret=`, `insecure=`,
+`directmedia=`, `dtmfmode=` считаются ошибкой, и конфиг не ставится вовсе. Причина появления
+проверки — три дня разбора на живой коробке: ACO отбрасывает целую категорию по первой
+нераспознанной опции, поэтому один лишний символ в имени поля выглядит как «Asterisk не видит
+наш файл». Списки валидных полей сверялись с исходниками (`res/res_pjsip/pjsip_configuration.c`
+— endpoint, `res/res_pjsip/location.c` — aor, `config_auth.c`, `config_transport.c`,
+`res/res_pjsip_outbound_registration.c`) и закреплены тестом
+`test_template_uses_only_real_asterisk20_options`.
 
 Переопределяемые значения по умолчанию: `MCM_LOGIN` (`00083819`), `MCM_HOST`/`MCM_PORT`
 (`95.128.224.47`/`5060`), `MCM_TRUNK` (`mcm` — имя секции и оно же `settings.ami.trunk`),

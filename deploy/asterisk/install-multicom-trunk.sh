@@ -163,6 +163,36 @@ if [ -z "${MCM_PASS:-}" ]; then
 fi
 check_value MCM_PASS "$MCM_PASS" || exit 1
 
+# --------------------------------------------------- валидация под Asterisk 20 --
+# Часть значений приходит из вики оператора, а она описывает chan_sip и Asterisk 10-16.
+# На 20-й версии ACO нераспознанное поле или значение не прощает:
+# res_sorcery_config.c пишет «Could not find option suitable for category …»,
+# config_options.c — «Error parsing …», объект НЕ создаётся (опции после первой ошибки
+# даже не разбираются), а в CLI это выглядит как «No objects found» при целом файле.
+validate_against_asterisk20() {
+  local f="$1" rc=0 entry pat advice
+  # разделитель — « :: », а не «|»: в самих регулярках есть вертикальные черты
+  # (перечисления значений), и IFS='|' разрезал бы паттерн пополам.
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    pat="${entry%% :: *}"; advice="${entry#* :: }"
+    grep -Eq "$pat" "$f" 2>/dev/null || continue
+    warn "Asterisk 20 такое не примет: $advice"
+    rc=1
+  done <<'BADPATTERNS'
+^[[:space:]]*line_request= :: у объекта registration нет такой опции — категория отбрасывается целиком
+^[[:space:]]*auth_name= :: поле auth_name было у объекта auth в Asterisk 12/13; нужен username, иначе «No authentication username», и за auth не создаются endpoint и registration
+^[[:space:]]*dtmf_mode=(rfc2833|invite) :: допустимы auto, auto_info, info, inband, none, rfc4733 — имя «rfc2833» ушло вместе с RFC 2833
+^[[:space:]]*type=peer :: секция chan_sip в конфиге chan_pjsip
+^[[:space:]]*type=user :: секция chan_sip в конфиге chan_pjsip
+^[[:space:]]*secret= :: пароль chan_sip; в chan_pjsip — объект auth с password= и ссылка outbound_auth=
+^[[:space:]]*insecure= :: опция chan_sip; в chan_pjsip — force_rport/rewrite_contact и объект identify
+^[[:space:]]*directmedia= :: имя chan_sip; в chan_pjsip — direct_media
+^[[:space:]]*dtmfmode= :: имя chan_sip; в chan_pjsip — dtmf_mode
+BADPATTERNS
+  return $rc
+}
+
 # ------------------------------------------------------------------- кодеки --
 # g729 в список попадает, только если модуль реально установлен: в asterisk-modules
 # Ubuntu 24.04 его нет, а allow=g729 в конфиге потом рождает в логе
@@ -213,6 +243,14 @@ rendered="$(render)" || die "не удалось отрендерить шабл
 left="$(printf '%s\n' "$rendered" | grep -n '__MCM_[A-Z_]*__' | head -5)"
 if [ -n "$left" ] && [ "$MODE" != "print" ] && [ "$MODE" != "dry" ] && [ "$MODE" != "check" ] && [ "$MODE" != "numbers" ]; then
   die "в результате остались незаполненные плейсхолдеры: $left"
+fi
+if [ "$MODE" = "install" ]; then
+  # сначала имена полей, потом запись: иначе сутки гоняешь «No objects found»
+  _vf="$(mktemp)" || die "mktemp не удался"
+  printf '%s\n' "$rendered" > "$_vf"
+  validate_against_asterisk20 "$_vf" \
+    || die "правьте deploy/asterisk/pjsip-multicom.conf (или MCM_*): с такими строками Asterisk не создаст объекты, и 'pjsip show endpoints' останется пустым"
+  rm -f "$_vf"
 fi
 
 import_numbers() {
@@ -345,7 +383,7 @@ asterisk_log_hint() {
   for f in /var/log/asterisk/messages.log.log /var/log/asterisk/messages.log /var/log/asterisk/queue_log; do
     [ -r "$f" ] || continue
     l="$(tail -n 400 "$f" 2>/dev/null \
-         | grep -iE "pjsip|Unable to load|authentication|syntax error|ignoring the rest" | tail -8)"
+         | grep -iE "pjsip|Unable to load|Could not create an object|Could not find option|Error parsing|authentication|syntax error|ignoring the rest" | tail -8)"
     [ -n "$l" ] || continue
     log "последние строки про pjsip из $f:"
     printf '%s\n' "$l" | sed 's/^/      /'
@@ -382,13 +420,9 @@ check_only() {
       esac
     done
     awk '/^\[/ {sec=$0} /^allow=/ {found[sec]=found[sec] $0 " "} END {for (s in found) if (found[s] != "") print "  " s found[s]}' "$OUT_PATH"
-    # auth_name — поле объекта auth из Asterisk 12/13; с 16-й версии такой auth не
-    # загружается, и за ним не появляются endpoint и registration.
-    if grep -q '^auth_name=' "$OUT_PATH" 2>/dev/null; then
-      warn "в $OUT_PATH поле auth_name вместо username: Asterisk 20 не знает auth_name, объект auth не загружается — endpoint и registration за ним тоже"
-      warn "починить: обновить репозиторий (git pull) и перегенерить файл: sudo -E $0"
-      rc=1
-    fi
+    # устаревшие и чужие имена полей — ровно то, из-за чего на коробке сутки было
+    # «transport-udp есть, а endpoints пустые»
+    validate_against_asterisk20 "$OUT_PATH" || rc=1
   fi
   if [ ! -f "$AST_DIR/pjsip.conf" ]; then
     warn "нет $AST_DIR/pjsip.conf — включение нашего файла некуда вставлять"; rc=1

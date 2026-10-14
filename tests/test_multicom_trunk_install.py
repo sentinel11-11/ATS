@@ -62,6 +62,83 @@ class RenderTest(unittest.TestCase):
                          ["allow=alaw", "allow=ulaw"])
         self.assertNotIn("allow=g729", p.stdout)
 
+    def test_template_uses_only_real_asterisk20_options(self):
+        """Имена полей в шаблоне — только те, что Asterisk 20 действительно регистрирует.
+
+        Списки сверены с исходными файлами: res/res_pjsip/pjsip_configuration.c (endpoint),
+        res/res_pjsip/location.c (aor), res/res_pjsip/config_auth.c (auth),
+        res/res_pjsip/config_transport.c (transport),
+        res/res_pjsip_outbound_registration.c (registration). Это не придирка ради придирки:
+        на живой коробке 'line_request' и 'auth_name' молча роняли создание объекта целиком,
+        и в CLI это выглядело как «No objects found» при полностью исправном файле.
+        allow/disallow — не ACO-опции (ими заведует codec handler), их проверяем наугад.
+        """
+        allowed = {
+            "transport": {"bind", "protocol", "local_net", "external_signaling_address",
+                          "gateway", "specify_server_uri", "allow_transfer", "tos_video",
+                          "cos_video", "tos_audio", "cos_audio", "sdp_owner", "cert_file",
+                          "privkey_file"},
+            "auth": {"username", "password", "auth_type", "realm", "nonce_lifetime", "md5_cred",
+                     "password_digest", "refresh_token", "oauth_clientid", "oauth_secret",
+                     "nonce", "qop", "algorithm", "cnonce", "supported_algorithms_uac",
+                     "supported_algorithms_uas"},
+            "registration": {"server_uri", "client_uri", "uri", "contact_user", "transport",
+                             "outbound_auth", "outbound_proxy", "retry_interval", "expiration",
+                             "forbidden_retry_interval", "fatal_retry_interval", "max_retries",
+                             "auth_rejection_permanent", "support_path", "support_outbound",
+                             "line", "endpoint", "user_agent", "disable_register",
+                             "max_random_initial_delay", "contact_header_params",
+                             "security_negotiation", "security_mechanisms"},
+            "aor": {"max_contacts", "remove_existing", "remove_unavailable", "default_expiration",
+                    "minimum_expiration", "maximum_expiration", "qualify_frequency",
+                    "qualify_timeout", "qualify_type", "authenticate_qualify", "mailboxes",
+                    "voicemail_extension", "contact", "max_contacts_uris"},
+            "endpoint": {"context", "direct_media", "direct_media_method", "force_rport",
+                         "rewrite_contact", "rtp_symmetric", "dtmf_mode", "from_user",
+                         "from_domain", "outbound_auth", "aors", "identify", "transport",
+                         "device_state_busy_at", "device_state", "language", "tos_audio",
+                         "cos_audio", "tos_video", "cos_video", "moh_suggest", "media_encryption",
+                         "media_encryption_optimistic", "allow_subscribe", "subscribe_context",
+                         "call_transfer", "call_pickup", "group_call_pickup", "immediate",
+                         "rtp_start", "rtp_ipv6", "ice_support", "use_ptime", "avp",
+                         "send_rpid", "send_pai", "rtp_timeout", "rtp_keepalive", "rtp_rekey",
+                         "disallow_nonsdp", "bundle", "connected_line_method", "enable_100rel",
+                         "disable_trickle_ice", "timer", "allow_overlap", "trust_id_inbound",
+                         "trust_id_outbound", "suppress_q850_reason_headers", "use_epp",
+                         "one_way_audio", "record_on_feature", "record_off_feature",
+                         "forbid_contact_userpass", "allow_contact_userpass", "acl", "contact_acl",
+                         "realm", "useragent_as", "follow_early_bridge", "unidentified_only",
+                         "stir_shaken", "stir_shaken_profile", "preferred_only", "md5_cred",
+                         "auth", "mailboxes", "vm_mailbox", "aggregate_mwi", "callerid"},
+            "identify": {"endpoint", "match", "match_http_method", "match_request_uri",
+                         "prepend_inbound", "prune_on_boot", "notify_method", "notify_cid",
+                         "notify_contact_user"},
+        }
+        tpl = (ROOT / "deploy" / "asterisk" / "pjsip-multicom.conf").read_text(encoding="utf-8")
+        sections, cur = {}, None
+        for raw in tpl.splitlines():
+            line = raw.split(";", 1)[0].strip()      # инлайн-комментарий Asterisk отрезает сам
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                cur = line[1:-1]
+                sections[cur] = {}
+            elif cur and "=" in line:
+                key, val = line.split("=", 1)
+                sections[cur][key.strip()] = val.strip()
+        self.assertTrue(sections, "в шаблоне ни одной секции — парсер теста сломался")
+        unknown = []
+        for name, keys in sections.items():
+            obj = keys.get("type")
+            self.assertIn(obj, allowed, "секция [%s] с неизвестным type=%s" % (name, obj))
+            for key in keys:
+                if key in ("type", "allow", "disallow"):
+                    continue
+                if key not in allowed[obj]:
+                    unknown.append("[%s] %s" % (name, key))
+        self.assertEqual(unknown, [], "поля, которых нет в Asterisk 20: %s" % unknown)
+        self.assertNotIn("auth_name=", tpl)
+
     def test_trunk_name_renames_sections(self):
         p = run(["--print"], env={"MCM_TRUNK": "mcm2"})
         self.assertEqual(p.returncode, 0, p.stderr[:400])
@@ -159,6 +236,24 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         ok = run(["--check"], env=self.env)
         self.assertNotIn("поле username не заполнено", ok.stderr)
         self.assertNotIn("auth_name", ok.stderr)
+
+    def test_install_refuses_config_asterisk_cannot_load(self):
+        """Валидатор обязан останавливать установку ДО записи: иначе «No objects found»
+        ищут сутки, а причина — одно слово в шаблоне (проверено на живой коробке)."""
+        tpl = self.dir / "bad.tpl"
+        base = (ROOT / "deploy" / "asterisk" / "pjsip-multicom.conf").read_text(encoding="utf-8")
+        tpl.write_text(base + "line_request=registration\n", encoding="utf-8")
+        p = run(env=dict(self.env, TPL=str(tpl)))
+        self.assertNotEqual(p.returncode, 0)
+        out = p.stdout + p.stderr
+        self.assertIn("Asterisk 20 такое не примет", out)
+        self.assertIn("registration", out)
+        self.assertFalse((self.dir / "pjsip-multicom.conf").exists(),
+                         "писать заведомо нерабочий конфиг нельзя")
+        tpl.write_text(base + "dtmf_mode=rfc2833\n", encoding="utf-8")
+        p2 = run(env=dict(self.env, TPL=str(tpl), REG_TIMEOUT="0"))
+        self.assertNotEqual(p2.returncode, 0)
+        self.assertIn("rfc4733", p2.stdout + p2.stderr, "должно подсказать правильное значение")
 
     def test_include_first_line_in_distro_sample(self):
         """Дистрибутивный pjsip.conf — километровый закомментированный образец. #include,

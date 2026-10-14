@@ -64,6 +64,27 @@ sudo systemctl restart ats      # счётчик неудачных входов
 --ats` + `systemctl restart ats`. Новые версии скрипта маскируют `password=` в `--print`
 и в `--check`; полное значение только по `--reveal`.
 
+Открытый 5060 — не гипотеза, а факт из лога: при выключенном `ufw` на транспорт уже приходят
+чужие `REGISTER` (в `messages.log` — `No matching endpoint found` с адресов вида
+`45.61.184.132`). С заведённым trunk-endpoint'ом это прямой риск счетов, поэтому порядок
+`ufw allow OpenSSH` → `allow from 95.128.224.0/21 …` → `ufw enable` — из шага 13
+`docs/MULTICOM_SETUP_STEPS.md`, а не «когда-нибудь». Второй открытый порт — сама АТС. Значение по умолчанию в `app/config.py` —
+`HOST_DEFAULT = "0.0.0.0"`, приоритет такой: `--host` → `ATS_HOST` → `settings.host` →
+умолчание, то есть без явного `ATS_HOST` HTTP-интерфейс и REST API торчат наружу без TLS.
+Проверьте, как сейчас: `ss -lntp | grep 9124`. Варианты, по возрастанию правильности:
+
+```bash
+sudo ufw deny 9124 && sudo ufw allow from 10.0.0.0/24 to any port 9124 proto tcp   # только своя сеть
+# либо вообще убрать наружу и ходить туннелем:
+printf 'ATS_HOST=127.0.0.1\n' | sudo tee -a /etc/ats/ats.env && sudo systemctl restart ats
+# ssh -N -L 9124:127.0.0.1:9125 root@хост   (порт берите из ss -lntp)
+```
+
+Если нужен публичный доступ — тогда обратный прокси с TLS (certbot) и логированием, а токен
+всегда в заголовке `X-Ats-Token`, а не в `?token=`: адрес запроса попадает в access-логи
+прокси и в историю браузера. AMI при этом остаётся закрытым: `permit = 127.0.0.1` в
+`manager-ats.conf` — так и задумано.
+
 ## 3. Удалить из репозитория (после того как всё заведено и заработало)
 
 ```bash
