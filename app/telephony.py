@@ -718,6 +718,19 @@ def ami_check(settings: dict) -> dict:
                 pass
         return report
 
+    def _registered(text):
+        """Статус транка — по точным словам из вывода CLI, а не подстрокой.
+
+        Подстрочный поиск нельзя: «Unregistered» содержит «registered», «Unavailable» —
+        «avail», «Unreachable» — «reachable». На живой коробке из-за этого пункт
+        registration в /ami/check светился зелёным при незаарегистрированном транке.
+        """
+        for line in (text or "").splitlines():
+            for tok in line.replace(",", " ").replace("(", " ").replace(")", " ").split():
+                if tok in ("Registered", "Expiring", "Avail", "Bound", "Requested", "Reachable"):
+                    return True
+        return False
+
     def command(cmd, timeout=2.5):
         """CLI через AMI (формат ответа может различаться) — только текстом."""
         try:
@@ -738,13 +751,13 @@ def ami_check(settings: dict) -> dict:
         else:
             reg, peers = command("pjsip show contacts"), command("pjsip show endpoints")
             trunk_ok = (not trunk) or trunk.lower() in peers.lower() or trunk.lower() in reg.lower()
-        registered = any(word in reg.lower() for word in
-                         ("avail", "requested", "bound", "ok", "registered"))
+        registered = _registered(reg) or _registered(peers)
         add("trunk_configured", trunk_ok,
             ("транк '{}' найден в выводе".format(trunk) if trunk_ok else
              "транк '{}' не найден — проверьте pjsip.conf/sip.conf и имя в настройках".format(trunk)))
-        add("registration", registered, reg.strip() or "регистрации/контакта нет — "
-                                                        "проверьте логин/пароль и файрвол")
+        add("registration", registered, reg.strip() or
+            "регистрации/контакта нет: ждём Registered (для contacts — Avail); "
+            "Unregistered/Rejected — не принял регистратор, смотрите allowlist оператора")
         def context_ok(text, ctx):
             low = (text or "").lower()
             if any(bad in low for bad in ("no such context", "cannot exist", "no context matched")):

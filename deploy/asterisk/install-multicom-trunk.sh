@@ -402,6 +402,33 @@ $("$ASTERISK_CMD" -rx "pjsip show contacts" 2>&1)"
   printf '%s' "$out"
 }
 
+# Вердикт по статусу регистрации: <статус>|<строка из вывода CLI>.
+# Здесь намеренно НЕ «grep -i registered»: Asterisk печатает «Unregistered» и
+# «Unavailable», в которых эти слова содержатся. На живой коробке из-за наивного grep
+# установка рапортовала «регистрация установлена», пока транк был Unregistered.
+registration_verdict() {
+  local out line status
+  out="$("$ASTERISK_CMD" -rx "pjsip show registrations" 2>&1)"
+  case "$out" in
+    *"No such command"*) printf 'noasterisk|Asterisk не отвечает на "pjsip show registrations" (res_pjsip не загружен?)'; return 0 ;;
+  esac
+  if printf '%s' "$out" | grep -qi "No objects found"; then
+    printf 'none|объектов регистрации нет — секция [mcm-reg] не создана (конфиг не прочитан или ACO-ошибка)'; return 0
+  fi
+  line="$(printf '%s' "$out" | grep -F "$MCM_TRUNK-reg" | head -1)"
+  [ -n "$line" ] || line="$(printf '%s\n' "$out" | grep -iE "Registered|Rejected|Trying|Expiring|Unreachable" | head -1)"
+  status="$(printf '%s' "$line" | awk '{for (i = 1; i <= NF; i++) { t = $i; gsub(/[().,]/, "", t); if (t == "Registered" || t == "Unregistered" || t == "Rejected" || t == "Trying" || t == "Expiring" || t == "Unreachable") { print t; exit } } }')"
+  printf '%s|%s' "${status:-unknown}" "$(printf '%s' "$line" | tr -s ' \t' ' ' | cut -c1-110)"
+}
+
+# Подтверждена ли регистрация (Registered/Expiring — это «работает»)
+registration_up() {
+  case "$1" in
+    Registered|Expiring) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 check_only() {
   local rc=0 line
   if [ ! -f "$OUT_PATH" ]; then
@@ -446,11 +473,11 @@ check_only() {
     else
       log "endpoint'ы в Asterisk есть"
     fi
-    local st; st="$(registration_state)"
-    if printf '%s' "$st" | grep -Eqi "200|registered|avail|bound"; then
-      log "регистрация/контакт есть"
+    local v; v="$(registration_verdict)"
+    if registration_up "${v%%|*}"; then
+      log "регистрация: ${v%%|*} — ${v#*|}"
     else
-      warn "регистрации нет. Вывод: $(printf '%s' "$st" | tr '\n' ' ' | cut -c1-200)"; rc=1
+      warn "регистрация не подтверждена: статус ${v%%|*} — ${v#*|}"; rc=1
     fi
   else
     warn "cli '$ASTERISK_CMD' не найдена — Asterisk не установлен или не запущен"; rc=1
@@ -717,21 +744,30 @@ if have_asterisk; then
     log "ожидание регистрации пропущено (REG_TIMEOUT=0)"
   else
     log "жду регистрацию у $MCM_HOST (до ${REG_TIMEOUT}с)…"
-    ok=0
+    ok=0 verdict=""
     for _ in $(seq 1 $((REG_TIMEOUT / 4 + 1))); do
-      if registration_state | grep -Eqi "200|registered|avail|bound"; then ok=1; break; fi
+      verdict="$(registration_verdict)"
+      if registration_up "${verdict%%|*}"; then ok=1; break; fi
       sleep 4
     done
     if [ "$ok" = "1" ]; then
-      log "регистрация установлена. Дальше: в UI «Проверить Asterisk и транк» должно стать OK."
+      log "регистрация подтверждена оператором (${verdict%%|*}). Дальше: в UI «Проверить Asterisk и транк» должно стать OK."
     else
       # Регистрация НЕ отменяет остальные шаги: настройки АТС и пул номеров нужны и
       # тогда, когда оператор ещё не пустил нас (или ругается на конфиг) — иначе один
       # недоступный регистратор обрывал установку на середине.
       REG_FAILED=1
-      warn "регистрации нет. Проверьте: логин/пароль; UDP 5060 наружу; правило на $MCM_NET (--firewall); транспорт 0.0.0.0:$MCM_PORT."
-      warn "если вывод начинается с «No objects found» — Asterisk не прочитал наш файл: $ASTERISK_CMD -rx \"pjsip show endpoints\" и /var/log/asterisk/messages.log"
-      registration_state | head -8 | sed 's/^/      /'
+      verdict="$(registration_verdict)"
+      case "${verdict%%|*}" in
+        Rejected) warn "оператор отверг REGISTER (${verdict#*|}) — это пароль, from_user или IP не в их allowlist" ;;
+        Unregistered|Trying|unknown)
+          warn "регистрация не подтверждена (${verdict%%|*}): ${verdict#*|}"
+          warn "обычно это их сторона: IP не добавлен в allowlist, аккаунт не активирован, или REGISTER не доходит"
+          warn "уходит ли REGISTER и есть ли ответ: timeout 75 tcpdump -nn -A -i any 'udp port $MCM_PORT and host $MCM_HOST' | grep -aE 'REGISTER|SIP/2.0' | head -20"
+          ;;
+        *) warn "статус регистрации: ${verdict#*|}" ;;
+      esac
+      warn "статусы: Registered — подтверждена; Expiring — подтверждена, скоро перерегистрится; Unregistered — не приняли или ответа нет; Rejected — 401/403; Trying — ждём ответ"
     fi
   fi
 else

@@ -316,9 +316,22 @@ sudo systemctl start asterisk
 не применилось. Строки `pjsip-multicom.conf` нет вообще — включение не дошло (проверьте
 `astetcdir` в `/etc/asterisk/asterisk.conf` и запускайте `--pjsip-standalone`).
 
-А вот `401/403` в `pjsip show registrations` — уже другой случай: конфиг прочитан, оператор
-спрашивает пароль/IP. Смотрите `MCM_PASS`, whitelist (`curl -s ifconfig.me` → в письмо
-оператору) и шаг 12.
+**Случай D — все объекты есть, но `pjsip show registrations` = `Unregistered`.** Это наш
+финальный случай на проде: endpoint, aor, identify и auth на месте, ACO-ошибок в логе нет —
+значит конфигурация наша закончена и дальше только регистратор оператора. Статусы:
+`Registered` — ок, `Expiring` — ок (перерегистрируется), `Unregistered` — нет ответа или не
+пустили, `Rejected` — 401/403 поDigest. Проверяется одним `tcpdump` (75 секунд, пока не
+пройдёт цикл `retry_interval=60`):
+
+```bash
+timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
+```
+
+Нет ответа вовсе — их сторона/маршрут; `401` с `WWW-Authenticate` и повторный REGISTER тоже
+`401` — пароль или `username`; `403` — аккаунт не активирован или IP не в allowlist. Разбор и
+готовые формулировки для письма — `docs/MULTICOM_SIP_CONNECT.md` §12а и §13. Обратите внимание:
+`pjsip show endpoints` при этом показывает `State: Unavailable` — для транка это норма (у
+исходящего транка нет входящего контакта), на набор `PJSIP/<номер>@mcm` не влияет.
 
 ## Шаг 8. AMI: доступ АТС к Asterisk
 
@@ -329,7 +342,9 @@ curl -s -X POST -H "X-Ats-Token: $TOK" http://127.0.0.1:9124/api/v2/ami/check | 
 ```
 
 Признак успеха: в `ami/check` `ok: true`, зелёные пункты `asterisk`, `manager_login`,
-`registration`, `dialplan`, `numbers_active` (=15). Пункт `secret` укажет источник пароля —
+`registration`, `dialplan`, `numbers_active` (=15). Пункт `registration` сверяет точные слова
+статуса (`Registered`/`Expiring`/`Avail`), поэтому при `Unregistered` он честно красный — и
+красный он будет, пока Мультиком не ответил на REGISTER, даже если AMI полностью рабочий. Пункт `secret` укажет источник пароля —
 `ATS_AMI_SECRET` или настройки. Если `manager_login` красный — пароль в `ats.env` и в
 `manager-ats.conf` разошлись (перечитать: `sudo systemctl restart ats`).
 

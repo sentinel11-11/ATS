@@ -736,6 +736,32 @@ class AmiCheckLiveTest(unittest.TestCase):
         self.assertTrue(by_name["dialplan"]["ok"])
         self.assertTrue(by_name["numbers_pool"]["ok"])
 
+    def test_unregistered_status_is_not_registered(self):
+        """Регресс на прод: «Unavailable»/«Unregistered» содержат «avail»/«registered»,
+        и наивный подстрочный поиск делал пункт registration зелёным без регистрации."""
+        self.srv.outputs = dict(self.OUTPUTS, **{
+            "pjsip show contacts": "  Contact:  <Aor/ContactUri>\n"
+                                   "  Contact:  mcm/sip:00083819@95.128.224.47:5060  Unavailable",
+            "pjsip show endpoints": "  Endpoint: mcm  Unavailable  0 of 15\n"
+                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "  mcm-auth  Unregistered (exp. 30s ago)",
+        })
+        rep = self._check()
+        by_name = {c["name"]: c for c in rep["checks"]}
+        self.assertFalse(by_name["registration"]["ok"])
+        self.assertFalse(rep["ok"])
+        self.assertTrue(by_name["trunk_configured"]["ok"], "сам транк на месте — ругаться надо только на статус")
+
+    def test_expiring_registration_still_counts(self):
+        self.srv.outputs = dict(self.OUTPUTS, **{
+            "pjsip show contacts": "  Contact:  (Line: 0) sip:00083819@95.128.224.47:5060  Avail",
+            "pjsip show endpoints": "  Endpoint: mcm  Available  0 of 15\n"
+                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "  mcm-auth  Expiring (exp. 60s)",
+        })
+        by_name = {c["name"]: c for c in self._check()["checks"]}
+        self.assertTrue(by_name["registration"]["ok"], "Expiring — это ещё работает")
+
     def test_missing_context_fails_dialplan(self):
         self.srv.outputs = dict(self.OUTPUTS, **{"dialplan show ats-out":
                                                   "No such context 'ats-out'."})

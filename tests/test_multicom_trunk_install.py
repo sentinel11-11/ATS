@@ -489,6 +489,54 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertEqual(cfg["ami"]["trunk"], "mcm")
         self.assertEqual(cfg["ami"]["context"], "ats-out")
 
+    def test_unregistered_is_not_reported_as_registered(self):
+        """Регресс на живую коробку: статус «Unregistered» содержит слово «registered», и
+        наивный grep рапортовал «регистрация установлена», когда транк не зарегистрирован."""
+        fake = self.dir / "asterisk-unreg"
+        fake.write_text(
+            '#!/bin/sh\n'
+            'case "$*" in\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Unregistered      (exp. 30s ago)" ;;\n'
+            '  *) echo "ok" ;;\n'
+            'esac\nexit 0\n', encoding="utf-8")
+        fake.chmod(0o755)
+        env = dict(self.env, ASTERISK_CMD=str(fake), REG_TIMEOUT="1")
+        p = run(env=env)
+        self.assertEqual(p.returncode, 1, "Unregistered — это не успех")
+        self.assertNotIn("регистрация подтверждена", p.stdout)
+        self.assertIn("Unregistered", p.stderr)
+        self.assertIn("tcpdump", p.stderr, "должно подсказать, как проверить, уходит ли REGISTER")
+        c = run(["--check"], env=env)
+        self.assertEqual(c.returncode, 1)
+        self.assertIn("статус Unregistered", c.stderr)
+
+    def test_registered_status_is_accepted(self):
+        fake = self.dir / "asterisk-reg"
+        fake.write_text(
+            '#!/bin/sh\n'
+            'case "$*" in\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Registered      (exp. 3550s)" ;;\n'
+            '  *) echo "ok" ;;\n'
+            'esac\nexit 0\n', encoding="utf-8")
+        fake.chmod(0o755)
+        p = run(env=dict(self.env, ASTERISK_CMD=str(fake), REG_TIMEOUT="1"))
+        self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
+        self.assertIn("регистрация подтверждена оператором (Registered)", p.stdout)
+        self.assertIn("регистрация: Registered", run(["--check"], env=dict(self.env, ASTERISK_CMD=str(fake))).stdout)
+
+    def test_rejected_status_names_the_reason(self):
+        fake = self.dir / "asterisk-rej"
+        fake.write_text(
+            '#!/bin/sh\n'
+            'case "$*" in\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Rejected        (exp. 60s)" ;;\n'
+            '  *) echo "ok" ;;\n'
+            'esac\nexit 0\n', encoding="utf-8")
+        fake.chmod(0o755)
+        p = run(env=dict(self.env, ASTERISK_CMD=str(fake), REG_TIMEOUT="1"))
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("отверг REGISTER", p.stderr)
+
     def test_missing_registration_does_not_stop_the_rest(self):
         """Без регистрации настройки АТС и номера всё равно должны примениться:
         раньше exit 1 обрывал установку на середине, и --ats/--numbers не выполнялись."""
@@ -503,7 +551,10 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         paths = [path for path, _h, _b in _ApiHandler.captured]
         self.assertIn("/api/v2/settings/raw", paths, "настройки не записаны из-за отсутствия регистрации")
         self.assertIn("/api/v2/numbers/save", paths, "номера не заведены из-за отсутствия регистрации")
-        self.assertIn("не прочитал наш файл", p.stderr, "должно сказать, что Asterisk не загрузил секции")
+        self.assertIn("не прочитаны либо не прошли валидацию", p.stderr,
+                    "должно сказать, что Asterisk не загрузил секции")
+        self.assertIn("объектов регистрации нет", p.stderr,
+                      "по статусу видно, что секция [mcm-reg] вообще не создана")
 
     def test_ats_token_helper_needs_real_token(self):
         """deploy/ats-token.sh: без поля token в ответе — код 1 и причина в stderr."""

@@ -313,6 +313,14 @@ asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 
 - `pjsip show contacts` показывает `Avail`/`Non-Corr` — да, контакт появляется **после**
   успешной исходящей регистрации; при `Unspecified`/пустоте — 403 (логин/пароль/IP) или сеть.
+- Единственный прямой индикатор — статус в `pjsip show registrations`: `Registered` и
+  `Expiring` = работает, `Unregistered` = ответа нет или не пустили, `Rejected` = 401/403,
+  `Trying` = ждём. И `install-multicom-trunk.sh`, и `POST /api/v2/ami/check` сверяют **точные
+  слова** статуса, а не подстроку: `Unregistered` содержит `registered`, `Unavailable` —
+  `avail`, и наивный поиск рапортовал успех на полностью нерабочем транке (проверено на проде).
+- `State: Unavailable` у endpoint'а транка — норма: исходящему транку нечего показывать, пока
+  нет контакта в AOR. На набор `PJSIP/<номер>@mcm` это не влияет; если нужен осознанный
+  device state по регистрации — в `[mcm-reg]` ставят `line=yes` и `endpoint=mcm`.
 - Сырой SIP можно посмотреть так: `asterisk -rx "pjsip set logger on host 95.128.224.47"`,
   затем `tail -f /var/log/asterisk/messages.log | grep -i "40[13]\|REGISTER"`.
 
@@ -689,7 +697,7 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 | `404 Not Found` при исходящем | формат номера | `number_format=ru8`; проверить `dial_prefix`; у них `8_Код_Номер`, межгород — `810…` |
 | 407/488 на INVITE при исходящем | кодеки | `allow=alaw,ulaw` (+g729 при модуле); `disallow=all` первым |
 | Оператор rejects CLI | `Originate` → `CallerID` | `caller_id_format`: `d10` → `digits` → `e164`; подставлять разрешено только свои 15 номеров |
-| DTMF не долетает | `dtmf_mode=rfc2833` | у chan_sip — `dtmfmode=rfc2833` |
+| DTMF не долетает | `dtmf_mode=rfc4733` (у chan_pjsip нет значения `rfc2833`: RFC 4733 отменил его; допустимы `auto, auto_info, info, inband, none, rfc4733`) | у chan_sip — `senddtmf`/`dtmfmode=rfc2833` |
 | Входящие не попадают в журнал | `dialplan show <context>`, имя канала | `inbound_contexts` должен содержать контекст входящих, `trunk`/`inbound_tech` — начало имени канала (`PJSIP/mcm-…`) |
 | Звонок «завис» в `talk`/`dialing` | `settings.message_max_sec`, `watchdog_timeout_min` | AMI-обрыв: события не дошли; watchdog закроет `timeout`, движок повторит по `retry_max` |
 | Один и тот же номер «не звонит» сутки | `numbers` (`daily_count`, `cooldown_until`, `quarantined`) | `POST /api/v2/numbers/reset`, снять карантин из UI |
@@ -697,6 +705,30 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 | 401 в ATS при работе с AMI | — | 401 = только истёкшая сессия ATS; к Asterisk отношения не имеет |
 
 ---
+
+## 12а. Если объекты созданы, а регистрация не подтверждена
+
+`pjsip show endpoints` показывает `mcm`, `OutAuth: mcm-auth/00083819`, `Aor: mcm-aor`,
+`Identify: mcm-identify/mcm Match: <IP>/32`, но `pjsip show registrations` =
+`Unregistered` — это не наша конфигурация, а handshake с регистратором. Порядок:
+
+```bash
+timeout 75 tcpdump -nn -A -i any 'udp port 5060 and host 95.128.224.47' | grep -aE "REGISTER|SIP/2.0" | head -20
+asterisk -rx "pjsip show registrations"        # статус меняется каждые retry_interval=60 с
+grep -aiE "SIP/2.0 (4|5)[0-9]{2}|registration" /var/log/asterisk/messages.log | tail -15
+```
+
+Три разных случая, и они различаются именно по tcpdump:
+
+| Что видно | Вывод |
+|---|---|
+| REGISTER уходит, ответа нет вообще | пакет режет их сторона или наш исходящий путь (у VPS Timeweb внешние правила на 5060 usually нет, но UDP-трафик на их прокси может молча дропаться) — письмо оператору с нашим IP и временем попытки |
+| ответ `401 Unauthorized` с `WWW-Authenticate` и второй REGISTER уходит, снова `401` | пароль/`auth_name`: сверить `username`/`password` в `[mcm-auth]` с письмом (регистр, опечатки); Digest считается от `sip:00083819@95.128.224.47` |
+| ответ `403 Forbidden/Not authorised here` | нас видят, но аккаунт не активирован или IP не в их allowlist — только через оператора |
+
+Отдельно: строка вида `ERROR pjproject: sip_parser.c Error parsing '2531229586': String value was greater
+than the maximum allowed value` в логе — это мусор от сканеров на открытом 5060, а не про наш транк.
+Закрывать его (`ufw allow from 95.128.224.0/21 … && ufw enable`) нужно, но на регистрацию он не влияет.
 
 ## 13. Что ответить Мультикому (письмо-запрос)
 
