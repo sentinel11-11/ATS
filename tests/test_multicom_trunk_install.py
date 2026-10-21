@@ -381,15 +381,18 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
 
     def test_warns_when_inbound_target_is_a_pool_number(self):
         """Входящие на номер из того же пула — это петля, и скрипт обязан сказать об этом."""
+        # Номера — вымышленные (555…): реальные DID компании (префиксы 96902299/
+        # 98631493/936257) в отслеживаемых файлах запрещены сканером
+        # tools/secret_scan.py (test_no_runtime_secrets) — это утёкшие PII.
         env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"),
-                   MCM_NUMBERS="9690229926 9690229927",
-                   MCM_INBOUND_DIAL="PJSIP/89690229926@mcm")
+                   MCM_NUMBERS="5550000101 5550000102",
+                   MCM_INBOUND_DIAL="PJSIP/85550000101@mcm")
         p = run(env=env, args=["--dialplan"])
         out = p.stdout + p.stderr
         self.assertIn("из пула Мультиком", out,
                       "номер из пула в качестве цели входящие — это сам себе звонок")
         self.assertIn("сам себе", out)
-        q = run(env=dict(env, MCM_INBOUND_DIAL="PJSIP/89265083094@mcm"), args=["--dialplan"])
+        q = run(env=dict(env, MCM_INBOUND_DIAL="PJSIP/89161234568@mcm"), args=["--dialplan"])
         self.assertNotIn("сам себе", q.stdout + q.stderr,
                          "чужой мобильный — предупреждать не о чем")
 

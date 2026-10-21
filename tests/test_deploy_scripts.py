@@ -5,6 +5,7 @@
 пропустил ветку systemd (grep -q + pipefail = SIGPIPE 141 в условии) и поднял второй
 экземпляр АТС от root. Сюда же — проверка синтаксиса всех shell-скриптов репозитория.
 """
+import fcntl
 import os
 import pathlib
 import shutil
@@ -76,6 +77,83 @@ class UpdateScriptGuardsTest(unittest.TestCase):
         text = (DEPLOY / "update.sh").read_text(encoding="utf-8")
         for flag in ("--rollback", "--fast", "--no-build", "--no-restart", "--force"):
             self.assertIn(flag, text, flag)
+
+
+class UpdateLockTest(unittest.TestCase):
+    """Захват lock: «не открыть» ≠ «занят кем-то».
+
+    Инцидент на проде 2026-10-22: обновление на сервере исторически запускалось от
+    root и оставляло /tmp/ats-update.lock принадлежащим root; запуск `sudo -u ats
+    ./deploy/update.sh` не мог открыть файл на запись (sticky bit в /tmp), exec
+    печатал Permission denied, flock получал «Bad file descriptor» — и скрипт
+    ложно сообщал «другое обновление уже выполняется», отправляя по ложному следу.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = pathlib.Path(tempfile.mkdtemp(prefix="ats-lock-test-"))
+        # Минимальный git-репозиторий с bare-remote: скрипту до захвата lock нужны
+        # rev-parse и fetch. Полный вывод update.sh не важен — важен этап lock.
+        origin = cls.tmp / "origin.git"
+        cls.app = cls.tmp / "app"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, timeout=60)
+        subprocess.run(["git", "clone", "-q", str(origin), str(cls.app)], check=True, timeout=60)
+        (cls.app / "README.md").write_text("lock test\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(cls.app), "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", str(cls.app), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "init"], check=True, timeout=60)
+        subprocess.run(["git", "-C", str(cls.app), "push", "-q", "origin", "HEAD"], check=True, timeout=60)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self):
+        # ATS_UPDATE_LOCK/ATS_UPDATE_LOG уводят замок и лог в песочницу теста:
+        # системные /tmp/ats-update.* не трогаем.
+        env = dict(os.environ)
+        env.update({
+            "ATS_APP_DIR": str(self.app),
+            "ATS_UPDATE_LOCK": str(self.tmp / "lock"),
+            "ATS_UPDATE_LOG": str(self.tmp / "update.log"),
+        })
+        return _script(DEPLOY / "update.sh", env=env, cwd=self.tmp)
+
+    def test_lock_free_proceeds(self):
+        """Свободный замок: скрипт проходит этап lock и доходит до «уже актуально»."""
+        p = self._run()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("уже на актуальной ревизии", p.stdout)
+        self.assertTrue((self.tmp / "lock").exists(), "lock-файл должен быть создан")
+
+    def test_lock_held_reports_busy(self):
+        """Замок занят живым держателем: честное «уже выполняется», не «не могу открыть»."""
+        lock = self.tmp / "lock"
+        lock.write_bytes(b"")
+        with open(lock, "a") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            p = self._run()
+        self.assertNotEqual(p.returncode, 0)
+        out = p.stdout + p.stderr
+        self.assertIn("уже выполняется", out)
+        self.assertNotIn("не могу открыть lock", out)
+
+    @unittest.skipIf(os.geteuid() == 0, "под root права chmod не блокируют запись")
+    def test_lock_unwritable_reports_cause(self):
+        """Замок не открывается (чужой владелец симулирован chmod): причина названа,
+        лечение подсказано, ложного «уже выполняется» НЕТ."""
+        lock = self.tmp / "lock"
+        lock.write_bytes(b"")
+        os.chmod(lock, 0o444)
+        try:
+            p = self._run()
+        finally:
+            os.chmod(lock, 0o644)
+        self.assertNotEqual(p.returncode, 0)
+        out = p.stdout + p.stderr
+        self.assertIn("не могу открыть lock", out)
+        self.assertIn("rm -f", out)
+        self.assertNotIn("уже выполняется", out)
 
 
 if __name__ == "__main__":

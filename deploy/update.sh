@@ -18,10 +18,12 @@
 # Переменные окружения (по умолчанию всё подбирается сам):
 #   ATS_DATA_DIR (data_v2)  ATS_PORT (из таблицы settings)  ATS_SERVICE (ats)
 #   ATS_APP_DIR  (/opt/ats) — каталог репозитория, если скрипту не доверяешь его расположение
+#   ATS_UPDATE_LOCK / ATS_UPDATE_LOG — пути lock/лога (умолчание /tmp/ats-update.*;
+#   переопределяются в тестах, чтобы не трогать системный /tmp)
 set -uo pipefail
 
-LOCK=/tmp/ats-update.lock
-LOG=/tmp/ats-update.log
+LOCK="${ATS_UPDATE_LOCK:-/tmp/ats-update.lock}"
+LOG="${ATS_UPDATE_LOG:-/tmp/ats-update.log}"
 
 log()  { printf '\033[1;36m[ats-update]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[ats-update]\033[0m %s\n' "$*"; }
@@ -244,17 +246,34 @@ rollback() {
   esac
 }
 
+# Захват lock-файла. Два РАЗНЫХ отказа раньше не различались:
+#  (а) файл не открыть на запись — прошлый update запускался от другого пользователя
+#      (например root), файл в /tmp принадлежит ему, sticky bit запрещает чужую запись;
+#  (б) файл открыт, но flock занят — действительно идёт другое обновление.
+# В случае (а) exec с редиректом печатает «Permission denied», но скрипт НЕ прерывается,
+# flock получает «Bad file descriptor» — и пользователю ложно сообщалось «другое
+# обновление уже выполняется» (инцидент на проде 2026-10-22: sudo -u ats после
+# обновления от root). Различаем честно: сначала проверяем открываемость, потом flock.
+lock_acquire() {
+  if ! true >>"$LOCK" 2>/dev/null; then
+    die "не могу открыть lock-файл $LOCK на запись (владелец: $(stat -c '%U' "$LOCK" 2>/dev/null || echo '—')).
+Похоже, прошлый запуск был от другого пользователя. Если живого обновления нет
+(fuser -v $LOCK ничего не показывает) — удалите замок и повторите:  rm -f $LOCK"
+  fi
+  exec 9>>"$LOCK"; flock -n 9 || die "другое обновление/откат уже выполняется (lock $LOCK) — дождитесь.
+Если уверенности нет: fuser -v $LOCK  (покажет pid; держатель — обычно зависший update)"
+}
+
 # ================== РЕЖИМ ОТКАТА ==================
 if [ "$MODE" = "rollback" ]; then
-  exec 9>"$LOCK"; flock -n 9 || die "другое обновление/откат уже выполняется (lock $LOCK). fuser -v $LOCK — кто держит"
+  lock_acquire
   : >"$LOG" 2>/dev/null || LOG=/dev/null
   rollback
   exit 0
 fi
 
 # ================== ОБЫЧНОЕ ОБНОВЛЕНИЕ ==================
-exec 9>"$LOCK"; flock -n 9 || die "другое обновление уже выполняется (lock $LOCK) — дождитесь.
-Если уверенности нет: fuser -v $LOCK  (покажет pid; держатель — обычно зависший update)"
+lock_acquire
 : >"$LOG" 2>/dev/null || LOG=/dev/null
 [ -z "$BRANCH" ] && BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 PREV_SHA="$(git rev-parse HEAD)"
