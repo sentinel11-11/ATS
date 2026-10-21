@@ -871,7 +871,14 @@ def _route(method, path, body, headers):
 
 
 def route(method, path, body, headers):
-    """REST-router с best-effort административным аудитом."""
+    """REST-router с best-effort административным аудитом.
+
+    Верхнеуровневый обработчик ошибок (P2 повторного ревью): необработанное
+    исключение _route не рвёт соединение и не отдаёт traceback клиенту —
+    клиент получает единый JSON с correlation_id, полный traceback пишется
+    в лог сервера. Ошибки входных данных (ValueError/TypeError/KeyError при
+    приведении типов из body) → 400 bad_request.
+    """
     # X-Ats-Ticket-Actor ставит только need_auth из проверенного билета;
     # пришедший от клиента вариант — подделка актора для аудита, стираем.
     try:
@@ -879,7 +886,24 @@ def route(method, path, body, headers):
     except (KeyError, TypeError):
         pass
     actor_before = audit.actor_from_headers(headers)
-    result = _route(method, path, body, headers)
+    try:
+        result = _route(method, path, body, headers)
+    except (ValueError, TypeError, KeyError) as e:
+        # некорректные входные данные: int('abc'), отсутствие обязательного
+        # поля и т.п. — без стека наружу, но с достаточной деталью для клиента
+        result = ({"ok": False, "error": "bad_request",
+                   "detail": "некорректные входные данные: {}".format(
+                       str(e)[:200])}, 400)
+    except Exception as e:  # noqa: BLE001
+        # непредвиденная ошибка: correlation_id связывает ответ клиента с
+        # полным traceback в серверном логе
+        corr = uuid.uuid4().hex[:12]
+        import traceback
+        print("[api] internal_error corr={} {} {} {}".format(
+            corr, method, path, e))
+        traceback.print_exc()
+        result = ({"ok": False, "error": "internal_error",
+                   "correlation_id": corr}, 500)
     try:
         payload, status_code = result
         audit.record_http(method, path, body, headers, payload, status_code, actor_before)
