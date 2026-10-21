@@ -392,20 +392,29 @@ CREATE TABLE IF NOT EXISTS amo_users(
   raw_json TEXT NOT NULL DEFAULT '{}',
   updated TEXT NOT NULL DEFAULT ''
 );
--- Исходящая очередь CRM (outbox): результат звонка НЕ теряется при сбое
--- amoCRM — движок повторяет доставку с экспоненциальным backoff.
+-- Исходящая очередь CRM (outbox): ВСЕ действия в CRM (результаты звонка и
+-- задачи) идут отсюда — сетевых вызовов в цикле движка нет (P1 повторного
+-- ревью). Доставка повторяется с экспоненциальным backoff; идемпотентность
+-- повторов — uniq ats-call-<id> (push_result) и маркер ATS#<id> (create_task)
+-- на стороне amoCRM + idem_key локально.
 CREATE TABLE IF NOT EXISTS crm_outbox(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL DEFAULT 'push_result',
+  kind TEXT NOT NULL DEFAULT 'push_result',  -- push_result | create_task
   payload_json TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT NOT NULL DEFAULT '',
   last_error TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL DEFAULT '',
-  updated TEXT NOT NULL DEFAULT ''
+  updated TEXT NOT NULL DEFAULT '',
+  idem_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_crm_outbox_due ON crm_outbox(status, next_attempt_at);
+-- Ключ идемпотентности: одно действие на (звонок, тип) — повторный enqueue
+-- (рестарт, replay вебхука) не плодит дублей. failed-строки из индекса
+-- исключены: после разбора сбоя действие можно поставить заново.
+CREATE UNIQUE INDEX IF NOT EXISTS ix_crm_outbox_idem
+  ON crm_outbox(idem_key) WHERE idem_key<>'' AND status<>'failed';
 -- Сессии API (токены) — в БД, а не только в памяти процесса: systemctl restart ats
 -- раз в неделю (и рестарт внутри install-multicom-trunk.sh) не должен выкидывать
 -- администратора из UI и обнулять ATS_TOKEN, под которым API дёргают из shell.
@@ -514,6 +523,15 @@ def _migrate(c):
         c.commit()
     if "resource" not in tcols:
         c.execute("ALTER TABLE auth_tickets ADD COLUMN resource TEXT NOT NULL DEFAULT ''")
+        c.commit()
+    # CRM outbox: ключ идемпотентности (P1 повторного ревью) — у старых строк
+    # пустой, дедупликация для них не действует (повторных постановок не было)
+    ocols = [r[1] for r in c.execute("PRAGMA table_info(crm_outbox)").fetchall()]
+    if "idem_key" not in ocols:
+        c.execute("ALTER TABLE crm_outbox ADD COLUMN idem_key TEXT NOT NULL DEFAULT ''")
+        c.commit()
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_crm_outbox_idem "
+                  "ON crm_outbox(idem_key) WHERE idem_key<>'' AND status<>'failed'")
         c.commit()
     ccols = [r[1] for r in c.execute("PRAGMA table_info(contacts)").fetchall()]
     if "database_id" not in ccols:
@@ -872,16 +890,23 @@ def amo_users_list():
 
 
 # ---------------- CRM outbox (надёжная доставка результатов) ----------------
-def crm_outbox_enqueue(kind, payload, error=""):
+def crm_outbox_enqueue(kind, payload, error="", idem_key=""):
+    """Поставить действие CRM в очередь (без сети: вызывается из цикла движка).
+
+    idem_key — ключ идемпотентности ('push:<call_id>:<result>' /
+    'task:<call_id>:<reason>'): повторная постановка того же действия
+    игнорируется (unique index), пока оно pending/done. Возвращает True,
+    если строка реально добавлена.
+    """
     now = config.now_iso()
-    insert("crm_outbox", {
-        "kind": str(kind or "push_result")[:40],
-        "payload_json": json.dumps(payload or {}, ensure_ascii=False),
-        "status": "pending",
-        "attempts": 0,
-        "next_attempt_at": now,  # первая повторная — ближайшим тиком движка
-        "last_error": str(error or "")[:500],
-        "created": now, "updated": now})
+    cur = q("INSERT OR IGNORE INTO crm_outbox"
+            "(kind, payload_json, status, attempts, next_attempt_at, last_error,"
+            " created, updated, idem_key) VALUES(?,?, 'pending',0,?,?,?,?,?)",
+            (str(kind or "push_result")[:40],
+             json.dumps(payload or {}, ensure_ascii=False),
+             now, str(error or "")[:500], now, now,
+             str(idem_key or "")[:200]))
+    return bool(cur.rowcount)
 
 
 def crm_outbox_due(limit=5):

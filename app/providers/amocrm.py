@@ -465,6 +465,29 @@ class AmoCrmClient:
 
     # ---------- телефония ----------
 
+    def find_task_by_marker(self, marker, entity_id=None, entity_type="contacts"):
+        """Найти ОТКРЫТУЮ задачу с маркером ATS#<call_id> (идемпотентность
+        повторов create_task после «сервер создал, ответ потерялся»).
+
+        Лучшее усилие: с entity_id — точный фильтр по сущности; без — первая
+        страница открытых задач. Ошибки поиска НЕ проглатываем молча, но и не
+        считаем отсутствием задачи — вызывающий решает (у нас: лог + создать).
+        """
+        params = {"limit": 250, "filter[is_completed]": "false"}
+        if entity_id:
+            params["filter[entity_id]"] = int(entity_id)
+            params["filter[entity_type]"] = str(entity_type or "contacts")
+        res = self._request("GET", "/tasks", params=params)
+        try:
+            tasks = (res or {}).get("_embedded", {}).get("tasks") or []
+        except (TypeError, AttributeError):
+            tasks = []
+        mark = str(marker or "")
+        for task in tasks:
+            if mark and mark in str((task or {}).get("text") or ""):
+                return task
+        return None
+
     def register_call(self, phone, direction, duration, status_code, result_text="",
                       record_link="", responsible_user_id=None, created_at=None,
                       uniq="", call_responsible=""):
