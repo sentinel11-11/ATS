@@ -802,6 +802,23 @@ install_dialplan() {
 # Отдельная ловушка, из-за которой «входящие не работают» при живом транке: from-mcm
 # звонит на софтфоны 101/102, а на коробке их никто не заводил.
 inbound_target_check() {
+  local digits n
+  # Цель входящих набирается ЧЕРЕЗ тот же транк. Если это один из выданных Мультикомом
+  # номеров, вызов вернётся в from-mcm того же endpoint'а — то есть сам себе: петля
+  # (пока её не оборвёт Max-Forwards) или 480, и «входящие не работают» при живом транке.
+  digits="$(printf '%s' "$MCM_INBOUND_DIAL" | tr -cd '0-9')"
+  if [ "${#digits}" -ge 10 ]; then
+    for n in $MCM_NUMBERS; do
+      case "$digits" in
+        *"$n")
+          warn "цель входящих — $MCM_INBOUND_DIAL: это номер $n из пула Мультиком, то есть вызов"
+          warn "  уйдёт обратно в from-mcm этого же транка (сам себе), а не сотруднику."
+          warn "  нужен реальный телефон за пределами пула; например:"
+          warn "  sudo -E MCM_INBOUND_DIAL='PJSIP/8<мобильный сотрудника>@$MCM_TRUNK' $0 --dialplan"
+          return 0 ;;
+      esac
+    done
+  fi
   case "$MCM_INBOUND_DIAL" in
     *PJSIP/101*|*PJSIP/102*) : ;;
     *) return 0 ;;
@@ -966,7 +983,6 @@ if have_asterisk; then
               warn "их IP-allowlist (самое частое), неактивированный логин, или другой порт/транспорт registrar'а"
               warn "проверка, живёт ли порт: $(port_probe_cmd)   # 0 — открыт, 1 — отказ (порт закрыт), 124 — фильтруют молча"
               warn "если 124 по TCP и тишина по UDP — это дроп по их политике: писать оператору про allowlist, адрес/порт и транспорт registrar'а"
-              registration_probe_hint
               ;;
             refused)
               warn "регистратор ответил отказом (${kind#*|}) — 401 = сверить username/password с письмом, 403 = активация логина или наш IP в allowlist"

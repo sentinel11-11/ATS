@@ -379,6 +379,20 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.assertNotIn("таких endpoint'ов", q.stdout + q.stderr,
                          "явный целевой канал — предупреждать не о чем")
 
+    def test_warns_when_inbound_target_is_a_pool_number(self):
+        """Входящие на номер из того же пула — это петля, и скрипт обязан сказать об этом."""
+        env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"),
+                   MCM_NUMBERS="9690229926 9690229927",
+                   MCM_INBOUND_DIAL="PJSIP/89690229926@mcm")
+        p = run(env=env, args=["--dialplan"])
+        out = p.stdout + p.stderr
+        self.assertIn("из пула Мультиком", out,
+                      "номер из пула в качестве цели входящие — это сам себе звонок")
+        self.assertIn("сам себе", out)
+        q = run(env=dict(env, MCM_INBOUND_DIAL="PJSIP/89265083094@mcm"), args=["--dialplan"])
+        self.assertNotIn("сам себе", q.stdout + q.stderr,
+                         "чужой мобильный — предупреждать не о чем")
+
     def test_dialplan_without_asterisk_still_lays_files(self):
         """Asterisk не установлен — файлы всё равно раскладываем, но не падаем."""
         env = dict(self.env, AGI_DIR=str(self.dir / "agi-bin"), ASTERISK_CMD=str(self.dir / "nope"))
