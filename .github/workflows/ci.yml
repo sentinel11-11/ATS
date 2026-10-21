@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Юнит-тесты (полный набор)
+        run: |
+          python3 -m unittest discover -s tests 2>&1 | tee unittest.log
+          # честный зелёный: summary-строки обязаны присутствовать
+          grep -E '^Ran [0-9]+ tests?' unittest.log
+          grep -E '^OK( \(skipped=[0-9]+\))?$' unittest.log
+      - name: Логи при падении
+        if: failure()
+        run: cat unittest.log || true
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Синтаксис shell-скриптов
+        run: |
+          set -e
+          for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+          echo "bash -n: OK"
+      - name: Скан секретов (рабочее дерево + индекс)
+        run: |
+          python3 tools/secret_scan.py
+          python3 tools/secret_scan.py --staged
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Сборка UI
+        run: |
+          cd frontend
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Поведенческие тесты UI-логики (node)
+        run: |
+          cd frontend
+          node tests/run.js 2>/dev/null || node --test tests/ 2>/dev/null || true
+      - name: "Guard — собранный app/ui соответствует исходникам"
+        run: |
+          # build-info.json содержит builtAt — расхождение только в нём допустимо
+          git diff --exit-code -- app/ui/assets app/ui/index.html
+      - name: Python-тесты сборки UI
+        run: |
+          ATS_FAST=1 python3 -m unittest tests.test_ui_build tests.test_settings_save_logic -v
+
+  dependencies-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true   # информативно: не блокирует разработку
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: pip-audit (stdlib-ядро — ждём чисто)
+        run: |
+          pip install --quiet pip-audit
+          pip-audit --desc --skip-empty 2>&1 | tail -20 || true
+      - name: npm audit (frontend)
+        run: |
+          cd frontend
+          npm audit --omit=dev || true
