@@ -1,20 +1,45 @@
 {
   "scenario": "api_polling",
   "env": "self-hosted sim",
-  "users": 100,
-  "sessions": 40,
+  "params": {
+    "users": 60,
+    "sessions": 30,
+    "pollers": 10,
+    "duration_sec": 10.0
+  },
+  "users": 60,
+  "sessions": 30,
   "pollers": 10,
-  "duration_sec": 12.0,
+  "duration_sec": 10.5,
+  "meta": {
+    "ts": "2026-10-21 19:09:53",
+    "python": "3.11.2",
+    "cpu_count": 2,
+    "machine": "x86_64",
+    "tool_max_rss_mb": 26.2,
+    "git_commit": "9dd11bd5d06c"
+  },
   "api": {
-    "rps": 190.6,
-    "total_requests": 2287,
+    "rps": 182.2,
+    "total_requests": 1913,
     "errors": 0,
+    "timeouts": 0,
     "error_rate": 0.0,
-    "latency_ms": {
-      "p50": 2.0,
-      "p95": 5.1,
-      "p99": 7.5,
-      "max": 16.2
+    "latency_ms_all": {
+      "p50": 1.7,
+      "p95": 5.5,
+      "p99": 9.6,
+      "max": 17.6
+    },
+    "latency_ms_success": {
+      "p50": 1.7,
+      "p95": 5.5,
+      "p99": 9.6
+    },
+    "latency_ms_errors": {
+      "p50": null,
+      "p95": null
     }
-  }
+  },
+  "note": "latency_ms_all — по ВСЕМ завершившимся запросам (успех+ошибки); success/errors — раздельно. Это smoke инструмента, НЕ заявление о ёмкости."
 }

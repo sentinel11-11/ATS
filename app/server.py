@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """HTTP-сервер ATS v2: статика (app/ui), REST API v2, SSE для событий."""
 import json
+import os
 import re
 import sys
 import threading
@@ -42,8 +43,11 @@ UPLOAD_PATH_SUFFIXES = ("/contacts/import-file", "/calls/recording")
 
 # Потолок одновременных SSE-подписчиков и на одного пользователя: без него
 # каждый открытый таб держит поток, и сотни соединений исчерпают потоки/память.
-MAX_SSE_CLIENTS = 200
-MAX_SSE_PER_USER = 10
+# Жёсткие лимиты SSE — это_capacity-границы инстанса, а не «настройка на
+# скорость»: повышать только по данным нагрузочного теста на целевом стенде
+# (P2 повторного ревью). Окружение позволяет менять их без правки кода.
+MAX_SSE_CLIENTS = int(os.environ.get("ATS_MAX_SSE") or 200)
+MAX_SSE_PER_USER = int(os.environ.get("ATS_MAX_SSE_PER_USER") or 10)
 
 
 class BodyTooLarge(Exception):

@@ -1,15 +1,28 @@
 {
   "scenario": "sse_connections",
   "env": "self-hosted sim",
+  "params": {
+    "clients": 30,
+    "duration_sec": 20.0
+  },
   "clients": 30,
   "connected": 30,
+  "connect_errors": 0,
   "alive_after_sec": 30,
-  "duration_sec": 25.0,
-  "connect_time_sec": 0.11,
+  "duration_sec": 20.0,
+  "connect_time_sec": 0.12,
   "first_byte_ms": {
-    "p50": 1.0,
-    "p99": 1.5
+    "p50": 0.8,
+    "p99": 1.3
   },
-  "keepalives_seen": 54,
-  "events_seen": 0
+  "keepalives_seen": 30,
+  "events_seen": 0,
+  "meta": {
+    "ts": "2026-10-21 19:10:20",
+    "python": "3.11.2",
+    "cpu_count": 2,
+    "machine": "x86_64",
+    "git_commit": "9dd11bd5d06c"
+  },
+  "note": "smoke-проверка инструмента и стенда, НЕ заявление о ёмкости; жёсткий лимит SSE на инстанс — MAX_SSE_CLIENTS (200)."
 }
