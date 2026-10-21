@@ -150,21 +150,26 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _static(self, rel):
-        # защита от path traversal: файл обязан лежать внутри STATIC_DIR
+        # защита от path traversal: файл обязан лежать внутри STATIC_DIR.
+        # Возвращает True, если отдан реальный файл, False — SPA-fallback
+        # (index.html). В любом случае отправляется РОВНО один ответ.
         root = STATIC_DIR.resolve()
         try:
             path = (root / rel).resolve()
             path.relative_to(root)
         except Exception:
             path = root / "index.html"
+        found = True
         if not path.exists() or path.is_dir():
             path = root / "index.html"
+            found = False
         data = path.read_bytes()
         ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
                  ".png": "image/png", ".ico": "image/x-icon"}.get(path.suffix.lower(),
                                                                   "application/octet-stream")
         self._send_bytes(data, ctype)
+        return found
 
     # ---------- GET ----------
     def do_GET(self):
@@ -198,9 +203,12 @@ class Handler(BaseHTTPRequestHandler):
                                         {"Content-Disposition": "attachment; filename=" + fname})
             return self._send_json(payload, status)
 
-        rel = u.path.lstrip("/")
-        self._static(rel)
-        self._send_json({"ok": False, "error": "not_found"}, 404)
+        # Статика/SPA-fallback: ровно ОДИН HTTP-ответ на запрос. Раньше здесь
+        # после _static() отправлялся второй ответ (404 JSON) в то же
+        # keep-alive соединение — нарушение HTTP/1.1-фрейминга (P1-ревью):
+        # следующий запрос по соединению читал мусор от предыдущего.
+        self._static(u.path.lstrip("/"))
+        return
 
     def _recording_signed(self, call_id, query):
         from . import records
