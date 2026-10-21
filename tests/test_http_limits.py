@@ -86,7 +86,18 @@ class HttpLimitsTest(unittest.TestCase):
             s.settimeout(5)
             data = b""
             try:
-                while b"\r\n\r\n" not in data:
+                # читаем до конца заголовков И тела (Content-Length): тело 413
+                # может прийти отдельным сегментом TCP — одного recv мало
+                # (устраняет флейк "payload_too_large not found")
+                while True:
+                    if b"\r\n\r\n" in data:
+                        head_part, _, body_part = data.partition(b"\r\n\r\n")
+                        clen = 0
+                        for line in head_part.split(b"\r\n"):
+                            if line.lower().startswith(b"content-length:"):
+                                clen = int(line.split(b":", 1)[1].strip())
+                        if len(body_part) >= clen:
+                            break
                     chunk = s.recv(4096)
                     if not chunk:
                         break
@@ -130,7 +141,18 @@ class HttpLimitsTest(unittest.TestCase):
             s.settimeout(5)
             data = b""
             try:
-                while b"\r\n\r\n" not in data:
+                # читаем до конца заголовков И тела (Content-Length): тело 413
+                # может прийти отдельным сегментом TCP — одного recv мало
+                # (устраняет флейк "payload_too_large not found")
+                while True:
+                    if b"\r\n\r\n" in data:
+                        head_part, _, body_part = data.partition(b"\r\n\r\n")
+                        clen = 0
+                        for line in head_part.split(b"\r\n"):
+                            if line.lower().startswith(b"content-length:"):
+                                clen = int(line.split(b":", 1)[1].strip())
+                        if len(body_part) >= clen:
+                            break
                     chunk = s.recv(4096)
                     if not chunk:
                         break
