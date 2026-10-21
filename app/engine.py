@@ -189,13 +189,43 @@ class Engine:
                 datetime.timedelta(seconds=self.INBOX_CLAIM_STALE_SEC)).strftime(
                     "%Y-%m-%d %H:%M:%S")
 
+    def _inbox_event_key(self, ev):
+        """Ключ идемпотентности события (P1 повторного ревью).
+
+        Один бизнес-эффект на (провайдер, звонок, событие): повторная
+        доставка того же логического события — даже с другим fingerprint
+        (другой raw-payload) — не применяет эффект дважды. Для веток со
+        собственной машиной состояний по fingerprint (МегаФон/Мультиком без
+        call_id) и входящих AMI-событий ключ не используется.
+        """
+        if ev.get("event") in ("inbound", "inbound_answer", "inbound_end"):
+            return ""
+        if ev.get("provider") in ("megafon_vats", "multicom") and ev.get("call_id") is None:
+            return ""
+        if ev.get("call_id") is None:
+            return ""
+        key = "{}:{}:{}".format(ev.get("provider") or "uis",
+                                ev.get("call_id"), ev.get("event"))
+        if ev.get("event") == "status":
+            key += ":{}".format(ev.get("status"))
+        return str(key)[:200]
+
     def _drain_inbox(self, limit=None):
         """Обработать накопленные вебхуки (в т.ч. после рестарта процесса).
 
-        Транзакционно клеймим строки new (и зависшие claimed), обрабатываем,
-        помечаем done/orphan; сбой обработчика — возврат в new с attempts+1
-        и last_error, событие не теряется. Идемпотентность повторной
-        обработки обеспечивает дедуп по fingerprint на уровне провайдера.
+        P1 повторного ревью — атомарность: claim, бизнес-изменения, запись в
+        processed_events и отметка done выполняются в ОДНОЙ транзакции.
+        Падение процесса между бизнес-эффектом и отметкой done откатывает
+        ВСЁ — строка возвращается в 'new' и обрабатывается заново, но
+        бизнес-эффект применяется ровно один раз (первый откатился).
+
+        Идемпотентность:
+        - идентичная повторная доставка — dedup по fingerprint на ingest;
+        - та же логика с другим payload — dedup по event_key
+          (processed_events) до бизнес-обработки;
+        - неизвестный call_id → status='orphan' с причиной (не done):
+          событие видно в разбирке, не теряется молча.
+        Сбой обработчика — возврат в new с attempts+1 и last_error.
         """
         limit = limit or self.INBOX_LIMIT
         stale = self._inbox_stale_ts()
@@ -204,8 +234,6 @@ class Engine:
             "OR (status='claimed' AND claimed_at<>'' AND claimed_at<?) "
             "ORDER BY id LIMIT ?", (stale, limit))
         for row in rows:
-            db.q("UPDATE webhook_inbox SET status='claimed', claimed_at=? WHERE id=?",
-                 (now_iso(), row["id"]))
             try:
                 ev = json.loads(row.get("payload_json") or "{}")
             except Exception as e:
@@ -213,23 +241,68 @@ class Engine:
                      "processed_at=? WHERE id=?",
                      ("bad payload json: {}".format(e)[:500], now_iso(), row["id"]))
                 continue
+            key = self._inbox_event_key(ev)
+            # orphan: generic-событие по несуществующему звонку (событие раньше
+            # звонка / чужой инстанс / восстановленная из бэкапа БД)
+            orphan_reason = ""
+            if key and not db.fetch1("SELECT 1 FROM calls WHERE id=?",
+                                     (ev.get("call_id"),)):
+                orphan_reason = ("call_id {} не найден: событие раньше локальной "
+                                 "записи звонка или чужой инстанс".format(ev.get("call_id")))
+            deduped = False
             try:
-                self.handle_event(ev)
-                db.q("UPDATE webhook_inbox SET status='done', processed_at=?, "
-                     "last_error='' WHERE id=?", (now_iso(), row["id"]))
+                with db.transaction():
+                    # перечитываем статус: параллельный дрен мог закрыть строку
+                    cur = db.fetch1("SELECT status FROM webhook_inbox WHERE id=?",
+                                    (row["id"],))
+                    if not cur or cur["status"] not in ("new", "claimed"):
+                        continue
+                    if orphan_reason:
+                        db.q("UPDATE webhook_inbox SET status='orphan', processed_at=?, "
+                             "last_error=? WHERE id=?",
+                             (now_iso(), orphan_reason[:500], row["id"]))
+                    else:
+                        if key and db.fetch1(
+                                "SELECT 1 FROM processed_events WHERE event_key=?",
+                                (key,)):
+                            deduped = True
+                        else:
+                            db.q("UPDATE webhook_inbox SET status='claimed', "
+                                 "claimed_at=? WHERE id=?", (now_iso(), row["id"]))
+                            self.handle_event(ev)
+                            if key:
+                                db.q("INSERT OR IGNORE INTO processed_events"
+                                     "(event_key, provider, inbox_id, processed_at) "
+                                     "VALUES(?,?,?,?)",
+                                     (key, str(ev.get("provider") or "")[:40],
+                                      row["id"], now_iso()))
+                        db.q("UPDATE webhook_inbox SET status='done', processed_at=?, "
+                             "last_error='' WHERE id=?", (now_iso(), row["id"]))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+                # Транзакция откатилась: бизнес-эффектов нет, claim нет.
+                # Фиксируем попытку отдельным запросом и возвращаем в new.
                 attempts = int(row.get("attempts") or 0) + 1
                 status = "new" if attempts < self.INBOX_MAX_ATTEMPTS else "failed"
-                db.q("UPDATE webhook_inbox SET status=?, attempts=?, last_error=? "
-                     "WHERE id=?",
+                db.q("UPDATE webhook_inbox SET status=?, attempts=?, last_error=?, "
+                     "claimed_at='' WHERE id=?",
                      (status, attempts, "handler: {}".format(e)[:500], row["id"]))
                 if status == "failed":
                     events.publish("system", {"kind": "webhook_inbox_failed",
                                               "inbox_id": row["id"],
                                               "provider": row.get("provider"),
                                               "event_type": row.get("event_type")})
+                continue
+            if orphan_reason:
+                events.publish("system", {"kind": "webhook_inbox_orphan",
+                                          "inbox_id": row["id"],
+                                          "provider": row.get("provider"),
+                                          "event_type": row.get("event_type"),
+                                          "detail": orphan_reason[:200]})
+            elif deduped:
+                print("[inbox] #{}: повторная доставка {} подавлена (processed_events)"
+                      .format(row["id"], key))
         # видимость для мониторинга: глубина inbox
         try:
             depth = db.fetch1("SELECT COUNT(*) c FROM webhook_inbox "

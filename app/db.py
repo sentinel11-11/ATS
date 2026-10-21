@@ -470,6 +470,16 @@ CREATE TABLE IF NOT EXISTS webhook_inbox(
 CREATE UNIQUE INDEX IF NOT EXISTS ix_webhook_inbox_fp
   ON webhook_inbox(fingerprint) WHERE fingerprint<>'';
 CREATE INDEX IF NOT EXISTS ix_webhook_inbox_status ON webhook_inbox(status, id);
+-- Обработанные события (P1 повторного ревью): ключ идемпотентности
+-- 'provider:call_id:event[:status]' — повторная доставка того же логического
+-- события (другой fingerprint, но тот же смысл) не применяет бизнес-эффект
+-- дважды. Запись — в одной транзакции с бизнес-изменениями и отметкой done.
+CREATE TABLE IF NOT EXISTS processed_events(
+  event_key    TEXT PRIMARY KEY,
+  provider     TEXT NOT NULL DEFAULT '',
+  inbox_id     INTEGER NOT NULL DEFAULT 0,
+  processed_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 DEFAULT_SCENARIO = {

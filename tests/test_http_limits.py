@@ -145,8 +145,12 @@ class HttpLimitsTest(unittest.TestCase):
 
     def _open_sse(self):
         """Открыть SSE-соединение по свежему билету; вернуть (sock, first_bytes)."""
-        code, body, _ = self._post("/api/v2/auth/ticket", b"{}",
-                                   {"X-Ats-Token": self.token})
+        code, body, _ = self._post("/api/v2/auth/ticket",
+                                   json.dumps({"purpose": "sse",
+                                               "resource": "events"}).encode(),
+                                   {"X-Ats-Token": self.token,
+                                    "Content-Type": "application/json"})
+        self.assertEqual(code, 200, body)
         ticket = json.loads(body)["ticket"]
         s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         req = ("GET /api/v2/events?ticket={} HTTP/1.1\r\nHost: t\r\n\r\n").format(ticket)

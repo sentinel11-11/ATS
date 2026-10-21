@@ -223,7 +223,8 @@ class TestEngineE2E(unittest.TestCase):
         res = {c["contact_phone"]: c["result"] for c in calls}
         self.assertEqual(res["79031000001"], "operator_ok")
         self.assertEqual(res["79031000002"], "qualified_no")
-        # CRM-файл создан
+        # CRM-файл создан (доставка — через durable outbox, качаем воркером)
+        self.engine._crm_outbox_tick(limit=50)
         files = list(config.CRM_OUT_DIR.glob("crm_push_*.csv"))
         self.assertTrue(files)
 

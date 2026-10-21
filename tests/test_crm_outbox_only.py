@@ -75,6 +75,10 @@ def _mk_call(result="no_operator", phone="79001112233"):
 
 class CrmOutboxOnlyTest(unittest.TestCase):
     def setUp(self):
+        st = db.get_settings()
+        if st.get("provider") != "sim":
+            st["provider"] = "sim"
+            db.save_settings(st)
         db.q("DELETE FROM crm_outbox")
         # движок без автозапуска: тики драйвим руками, CRM-воркер тоже наш
         self.engine = Engine(auto_start=False)

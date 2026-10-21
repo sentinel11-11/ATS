@@ -48,6 +48,12 @@ def _failing_delete(sql, *a, **kw):
 class RevocationFailClosedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # полный прогон гоняет файлы в одной БД: провайдер в settings мог
+        # остаться от чужого теста (моки уже остановлены) — форсим sim
+        st = db.get_settings()
+        if st.get("provider") != "sim":
+            st["provider"] = "sim"
+            db.save_settings(st)
         db.init_db()
         from app.server import create_server
         cls.engine = Engine()
