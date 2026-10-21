@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Save, Shield, PhoneCall, Cpu, RefreshCw, Key, CheckCircle, Database, Users, Plus, Edit2, Trash2, Server, Bot, Link, Code, Radio } from 'lucide-react';
 import { api } from '../api';
+import { summarizeSaveResults, saveAllBeforeAction } from '../settingsSave';
 import Modal from '../components/Modal';
 
 export default function Settings({ addToast, refreshKey }) {
@@ -81,23 +82,36 @@ export default function Settings({ addToast, refreshKey }) {
       api('/settings/save', { body: bodyBasic })
     ]);
 
+    // Честный результат: успех только если ОБА обязательных запроса прошли.
+    // Частичный сбой показываем как частичный (P1-дефект: раньше хватало
+    // одного rawRes.ok OR basicRes.ok — UI врал «всё сохранено»).
+    const summary = summarizeSaveResults(rawRes, basicRes);
     setActionLoading(false);
-    if ((rawRes && rawRes.ok) || (basicRes && basicRes.ok)) {
-      addToast('Все системные настройки успешно сохранены', 'ok');
+    if (summary.ok) {
+      addToast(summary.message, 'ok');
       setNewPassword('');
       loadAll();
     } else {
-      addToast('Ошибка сохранения настроек: ' + (rawRes?.error || basicRes?.error || '?'), 'err');
+      const detail = summary.failedSections.map((f) => `${f.section}: ${f.error}`).join('; ');
+      addToast(summary.message + ' (' + detail + ')', 'err');
+      if (summary.savedSections.length) {
+        loadAll();
+      }
     }
   };
 
   const runMegafonAction = async (endpoint, name) => {
     setActionLoading(true);
-    // Автоматически сохраняем текущие введенные настройки перед проверкой/синхронизацией
-    await Promise.all([
-      api('/settings/raw', { body: { provider_config: providerConfig } }),
-      api('/settings/save', { body: basicSettings }),
-    ]);
+    // Автоматически сохраняем текущие введенные настройки перед проверкой/синхронизацией.
+    // Проверять/синхронизировать имеет смысл только реально сохранённую конфигурацию:
+    // при сбое сохранения действие отменяем, иначе проверим СТАРЫЕ параметры и
+    // введём пользователя в заблуждение (P1-аудита, C1).
+    const { summary } = await saveAllBeforeAction(api, providerConfig, basicSettings);
+    if (!summary.ok) {
+      setActionLoading(false);
+      const detail = summary.failedSections.map((f) => `${f.section}: ${f.error}`).join('; ');
+      return addToast(`Настройки не сохранены — «${name}» отменено (${detail})`, 'err');
+    }
 
     const res = await api(endpoint, { method: 'POST', body: megafon });
     setActionLoading(false);
@@ -123,10 +137,12 @@ export default function Settings({ addToast, refreshKey }) {
       }
     }
 
-    await Promise.all([
-      api('/settings/raw', { body: { provider_config: currentProviderCfg } }),
-      api('/settings/save', { body: basicSettings }),
-    ]);
+    const { summary } = await saveAllBeforeAction(api, currentProviderCfg, basicSettings);
+    if (!summary.ok) {
+      setActionLoading(false);
+      const detail = summary.failedSections.map((f) => `${f.section}: ${f.error}`).join('; ');
+      return addToast(`Настройки не сохранены — «${name}» отменено (${detail})`, 'err');
+    }
 
     const res = await api(endpoint, {
       method: 'POST',
@@ -159,10 +175,12 @@ export default function Settings({ addToast, refreshKey }) {
       }
     }
 
-    await Promise.all([
-      api('/settings/raw', { body: { provider_config: currentProviderCfg } }),
-      api('/settings/save', { body: basicSettings }),
-    ]);
+    const { summary } = await saveAllBeforeAction(api, currentProviderCfg, basicSettings);
+    if (!summary.ok) {
+      setActionLoading(false);
+      const detail = summary.failedSections.map((f) => `${f.section}: ${f.error}`).join('; ');
+      return addToast(`Настройки не сохранены — «${name}» отменено (${detail})`, 'err');
+    }
 
     const res = await api(endpoint, { method: 'POST', body: currentProviderCfg.amocrm || {} });
     setActionLoading(false);

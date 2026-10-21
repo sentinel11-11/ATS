@@ -1,0 +1,15 @@
+{
+  "scenario": "sse_connections",
+  "env": "self-hosted sim",
+  "clients": 30,
+  "connected": 30,
+  "alive_after_sec": 30,
+  "duration_sec": 25.0,
+  "connect_time_sec": 0.11,
+  "first_byte_ms": {
+    "p50": 1.0,
+    "p99": 1.5
+  },
+  "keepalives_seen": 54,
+  "events_seen": 0
+}

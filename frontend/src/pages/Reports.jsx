@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Download } from 'lucide-react';
-import { api, getToken } from '../api';
+import { api, openWithTicket } from '../api';
 
 export default function Reports({ addToast, refreshKey }) {
   const [report, setReport] = useState(null);
@@ -30,8 +30,7 @@ export default function Reports({ addToast, refreshKey }) {
   };
 
   const handleExportCSV = () => {
-    const token = getToken();
-    window.open(`/api/v2/export/calls.csv?token=${encodeURIComponent(token)}`, '_blank');
+    openWithTicket('/api/v2/export/calls.csv');
   };
 
   return (

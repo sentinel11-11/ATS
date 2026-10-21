@@ -159,10 +159,10 @@ start_process() {
     kill -9 "$pid" 2>/dev/null || true
   fi
   mkdir -p "$DATA_DIR/logs"
-  log "запуск: python3 -m app.run --host 0.0.0.0 --port $PORT (лог: $DATA_DIR/logs/ats.log)"
+  log "запуск: python3 -m app.run --host ${ATS_HOST:-127.0.0.1} --port $PORT (лог: $DATA_DIR/logs/ats.log)"
   # 9>&- — ОБЯЗАТЕЛЬНО: иначе наследник держит flock из fd 9 и следующее
   # обновление/откат навсегда получит «другое обновление уже выполняется».
-  nohup python3 -m app.run --host 0.0.0.0 --port "$PORT" >>"$DATA_DIR/logs/ats.log" 2>&1 9>&- &
+  nohup python3 -m app.run --host "${ATS_HOST:-127.0.0.1}" --port "$PORT" >>"$DATA_DIR/logs/ats.log" 2>&1 9>&- &
   echo $! > "$DATA_DIR/ats.pid"
 }
 

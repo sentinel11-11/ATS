@@ -52,7 +52,10 @@ def in_window(campaign_schedule, settings):
 class Engine:
     def __init__(self, provider=None, auto_start=True):
         self.settings = db.get_settings()
-        self._evq = queue.Queue()
+        # Очередь событий провайдера (sim/внутренние): вебхуки операторов идут
+        # через durable webhook_inbox, поэтому здесь — только лёгкие события,
+        # и очередь ограничена (неограниченный рост памяти недопустим, C4).
+        self._evq = queue.Queue(maxsize=5000)
         try:
             self.provider = provider or make_provider(self.settings)
         except Exception as e:
@@ -77,6 +80,10 @@ class Engine:
         self._stop = threading.Event()
         self._thread = None
         self._lock = threading.RLock()
+        # CRM-доставка — отдельный поток: медленная/лежащая CRM не должна
+        # блокировать тик движка (события, планирование, watchdog) — C3, P1.
+        self._crm_thread = None
+        self._crm_tick_lock = threading.Lock()
         if auto_start:
             self.start()
 
@@ -87,9 +94,35 @@ class Engine:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="ats-engine")
         self._thread.start()
+        self._start_crm_worker()
+
+    def _start_crm_worker(self):
+        """Воркер повторной доставки результатов в CRM (outbox).
+
+        Сетевые вызовы amoCRM/Bitrix24 непредсказуемы (таймауты, 429, лежащий
+        сервер): в основном цикле движка им делать нечего. Идемпотентность
+        повторов — uniq ats-call-<id> на стороне amoCRM (см. _push_crm).
+        """
+        if self._crm_thread and self._crm_thread.is_alive():
+            return
+        self._crm_thread = threading.Thread(target=self._crm_worker_loop,
+                                            daemon=True, name="ats-crm-outbox")
+        self._crm_thread.start()
+
+    def _crm_worker_loop(self):
+        interval = 0.2 if config.FAST else 2.0
+        while not self._stop.is_set():
+            try:
+                with self._crm_tick_lock:
+                    self._crm_outbox_tick()
+            except Exception as e:
+                print("[crm] outbox worker:", e)
+            self._stop.wait(interval)
 
     def stop(self):
         self._stop.set()
+        if self._crm_thread and self._crm_thread.is_alive():
+            self._crm_thread.join(timeout=10)
         self.provider.stop()
 
     def _loop(self):
@@ -103,12 +136,109 @@ class Engine:
 
     # ---------- события провайдера ----------
     def push_event(self, ev):
-        """Положить событие провайдера в очередь движка.
+        """Положить событие провайдера в очередь движка (внутренние/sim-события).
 
-        Единственная точка входа для вебхуков: HTTP-хендлер только кладёт
-        событие и сразу отвечает 200 — обработку делает тик движка.
+        Для вебхуков операторов использовать ingest_webhook(): он сначала
+        персистентно пишет событие в webhook_inbox и только потом оно
+        обрабатывается тиком — 200 оператору не выдаётся до записи.
         """
-        self._evq.put(ev)
+        try:
+            self._evq.put_nowait(ev)
+        except queue.Full:
+            # не теряем молча: шумим в лог и метрику; вебхукам это не грозит
+            print("[engine] очередь событий переполнена — событие {} отброшено "
+                  "(вебхуки операторов идут через durable inbox)".format(
+                      (ev or {}).get("event", "?")))
+            events.publish("system", {"kind": "event_queue_overflow",
+                                      "dropped_event": (ev or {}).get("event", "?")})
+
+    # ---------- durable inbox вебхуков (P1-аудита, C2) ----------
+    INBOX_LIMIT = 100            # событий за тик
+    INBOX_CLAIM_STALE_SEC = 60   # зависший claim (краш между claim и done)
+    INBOX_MAX_ATTEMPTS = 10      # попыток обработки до статуса failed
+
+    def ingest_webhook(self, ev):
+        """Персистентно принять событие вебхука ДО ответа 2xx оператору.
+
+        Возвращает True, если событие новое (записано), False — если это
+        повторная доставка уже известного fingerprint (идемпотентность).
+        Бросает исключение при недоступной БД — вызывающий маршрут отвечает
+        5xx, чтобы оператор доставил событие повторно, а не терял его.
+        """
+        import hashlib
+        ev = dict(ev or {})
+        fp = str(ev.get("fingerprint") or "").strip()
+        if not fp:
+            # провайдер без собственного отпечатка (UIS): стабильный хэш
+            # нормализованного события — идентичное тело = идентичный fp
+            stable = {k: ev.get(k) for k in sorted(ev)}
+            fp = hashlib.sha256(json.dumps(stable, ensure_ascii=False,
+                                           sort_keys=True).encode("utf-8")).hexdigest()
+            ev["fingerprint"] = fp
+        cur = db.q("INSERT OR IGNORE INTO webhook_inbox"
+                   "(provider, fingerprint, external_call_id, event_type, payload_json,"
+                   " received_at, status) VALUES(?,?,?,?,?,?, 'new')",
+                   (str(ev.get("provider") or ""), fp,
+                    str(ev.get("external_call_id") or "")[:120],
+                    str(ev.get("raw_type") or ev.get("event") or "")[:60],
+                    json.dumps(ev, ensure_ascii=False), now_iso()))
+        return bool(cur.rowcount)
+
+    def _inbox_stale_ts(self):
+        return (datetime.datetime.now() -
+                datetime.timedelta(seconds=self.INBOX_CLAIM_STALE_SEC)).strftime(
+                    "%Y-%m-%d %H:%M:%S")
+
+    def _drain_inbox(self, limit=None):
+        """Обработать накопленные вебхуки (в т.ч. после рестарта процесса).
+
+        Транзакционно клеймим строки new (и зависшие claimed), обрабатываем,
+        помечаем done/orphan; сбой обработчика — возврат в new с attempts+1
+        и last_error, событие не теряется. Идемпотентность повторной
+        обработки обеспечивает дедуп по fingerprint на уровне провайдера.
+        """
+        limit = limit or self.INBOX_LIMIT
+        stale = self._inbox_stale_ts()
+        rows = db.fetch(
+            "SELECT * FROM webhook_inbox WHERE status='new' "
+            "OR (status='claimed' AND claimed_at<>'' AND claimed_at<?) "
+            "ORDER BY id LIMIT ?", (stale, limit))
+        for row in rows:
+            db.q("UPDATE webhook_inbox SET status='claimed', claimed_at=? WHERE id=?",
+                 (now_iso(), row["id"]))
+            try:
+                ev = json.loads(row.get("payload_json") or "{}")
+            except Exception as e:
+                db.q("UPDATE webhook_inbox SET status='failed', last_error=?, "
+                     "processed_at=? WHERE id=?",
+                     ("bad payload json: {}".format(e)[:500], now_iso(), row["id"]))
+                continue
+            try:
+                self.handle_event(ev)
+                db.q("UPDATE webhook_inbox SET status='done', processed_at=?, "
+                     "last_error='' WHERE id=?", (now_iso(), row["id"]))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                attempts = int(row.get("attempts") or 0) + 1
+                status = "new" if attempts < self.INBOX_MAX_ATTEMPTS else "failed"
+                db.q("UPDATE webhook_inbox SET status=?, attempts=?, last_error=? "
+                     "WHERE id=?",
+                     (status, attempts, "handler: {}".format(e)[:500], row["id"]))
+                if status == "failed":
+                    events.publish("system", {"kind": "webhook_inbox_failed",
+                                              "inbox_id": row["id"],
+                                              "provider": row.get("provider"),
+                                              "event_type": row.get("event_type")})
+        # видимость для мониторинга: глубина inbox
+        try:
+            depth = db.fetch1("SELECT COUNT(*) c FROM webhook_inbox "
+                              "WHERE status IN ('new','claimed')")
+            if depth and int(depth["c"]) > 0:
+                events.publish("system", {"kind": "webhook_inbox_depth",
+                                          "count": int(depth["c"])})
+        except Exception:
+            pass
 
     def drain_events(self):
         got = []
@@ -783,8 +913,8 @@ class Engine:
         return cands
 
     def _contact_by_phone(self, phone):
-        """Контакт по любому написанию номера — входящий с CLI `9690229926`
-        находится в базе, где номер сохранён как `+79690229926`."""
+        """Контакт по любому написанию номера — входящий с CLI `5550000001`
+        находится в базе, где номер сохранён как `+75550000001`."""
         for variant in self._phone_candidates(phone):
             if not variant:
                 continue
@@ -1237,34 +1367,39 @@ class Engine:
 
     # ---------- завершение попытки / автодозвон ----------
     def _finish_attempt(self, call, item, result, detail, ok=False, retryable=False):
+        # Записи звонка, позиции кампании и истории попыток — одна транзакция:
+        # сбой посередине не оставляет «звонок done, а попытка не записана»
+        # или «позиция перезапланирована без попытки» (C5, P1-аудита).
         ended = now_iso()
-        db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result=?, detail=? WHERE id=?",
-             (ended, self._duration(call), result, detail[:300], call["id"]))
+        with db.transaction():
+            db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result=?, detail=? WHERE id=?",
+                 (ended, self._duration(call), result, detail[:300], call["id"]))
+            if item:
+                attempts = int(item.get("attempts") or 0)
+                campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?", (item["campaign_id"],)) if item["campaign_id"] else None
+                retry_max = int((campaign or {}).get("retry_max", self.settings.get("retry_max", 2)))
+                if retry_max < 0:
+                    retry_max = int(self.settings.get("retry_max", 2))
+                if ok:
+                    new_status = result
+                    db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
+                         (new_status, detail, ended, item["id"]))
+                elif retryable and attempts < retry_max:
+                    new_status = "queued"
+                    delay = self._retry_delay(item, campaign, result)
+                    nxt = (datetime.datetime.now() + datetime.timedelta(minutes=delay)).strftime("%Y-%m-%d %H:%M:%S")
+                    db.q("UPDATE campaign_items SET status='queued', last_result=?, next_attempt_at=? WHERE id=?",
+                         (detail, nxt, item["id"]))
+                else:
+                    final = result if result != "timeout" else "exhausted"
+                    new_status = "exhausted" if retryable else final
+                    db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
+                         (new_status, detail, ended, item["id"]))
+                db.insert("attempts", {"call_id": call["id"], "item_id": item["id"], "attempt_no": attempts,
+                                       "started_at": call.get("started_at", ""), "ended_at": ended,
+                                       "result": result, "detail": detail[:300]})
         if not item:
             return
-        attempts = int(item.get("attempts") or 0)
-        campaign = db.fetch1("SELECT * FROM campaigns WHERE id=?", (item["campaign_id"],)) if item["campaign_id"] else None
-        retry_max = int((campaign or {}).get("retry_max", self.settings.get("retry_max", 2)))
-        if retry_max < 0:
-            retry_max = int(self.settings.get("retry_max", 2))
-        if ok:
-            new_status = result
-            db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
-                 (new_status, detail, ended, item["id"]))
-        elif retryable and attempts < retry_max:
-            new_status = "queued"
-            delay = self._retry_delay(item, campaign, result)
-            nxt = (datetime.datetime.now() + datetime.timedelta(minutes=delay)).strftime("%Y-%m-%d %H:%M:%S")
-            db.q("UPDATE campaign_items SET status='queued', last_result=?, next_attempt_at=? WHERE id=?",
-                 (detail, nxt, item["id"]))
-        else:
-            final = result if result != "timeout" else "exhausted"
-            new_status = "exhausted" if retryable else final
-            db.q("UPDATE campaign_items SET status=?, last_result=?, completed_at=? WHERE id=?",
-                 (new_status, detail, ended, item["id"]))
-        db.insert("attempts", {"call_id": call["id"], "item_id": item["id"], "attempt_no": attempts,
-                               "started_at": call.get("started_at", ""), "ended_at": ended,
-                               "result": result, "detail": detail[:300]})
         # Публикуем НОВЫЙ статус позиции, а не тот, что был на момент чтения
         # (item["status"] здесь протухший — например, 'dialing').
         events.publish("item", {"id": item["id"], "status": new_status})
@@ -1496,34 +1631,41 @@ class Engine:
         Статусы «ок» — только после реального бриджа; провал/исключение —
         откат в очередь. 'accepted' — legacy-статус старых строк (читается
         наравне с 'bridged', новым кодом не выставляется)."""
-        acd = db.fetch1("SELECT * FROM acd WHERE id=?", (acd_id,))
-        if not acd or acd["status"] not in ("queued", "offered"):
-            return False, "acd_not_queued"
-        if operator_id:
-            op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
-            if not op:
-                return False, "operator_not_found"
-            if op.get("status") != "free":
-                return False, "operator_not_free"
-        else:
-            op = db.fetch1("SELECT * FROM operators WHERE status='free' ORDER BY id LIMIT 1")
-            if not op:
-                return False, "no_free_operator"
-        operator_id = op["id"]
-        if getattr(self.provider, "needs_operator_ext", False) \
-                and not (op.get("ext") or "").strip():
-            # Без ext бридж построить не на чем — мгновенный «accept»
-            # был бы ложным успехом.
-            return False, "operator_no_ext"
-        call = db.fetch1("SELECT * FROM calls WHERE id=?", (acd["call_id"],))
-        if not call or call.get("ended_at") or call.get("status") == "done":
-            return False, "call_ended"
-        # Резервируем слоты ДО звонка провайдеру (иначе двойной accept).
-        now = now_iso()
-        db.q("UPDATE acd SET status='ringing', operator_id=?, updated=? WHERE id=?",
-             (operator_id, now, acd_id))
-        db.q("UPDATE calls SET status='operator_ringing' WHERE id=?", (call["id"],))
-        db.q("UPDATE operators SET status='busy', updated=? WHERE id=?", (now, operator_id))
+        # --- атомарная секция (C5, P1-аудита): проверки + резервирование
+        # слотов в одной транзакции: конкурентные accept одного звонка не
+        # интерливаются — второй поток видит уже 'ringing' и отказывает.
+        with db.transaction():
+            acd = db.fetch1("SELECT * FROM acd WHERE id=?", (acd_id,))
+            if not acd or acd["status"] not in ("queued", "offered"):
+                return False, "acd_not_queued"
+            if operator_id:
+                op = db.fetch1("SELECT * FROM operators WHERE id=?", (operator_id,))
+                if not op:
+                    return False, "operator_not_found"
+                if op.get("status") != "free":
+                    return False, "operator_not_free"
+            else:
+                op = db.fetch1("SELECT * FROM operators WHERE status='free' "
+                               "ORDER BY id LIMIT 1")
+                if not op:
+                    return False, "no_free_operator"
+            operator_id = op["id"]
+            if getattr(self.provider, "needs_operator_ext", False) \
+                    and not (op.get("ext") or "").strip():
+                # Без ext бридж построить не на чем — мгновенный «accept»
+                # был бы ложным успехом.
+                return False, "operator_no_ext"
+            call = db.fetch1("SELECT * FROM calls WHERE id=?", (acd["call_id"],))
+            if not call or call.get("ended_at") or call.get("status") == "done":
+                return False, "call_ended"
+            # Резервируем слоты ДО звонка провайдеру (иначе двойной accept).
+            now = now_iso()
+            db.q("UPDATE acd SET status='ringing', operator_id=?, updated=? WHERE id=?",
+                 (operator_id, now, acd_id))
+            db.q("UPDATE calls SET status='operator_ringing' WHERE id=?", (call["id"],))
+            db.q("UPDATE operators SET status='busy', updated=? WHERE id=?",
+                 (now, operator_id))
+        # --- конец транзакции: слоты зарезервированы целиком или никак ---
         events.publish("acd", {"id": acd_id, "status": "ringing",
                                "operator": op.get("name", "")})
         events.publish("call", {"id": call["id"], "status": "operator_ringing",
@@ -1658,14 +1800,18 @@ class Engine:
 
     # ---------- тик ----------
     def tick_once(self):
+        # сначала durable inbox вебхуков: события операторов переживают
+        # рестарт процесса и обрабатываются раньше планирования новых звонков
+        try:
+            self._drain_inbox()
+        except Exception as e:
+            print("[inbox] drain:", e)
         for ev in self.drain_events():
             self.handle_event(ev)
         self._allocate()
         self._watchdog()
-        try:
-            self._crm_outbox_tick()
-        except Exception as e:
-            print("[crm] outbox tick:", e)
+        # CRM outbox обрабатывает отдельный воркер (_crm_worker_loop):
+        # медленная CRM не должна задерживать события и планирование (C3)
 
     def run_until_idle(self, max_seconds=10, idle_ticks=5):
         """Для тестов: крутить тики, пока не завершатся активные звонки."""
@@ -1675,7 +1821,10 @@ class Engine:
             self.tick_once()
             active = self.active_channels()
             queued = db.fetch("SELECT COUNT(*) c FROM campaign_items WHERE status IN ('queued','dialing','agent','wait_operator','talk')")[0]["c"]
-            if active == 0 and queued == 0:
+            # backlog CRM outbox — тоже «незавершённая работа» системы
+            outbox = db.fetch1("SELECT COUNT(*) c FROM crm_outbox WHERE status='pending' "
+                               "AND next_attempt_at<=?", (config.now_iso(),))
+            if active == 0 and queued == 0 and not (outbox and outbox["c"]):
                 quiet += 1
                 if quiet >= idle_ticks:
                     return True

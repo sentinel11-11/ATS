@@ -63,7 +63,7 @@ function Start-App {
         Log "Start-Service $Service"; Start-Service $Service
     } else {
         Log "запуск python -m app.run (порт $Port)"
-        Start-Process -FilePath "python" -ArgumentList "-m","app.run","--host","0.0.0.0","--port","$Port" `
+        Start-Process -FilePath "python" -ArgumentList "-m","app.run","--host","127.0.0.1","--port","$Port" `
                       -WorkingDirectory $AppDir -WindowStyle Hidden `
                       -RedirectStandardOutput (Join-Path $DataDir "ats.out.log") `
                       -RedirectStandardError  (Join-Path $DataDir "ats.err.log")

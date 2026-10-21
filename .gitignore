@@ -40,15 +40,23 @@ frontend/dist/
 
 # Runtime-данные боевого сервера, если АТС запущена «в репозитории»
 # (на проде правильнее ATS_DATA_DIR=/var/lib/ats — см. docs/DEPLOY.md §3.4).
-# data_v2/ats.db и data_v2/initial_credentials.txt исторически в индексе;
-# чтобы убрать их из git: см. docs/DEPLOY.md §3.4 (git rm --cached + эта строка).
-data_v2/logs/
-data_v2/recordings/
-data_v2/crm_out/
-data_v2/backups/
-data_v2/ats.db-wal
-data_v2/ats.db-shm
-data_v2/ats.pid
+# P0-фикс (2026-10-21): весь data_v2/ — локальное состояние (БД, креды первого
+# входа, логи, записи) и никогда не должен попадать в git. Исторически
+# data_v2/ats.db и initial_credentials.txt были в индексе — убраны (см.
+# docs/SECURITY_CLEANUP.md §3). Защита от возврата — tests/test_no_runtime_secrets.py.
+data_v2/
+# база и первичные креды — где угодно в дереве, не только в data_v2/
+*.db
+initial_credentials.txt
+*.db-wal
+*.db-shm
+# экспорт/импорт/записи: только .keep-маркеры каталогов
+exports/*
+!exports/.keep
+imports/*
+!imports/.keep
+records/*
+!records/.keep
 node_modules/
 
 # venv, развёрнутый прямо в корень репозитория (кто-то выполнил `python3 -m venv .`).

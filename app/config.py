@@ -13,7 +13,11 @@ REC_DIR = DATA_DIR / "recordings"
 CRM_OUT_DIR = DATA_DIR / "crm_out"
 LEGACY_DATA = BASE / "data"                            # данные старого прототипа (импорт)
 
-HOST_DEFAULT = "0.0.0.0"
+# По умолчанию — loopback (P1-аудита): приложение не терминирует TLS, поэтому
+# наружу его выставляет reverse-proxy (nginx/caddy + TLS), а прямой доступ к
+# порту блокируется firewall. Публичный bind — только осознанно: ATS_HOST=0.0.0.0
+# или --host, см. docs/DEPLOY.md §6.
+HOST_DEFAULT = "127.0.0.1"
 PORT_DEFAULT = 9124
 FAST = os.environ.get("ATS_FAST", "") == "1"           # ускоренные тайминги (тесты/демо)
 

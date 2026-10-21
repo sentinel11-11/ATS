@@ -46,7 +46,7 @@ Windows: `run_ats2.bat` (или `py -3 -m app.run`).
 ### Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v     # Linux (309 проверок)
+python3 -m unittest discover -s tests -v     # Linux (441 проверка на 2026-10-21)
 ```
 
 ### Обновление на сервере
@@ -76,7 +76,7 @@ app/
   server.py     HTTP-сервер: статика app/ui, API, SSE
   run.py        CLI: python -m app.run
   ui/index.html одностраничный UI (vanilla JS)
-tests/          unittest-набор (309 тестов: безопасность, БД, пул, E2E движка, HTTP API,
+tests/          unittest-набор (441 тест на 2026-10-21: безопасность, БД, пул, E2E движка, HTTP API,
                 протокол AMI, вебхуки UIS, ACD-watchdog, базы/импорт, hardening,
                 P0-RBAC, AMI-мост/reconnect, ротация пула)
 data_v2/        runtime (БД, логи, записи, CRM-выгрузка) — создаётся автоматически

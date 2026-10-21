@@ -22,29 +22,56 @@ OK = {"ok": True}
 MAX_FAILS = 5
 LOCK_SECONDS = 300
 WINDOW_SECONDS = 600
+# Per-IP rate limit входа (P1-аудита): перебор по многим логинам с одного
+# адреса и «заблокировать конкретного пользователя» нагрузкой — мимо.
+# Считаем только НЕУДАЧНЫЕ попытки (fail2ban-модель): у знающего пароль
+# корректный вход под общий порог с перебором не маскируется, а офис за NAT
+# не блокируется из-за нормальной активности коллег.
+# In-process — за балансировщиком нужен общий лимитер (см. ADR/дорожную карту).
+LOGIN_IP_MAX = 30          # неудачных попыток входа ...
+LOGIN_IP_WINDOW = 60       # ... за окно секунд с одного IP
 _LOGIN_ATTEMPTS = {}   # login -> [timestamps]
+_LOGIN_IP_ATTEMPTS = {}  # ip -> [timestamps]
 _LOGIN_LOCK = threading.RLock()
 
 
-def _login_allowed(login):
+def _login_allowed(login, ip=""):
     now = time.time()
     with _LOGIN_LOCK:
         arr = [t for t in _LOGIN_ATTEMPTS.get(login, []) if now - t < WINDOW_SECONDS]
         if len(arr) >= MAX_FAILS:
             retry = max(0, int(arr[0] + LOCK_SECONDS - now))
             return False, retry
+        if ip:
+            ip_arr = [t for t in _LOGIN_IP_ATTEMPTS.get(ip, [])
+                      if now - t < LOGIN_IP_WINDOW]
+            if len(ip_arr) >= LOGIN_IP_MAX:
+                retry = max(0, int(ip_arr[0] + LOGIN_IP_WINDOW - now))
+                return False, retry
         return True, 0
 
 
-def _login_fail(login):
+def _login_fail(login, ip=""):
     now = time.time()
     with _LOGIN_LOCK:
         arr = _LOGIN_ATTEMPTS.setdefault(login, [])
         arr.append(now)
         _LOGIN_ATTEMPTS[login] = [t for t in arr if now - t < WINDOW_SECONDS]
+        _login_ip_touch(ip, now)
 
 
-def _login_ok(login):
+def _login_ip_touch(ip, now=None):
+    """Зафиксировать попытку входа с IP (включая успешную)."""
+    if not ip:
+        return
+    now = now or time.time()
+    with _LOGIN_LOCK:
+        arr = _LOGIN_IP_ATTEMPTS.setdefault(ip, [])
+        arr.append(now)
+        _LOGIN_IP_ATTEMPTS[ip] = [t for t in arr if now - t < LOGIN_IP_WINDOW]
+
+
+def _login_ok(login, ip=""):
     with _LOGIN_LOCK:
         _LOGIN_ATTEMPTS.pop(login, None)
 
@@ -88,9 +115,34 @@ def _mask_secrets(obj):
     return obj
 
 
-def need_auth(headers, role=None, query_token=""):
-    tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or query_token or ""
-    s = security.get_session(tok)
+def need_auth(headers, role=None, query_ticket=""):
+    """Авторизация API-запроса.
+
+    Порядок: заголовок X-Ats-Token/X-Admin-Token (полная сессия) →
+    одноразовый короткоживущий ?ticket= (только для URL-доступа: SSE,
+    экспорт, записи). Долгоживущий токен сессии в query string больше
+    НЕ принимается: URL утекает в access-логи прокси и историю браузера.
+    """
+    tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or ""
+    s = None
+    try:
+        if tok:
+            s = security.get_session(tok)
+        if not s and query_ticket:
+            s = security.consume_ticket(query_ticket)
+            if s:
+                # чтобы аудит экспортов по билету видел реального актора;
+                # клиентские подделки этого заголовка стираются в route()
+                try:
+                    headers["X-Ats-Ticket-Actor"] = json.dumps(
+                        {"login": s["login"], "role": s["role"]})
+                except Exception:
+                    pass
+    except security.SessionStorageUnavailable:
+        # production, fail-closed: хранилище сессий недоступно — контролируемый
+        # отказ 503, а не неявный допуск по кэшу процесса (см. app/security.py)
+        return None, {"ok": False, "error": "auth_storage_unavailable",
+                      "detail": "хранилище сессий недоступно; повторите позже"}, 503
     if not s:
         return None, {"ok": False, "error": "auth_required"}, 401
     # Пользователь мог быть деактивирован/удалён или ему сменили роль — сверяем с БД
@@ -121,24 +173,30 @@ def _route(method, path, body, headers):
     parts, u = parse_path(path)
     p = parts
     qparams = parse_qs(u.query)
-    qtoken = (qparams.get("token") or [""])[0]
+    qticket = (qparams.get("ticket") or [""])[0]
     # ---------- auth ----------
     if p == ["auth", "login"]:
         # Логины хранятся строчными (см. _user_save) — приводим и при входе,
         # иначе "Operator1" не найдёт "operator1" -> ложный bad_login.
         login = str(body.get("login", "")).strip().lower()
         password = str(body.get("password", ""))
-        allowed, retry_after = _login_allowed(login)
+        ip = str(headers.get("X-Ats-Client-IP") or "")[:64]
+        allowed, retry_after = _login_allowed(login, ip)
         if not allowed:
             return {"ok": False, "error": "too_many_attempts",
                     "retry_after_sec": retry_after}, 429
         user = db.fetch1("SELECT * FROM users WHERE login=? AND active=1", (login,))
         if user and security.hash_password(password, user["salt"]) == user["password_hash"]:
             _login_ok(login)
-            tok = security.create_token(user["login"], user["role"])
+            try:
+                tok = security.create_token(user["login"], user["role"])
+            except security.SessionStorageUnavailable:
+                # fail-closed: сессию негде хранить — вход не выдаём
+                return {"ok": False, "error": "auth_storage_unavailable",
+                        "detail": "хранилище сессий недоступно; повторите позже"}, 503
             return {"ok": True, "token": tok, "user_id": user["id"],
                     "login": user["login"], "role": user["role"]}, 200
-        _login_fail(login)
+        _login_fail(login, ip)
         return {"ok": False, "error": "bad_login"}, 403
     if p == ["auth", "logout"]:
         security.drop_token(headers.get("X-Ats-Token", ""))
@@ -156,10 +214,16 @@ def _route(method, path, body, headers):
         ev = map_uis_webhook(body)
         if not ev:
             return {"ok": False, "error": "unrecognized"}, 422
-        # Только в очередь — отвечаем мгновенно, обработку делает тик движка.
-        # Иначе провайдер упрётся в HTTP-таймаут и завалит нас ретраями,
-        # а повторная обработка тех же событий даст дубли.
-        ENGINE.push_event(ev)
+        # Durable inbox (P1-аудита, C2): событие обязано быть записано в БД
+        # ДО ответа 2xx, иначе крах процесса между ответом и обработкой
+        # теряет вебхук навсегда (повторной доставки может не быть).
+        # Ошибка записи → 503: оператор доставит повторно.
+        try:
+            ENGINE.ingest_webhook(ev)
+        except Exception as e:
+            print("[uis] inbox persist failed:", e)
+            return {"ok": False, "error": "inbox_unavailable",
+                    "detail": "событие не сохранено; повторите доставку"}, 503
         return OK, 200
     if p == ["webhooks", "megafon"] and method == "POST":
         from .providers.base import resolve_secret
@@ -199,8 +263,14 @@ def _route(method, path, body, headers):
         print("[megafon] webhook cmd={} ev={} callid={} dir={} user={}".format(
             cmd, ev.get("event"), ev.get("external_call_id"),
             ev.get("direction"), ev.get("user")))
-        # Как и UIS: только в очередь, обработка — тиком движка.
-        ENGINE.push_event(ev)
+        # Durable inbox: запись до 200 (см. /webhooks/uis), повторная
+        # доставка того же fingerprint идемпотентно игнорируется.
+        try:
+            ENGINE.ingest_webhook(ev)
+        except Exception as e:
+            print("[megafon] inbox persist failed:", e)
+            return {"ok": False, "error": "inbox_unavailable",
+                    "detail": "событие не сохранено; повторите доставку"}, 503
         return OK, 200
     if p == ["webhooks", "multicom"] and method == "POST":
         from .providers.multicom import (map_multicom_webhook, verify_webhook_secret,
@@ -223,8 +293,13 @@ def _route(method, path, body, headers):
         ev["fingerprint"] = webhook_fingerprint(ev)
         print("[multicom] webhook ev={} callid={} dir={}".format(
             ev.get("event"), ev.get("external_call_id"), ev.get("direction")))
-        # Только в очередь: отвечаем мгновенно, обработку делает тик движка.
-        ENGINE.push_event(ev)
+        # Durable inbox: запись до 200 (см. /webhooks/uis).
+        try:
+            ENGINE.ingest_webhook(ev)
+        except Exception as e:
+            print("[multicom] inbox persist failed:", e)
+            return {"ok": False, "error": "inbox_unavailable",
+                    "detail": "событие не сохранено; повторите доставку"}, 503
         return OK, 200
     if p == ["amocrm", "webhook"] and method in ("POST", "GET"):
         # Вебхук amoCRM — внешний (у amoCRM нет нашей сессии): роутим ДО need_auth.
@@ -234,16 +309,27 @@ def _route(method, path, body, headers):
     if p == ["health"] and method == "GET":
         return _health(), 200
     if p == ["auth", "me"]:
-        sess2, err2, code2 = need_auth(headers, query_token=qtoken)
+        sess2, err2, code2 = need_auth(headers, query_ticket=qticket)
         if err2:
             return err2, code2
         user2 = db.fetch1("SELECT id FROM users WHERE login=?", (sess2["login"],))
         return {"ok": True, "user_id": user2["id"] if user2 else None,
                 "login": sess2["login"], "role": sess2["role"]}, 200
 
-    sess, err, code = need_auth(headers, query_token=qtoken)
+    sess, err, code = need_auth(headers, query_ticket=qticket)
     if err:
         return err, code
+
+    if p == ["auth", "ticket"] and method == "POST":
+        # Одноразовый билет для URL-доступа (SSE/экспорт/записи): EventSource и
+        # window.open не умеют заголовки, а токен сессии в URL больше не кладём.
+        try:
+            ticket = security.create_ticket(sess["login"], sess["role"])
+        except Exception:
+            return {"ok": False, "error": "auth_storage_unavailable",
+                    "detail": "хранилище сессий недоступно; повторите позже"}, 503
+        return {"ok": True, "ticket": ticket,
+                "expires_in": security.TICKET_TTL}, 200
 
     def admin_only():
         if sess["role"] != "admin":
@@ -692,6 +778,12 @@ def _route(method, path, body, headers):
 
 def route(method, path, body, headers):
     """REST-router с best-effort административным аудитом."""
+    # X-Ats-Ticket-Actor ставит только need_auth из проверенного билета;
+    # пришедший от клиента вариант — подделка актора для аудита, стираем.
+    try:
+        del headers["X-Ats-Ticket-Actor"]
+    except (KeyError, TypeError):
+        pass
     actor_before = audit.actor_from_headers(headers)
     result = _route(method, path, body, headers)
     try:

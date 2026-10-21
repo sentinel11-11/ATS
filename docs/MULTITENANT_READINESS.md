@@ -17,7 +17,7 @@
 | Конфигурация | `settings` — одна строка: `CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT)` (`app/db.py:333`) | один `provider`, один Asterisk-транк, один токен amoCRM, один `max_channels` на весь инстанс. «Разные клиенты → разные АТС-провайдеры» внутри одной БД невозможно в принципе |
 | Изоляция данных | в 24 таблицах схемы нет ни одного `tenant_id`/`account_id`/`org_id` (`grep` по `app/db.py`) | контакты, кампании, журнал, номера, blacklist, записи — общие. Разделить нельзя даже фильтром |
 | Пользователи | `users.login TEXT UNIQUE`, ролей ровно две: `admin`/`operator` (`app/api.py:1454`); `need_auth(headers, role)` сверяет равенство роли (`app/api.py:91-104`) | логин уникален глобально (два клиента не заведут по «ivanov»); ACL на объекты отсутствует: любой admin видит всё инстанса |
-| Сессии | `SESSIONS = {}` в памяти процесса, `SESSION_TTL = 8*3600` (`app/security.py:8-9`) | рестарт выбрасывает всех вошедших; два приложения за балансировщиком не работают (токен живёт в одном процессе); «разоприть» пользователя можно только в его же процессе |
+| Сессии | сессии хранятся в таблице `sessions` (SHA-256 токена, TTL 8 ч, скользящий); `SESSIONS = {}` в процессе — только кэш и аварийный фолбэк **для явного режима стенда** `ATS_MEMORY_SESSIONS=1`/`ATS_FAST=1`; в production сбой БД сессий — отказ 503 (`SessionStorageUnavailable`) | рестарт сессии переживают; но лимит входа и кэш — в памяти одного процесса: за балансировщиком счётчики не согласованы, нужен общий rate limiter; «разлогинить всё» = `DELETE FROM sessions` в БД |
 | Хранилище | SQLite, одно соединение на процесс (`check_same_thread=False`) + `RLock` на все запросы, `journal_mode=WAL`, `busy_timeout=5000` (`app/db.py:15-22`) | писать много потоков можно, но сериализованно; несколько процессов на одном файле — гонка на read-modify-write настроек; горизонтального масштабирования нет |
 | Движок | один фоновый поток, тик ≈1.0 с (`time.sleep(0.3 if config.FAST else 1.0)`), `max_channels` по умолчанию 3, переопределение на кампании (`app/engine.py:102,1303-1313`) | потолок — десятки одновременных линий на инстанс (30–50 комфортно), не тысячи |
 | AMI | один TCP-коннект к Asterisk под `RLock` (`app/asterisk.py::AMIClient`, `AsteriskAmiProvider._lock`) | `Originate`/действия идут последовательно; при сотнях каналов нужен пул соединений AMI |
@@ -159,10 +159,10 @@ cd /opt/ats/app     # или в рабочем клоне
 grep -c "CREATE TABLE IF NOT EXISTS" app/db.py
 grep -inE "tenant|org_id|workspace" app/db.py | wc -l        # 0 — ключа аренды нет
 grep -n "CHECK (id = 1)" app/db.py                             # одна строка настроек
-sed -n '8,9p' app/security.py                                  # сессии в памяти
+grep -n "sessions" app/db.py | head -3                        # сессии в БД (таблица sessions)
 grep -n "max_channels" app/config.py app/engine.py | head
 grep -n "if sess\[\"role\"\] != \"admin\"" app/api.py | wc -l   # число ролевых проверок
-python3 -m unittest discover -s tests 2>&1 | tail -2           # 356 OK — что ломать не будем
+python3 -m unittest discover -s tests 2>&1 | tail -2           # полный набор зелёный — что ломать не будем
 ```
 
 Связанные документы: `docs/SECURITY_CLEANUP.md` (что вычищать после настройки),

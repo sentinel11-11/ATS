@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Хранилище ATS v2: SQLite (одна БД, WAL), схема, миграции, импорт из legacy-JSON, настройки."""
+import contextlib
 import datetime
 import json
 import os
@@ -10,6 +11,7 @@ from . import config
 
 _lock = threading.RLock()
 _conn = None
+_tx_depth = 0  # глубина вложенных transaction(); >0 → q() не коммитит
 
 
 def connect() -> sqlite3.Connection:
@@ -24,12 +26,55 @@ def connect() -> sqlite3.Connection:
 
 
 def q(sql, params=()):
-    """Выполнить запись/произвольный запрос (commit)."""
+    """Выполнить запись/произвольный запрос (commit — если мы не внутри transaction())."""
     with _lock:
         c = connect()
         cur = c.execute(sql, params)
-        c.commit()
+        if _tx_depth == 0:
+            c.commit()
         return cur
+
+
+@contextlib.contextmanager
+def transaction():
+    """Атомарная группа операций: BEGIN IMMEDIATE … COMMIT / ROLLBACK.
+
+    Составные операции read-modify-write (принять ACD, завершить попытку,
+    удалить базу контактов) обязаны выполняться как одно целое: серия
+    отдельных q() с commit'ом на каждый вызов interleav'ится с другими
+    потоками и оставляет полусобранное состояние при сбое посередине.
+
+    Внутри блока: q() не коммитит (глубина >0), все запросы идут на одном
+    соединении под глобальным RLock — конкурентный поток ждёт COMMIT.
+    Вложенные transaction() — через SAVEPOINT. Исключение → ROLLBACK и
+    перевыброс (вызывающий решает, что отвечать клиенту).
+    """
+    global _tx_depth
+    with _lock:
+        c = connect()
+        outer = _tx_depth == 0
+        sp = "sp_{}".format(_tx_depth)
+        if outer:
+            c.execute("BEGIN IMMEDIATE")
+        else:
+            c.execute("SAVEPOINT {}".format(sp))
+        _tx_depth += 1
+        try:
+            yield c
+        except Exception:
+            if outer:
+                c.rollback()
+            else:
+                c.execute("ROLLBACK TO {}".format(sp))
+                c.execute("RELEASE {}".format(sp))
+            raise
+        else:
+            if outer:
+                c.commit()
+            else:
+                c.execute("RELEASE {}".format(sp))
+        finally:
+            _tx_depth -= 1
 
 
 def fetch(sql, params=()):
@@ -81,18 +126,20 @@ def list_databases():
 
 def delete_database(db_id, delete_contacts=False):
     """Удаление базы. Контакты — открепить (по умолчанию) или удалить вместе
-    с их queued-элементами кампаний (звонки/история сохраняются)."""
+    с их queued-элементами кампаний (звонки/история сохраняются).
+    Атомарно: сбой посередине не оставляет полусобранное состояние."""
     db_id = int(db_id)
-    if delete_contacts:
-        rows = fetch("SELECT id FROM contacts WHERE database_id=?", (db_id,))
-        ids = [r["id"] for r in rows]
-        if ids:
-            ph = ",".join("?" * len(ids))
-            q("DELETE FROM campaign_items WHERE contact_id IN ({}) AND status='queued'".format(ph), ids)
-            q("DELETE FROM contacts WHERE id IN ({})".format(ph), ids)
-    else:
-        q("UPDATE contacts SET database_id=0 WHERE database_id=?", (db_id,))
-    q("DELETE FROM databases WHERE id=?", (db_id,))
+    with transaction():
+        if delete_contacts:
+            rows = fetch("SELECT id FROM contacts WHERE database_id=?", (db_id,))
+            ids = [r["id"] for r in rows]
+            if ids:
+                ph = ",".join("?" * len(ids))
+                q("DELETE FROM campaign_items WHERE contact_id IN ({}) AND status='queued'".format(ph), ids)
+                q("DELETE FROM contacts WHERE id IN ({})".format(ph), ids)
+        else:
+            q("UPDATE contacts SET database_id=0 WHERE database_id=?", (db_id,))
+        q("DELETE FROM databases WHERE id=?", (db_id,))
 
 
 SCHEMA = """
@@ -371,6 +418,42 @@ CREATE TABLE IF NOT EXISTS sessions(
   slid       REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_login ON sessions(login);
+-- Одноразовые короткоживущие билеты для URL-доступа (SSE/экспорт/записи):
+-- полный токен сессии в query string не передаём — он живёт 8 часов и
+-- попадает в access-логи прокси/историю браузера. Билет: TTL 60 с,
+-- одно использование, в БД только SHA-256 (см. app/security.py).
+CREATE TABLE IF NOT EXISTS auth_tickets(
+  ticket_hash TEXT PRIMARY KEY,
+  login       TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'operator',
+  exp         REAL NOT NULL,
+  used        INTEGER NOT NULL DEFAULT 0,
+  created     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_auth_tickets_login ON auth_tickets(login);
+-- Durable inbox вебхуков телефонии (P1-аудита, C2): событие ОБЯЗАНО быть
+-- записано сюда до HTTP 2xx оператору — иначе 200 до персистентной записи
+-- теряет вебхук при падении процесса, а повторной доставки может не быть.
+-- Идемпотентность: уникальный fingerprint (повторная доставка = одна строка);
+-- status: new → claimed → done|orphan; сбой обработки → new (attempts+1),
+-- после MAX_INBOX_ATTEMPTS → failed (строка сохраняется для разбора).
+CREATE TABLE IF NOT EXISTS webhook_inbox(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL DEFAULT '',
+  external_call_id TEXT NOT NULL DEFAULT '',
+  event_type TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  received_at TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT NOT NULL DEFAULT '',
+  processed_at TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'new'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_webhook_inbox_fp
+  ON webhook_inbox(fingerprint) WHERE fingerprint<>'';
+CREATE INDEX IF NOT EXISTS ix_webhook_inbox_status ON webhook_inbox(status, id);
 """
 
 DEFAULT_SCENARIO = {

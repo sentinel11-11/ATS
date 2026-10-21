@@ -4,9 +4,9 @@
 что должно получиться → что делать, если не получилось. Порядок важен: сначала диагностика,
 потом изменения. Все пути — из клона `/opt/ats/app` (юнит `ats.service`, данные в `/var/lib/ats`).
 
-Данные, которые понадобятся (из письма оператора): SIP-логин (`00083819` в нашем письме),
-пароль регистрации, адрес регистратора и порт (`95.128.224.47:5060`), сеть оператора
-(`95.128.224.0/21`), кодеки, число каналов, список DID-номеров, формат номера.
+Данные, которые понадобятся (из письма оператора): SIP-логин (`00000000` в нашем письме),
+пароль регистрации, адрес регистратора и порт (`sip.example-operator.ru:5060`), сеть оператора
+(`192.0.2.0/21`), кодеки, число каналов, список DID-номеров, формат номера.
 Формат объяснений цифр и зачем что нужно — `docs/MULTICOM_SIP_CONNECT.md` §13 и §1.
 
 ---
@@ -213,7 +213,7 @@ AMI `ats` в `manager-ats.conf` + `ATS_AMI_SECRET` в `/etc/ats/ats.env` → н�
 sudo asterisk -rx "pjsip show transports"     # transport-udp  Active  0.0.0.0:5060
 sudo asterisk -rx "pjsip show endpoints"      # mcm → mcm/mcm-aor
 sudo asterisk -rx "pjsip show aors"           # Avail
-sudo asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
+sudo asterisk -rx "pjsip show contacts"       # sip.example-operator.ru … Avail
 sudo asterisk -rx "pjsip show registrations"  # <Registration: OK> … 200 OK
 sudo tail -30 /var/log/asterisk/messages.log | grep -iE "regist|40[13]|pjsip"
 ```
@@ -336,7 +336,7 @@ sudo systemctl start asterisk
 grep -aE "No response received|Fatal response|Forbidden|Maximum retries|stopping outbound registration" \
   /var/log/asterisk/messages.log | tail -10
 asterisk -rx "pjsip show registrations"          # дважды, с интервалом ~70 секунд
-timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host 95.128.224.47'
+timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host sip.example-operator.ru'
 grep -ac "REGISTER sip" /tmp/sip5060.pcap
 grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c
 ```
@@ -361,8 +361,8 @@ grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c
 `401` в логе — сверять `username`/`password` с письмом; `403` — письмо оператору; `No response
 received` — тоже письмо оператору (на проде был именно он, вместе с `tcp=124` на пробу порта:
 пакеты фильтруют до приложения, наш путь и наш конфиг при этом чистые — см. §12а, там список
-проверок и вывод), но сначала `ip route get 95.128.224.47` (исходящий адрес) и
-`timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo "tcp=$?"` (124 = фильтруют, 0 = открыть
+проверок и вывод), но сначала `ip route get sip.example-operator.ru` (исходящий адрес) и
+`timeout 6 bash -c '</dev/tcp/sip.example-operator.ru/5060'; echo "tcp=$?"` (124 = фильтруют, 0 = открыть
 TCP-транспорт). Формулировки — §12а и §13. Обратите внимание:
 `pjsip show endpoints` при этом показывает `State: Unavailable` — для транка это норма (у
 исходящего транка нет входящего контакта), на набор `PJSIP/<номер>@mcm` не влияет.
@@ -488,9 +488,9 @@ sudo systemctl daemon-reload && sudo systemctl restart ats
 ```bash
 ufw default deny incoming && ufw default allow outgoing
 ufw allow OpenSSH
-ufw allow from 95.128.224.0/21 to any port 5060 proto udp
-ufw allow from 95.128.224.0/21 to any port 5060 proto tcp
-ufw allow from 95.128.224.0/21 to any port 10000:20000 proto udp   # RTP
+ufw allow from 192.0.2.0/21 to any port 5060 proto udp
+ufw allow from 192.0.2.0/21 to any port 5060 proto tcp
+ufw allow from 192.0.2.0/21 to any port 10000:20000 proto udp   # RTP
 ufw enable && ufw status numbered
 ```
 
@@ -512,7 +512,7 @@ ufw enable && ufw status numbered
 |---|---|
 | `module reload` «успешен», но `pjsip show endpoints` пуст | §7а: сначала `pjsip show transports` — транспорт есть → объект не прошёл валидацию (в `[mcm-auth]` обязателен `username`, `auth_name` Asterisk 16+ не знает); транспорта нет → `#include` не первой строкой (дистрибутивный `pjsip.conf` его съедает), чинится `--pjsip-standalone`; затем `grep -rn "\[mcm\]" /etc/asterisk/` на дубль секции |
 | `401/403` на регистрации | пароль (не тот, что AMI!) или оператор не добавил ваш IP в whitelist: `curl -s ifconfig.me` → в письмо оператору |
-| Один звук / нет звука | RTP: `MCM_RTP` и `local_net`/`external_signaling_address` в `[transport-udp]`; правило на `95.128.224.0/21` для `10000-20000/udp`; `rtp.conf` |
+| Один звук / нет звука | RTP: `MCM_RTP` и `local_net`/`external_signaling_address` в `[transport-udp]`; правило на `192.0.2.0/21` для `10000-20000/udp`; `rtp.conf` |
 | `dialplan show ats-out` пусто | не запускали `--dialplan` (или нет `#include extensions-ats.conf`) → повторить шаг 6 с `--dialplan` |
 | `no_media` в `flow=message` | нет `espeak-ng` или AGI: см. шаг 11; проверьте `ats_say.py` и `ats-tts.conf` |
 | Кампания «в ожидании номера» | шаг 10: `provider` у номеров ≠ `ami`, `active=0`, или `daily_limit` исчерпан (`numbers.daily_count`), или карантин после жалоб |

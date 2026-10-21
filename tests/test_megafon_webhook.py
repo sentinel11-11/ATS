@@ -126,6 +126,12 @@ class _FakeEngine:
     def push_event(self, ev):
         self.events.append(ev)
 
+    def ingest_webhook(self, ev):
+        # контракт durable inbox: событие принято к персистентной обработке
+        # (в тесте транспорта достаточно убедиться, что оно дошло и одно)
+        self.events.append(ev)
+        return True
+
 
 class HttpWebhookTest(unittest.TestCase):
     @classmethod

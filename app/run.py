@@ -154,6 +154,11 @@ def main(argv=None):
         st["provider"] = args.provider
         db.save_settings(st)
     host, port = resolve_listen(st, args.host, args.port)
+    if str(host).strip() not in ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"):
+        print("[ATS v2] ВНИМАНИЕ: слушаю {}:{}".format(host, port))
+        print("[ATS v2] Приложение не терминирует TLS: логин/токены/данные пойдут")
+        print("[ATS v2] открытым текстом, если порт доступен из сети напрямую.")
+        print("[ATS v2] Наружу — только через reverse-proxy с TLS и firewall (docs/DEPLOY.md §6).")
 
     if args.init_only:
         print("База инициализирована:", config.DB_PATH)

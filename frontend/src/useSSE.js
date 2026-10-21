@@ -1,18 +1,26 @@
 import { useEffect } from 'react';
-import { getToken } from './api';
+import { fetchTicket } from './api';
 
+// SSE без долгоживущего токена в URL: перед каждым подключением берём
+// одноразовый билет (POST /auth/ticket с заголовком X-Ats-Token), открыли
+// EventSource с ?ticket=... — билет погашен. Переподключение — новый билет.
 export function useSSE(onEvent) {
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
-
+    let cancelled = false;
     let es = null;
     let timer = null;
 
-    function connect() {
+    async function connect() {
+      if (cancelled) return;
+      const ticket = await fetchTicket();
+      if (cancelled) return;
+      if (!ticket) {
+        // сессия истекла / сервер недоступен — повторим с задержкой
+        timer = setTimeout(connect, 3000);
+        return;
+      }
       if (es) es.close();
-      const url = `/api/v2/events?token=${encodeURIComponent(token)}`;
-      es = new EventSource(url);
+      es = new EventSource(`/api/v2/events?ticket=${encodeURIComponent(ticket)}`);
 
       const events = ['call', 'item', 'acd', 'campaign', 'agent'];
       events.forEach((evType) => {
@@ -35,6 +43,7 @@ export function useSSE(onEvent) {
     connect();
 
     return () => {
+      cancelled = true;
       if (timer) clearTimeout(timer);
       if (es) es.close();
     };

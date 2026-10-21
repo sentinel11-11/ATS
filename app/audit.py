@@ -62,6 +62,17 @@ def actor_from_headers(headers):
     """Возвращает безопасный снимок текущего пользователя по X-Ats-Token."""
     token = (headers or {}).get("X-Ats-Token", "")
     if not token:
+        # запрос по одноразовому билету (?ticket=): актора в заголовок
+        # положил need_auth из проверенного билета (клиентские значения
+        # стираются в api.route перед этим вызовом)
+        try:
+            raw = (headers or {}).get("X-Ats-Ticket-Actor", "")
+            if raw:
+                t = json.loads(raw)
+                if t.get("login"):
+                    return {"login": t["login"], "role": t.get("role", "")}
+        except Exception:
+            pass
         return {}
     try:
         session = security.get_session(token)

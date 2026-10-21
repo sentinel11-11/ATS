@@ -47,18 +47,18 @@ db.init_db()
 class NumberFormatTest(unittest.TestCase):
     def test_ru8_for_multicom(self):
         """Мультиком требует исходящий набор 8_КодГорода_Номер — в базе E.164."""
-        for v in ("+79690229926", "79690229926", "89690229926", "+7 (969) 022-99-26"):
-            self.assertEqual(format_outbound_number(v, "ru8"), "89690229926", v)
-        self.assertEqual(format_outbound_number("9690229926", "ru8"), "89690229926")
+        for v in ("+75550000001", "75550000001", "85550000001", "+7 (555) 000-00-01"):
+            self.assertEqual(format_outbound_number(v, "ru8"), "85550000001", v)
+        self.assertEqual(format_outbound_number("5550000001", "ru8"), "85550000001")
         self.assertEqual(format_outbound_number("+74951234567", "ru8"), "84951234567")
 
     def test_other_formats(self):
-        self.assertEqual(format_outbound_number("+79690229926", "e164"), "+79690229926")
-        self.assertEqual(format_outbound_number("89690229926", "e164"), "+79690229926")
-        self.assertEqual(format_outbound_number("+79690229926", "d10"), "9690229926")
-        self.assertEqual(format_outbound_number("+79690229926", "digits"), "79690229926")
-        self.assertEqual(format_outbound_number("+79690229926", "raw"), "+79690229926")
-        self.assertEqual(format_outbound_number("+79690229926", ""), "+79690229926")
+        self.assertEqual(format_outbound_number("+75550000001", "e164"), "+75550000001")
+        self.assertEqual(format_outbound_number("85550000001", "e164"), "+75550000001")
+        self.assertEqual(format_outbound_number("+75550000001", "d10"), "5550000001")
+        self.assertEqual(format_outbound_number("+75550000001", "digits"), "75550000001")
+        self.assertEqual(format_outbound_number("+75550000001", "raw"), "+75550000001")
+        self.assertEqual(format_outbound_number("+75550000001", ""), "+75550000001")
 
     def test_garbage_is_empty(self):
         for v in ("", None, "абвгд", "—"):
@@ -96,18 +96,18 @@ def _provider(**cfg):
 class AmiDialTest(unittest.TestCase):
     def test_channel_uses_tech_and_trunk(self):
         p = _provider(tech="SIP", number_format="ru8", caller_id_format="d10")
-        p.dial({"call_id": 7, "phone": "+79690229926", "caller_id": "+79690229926",
+        p.dial({"call_id": 7, "phone": "+75550000001", "caller_id": "+75550000001",
                 "flow": "message", "text": ""})
         name, params = p.client.actions[0]
         self.assertEqual(name, "Originate")
-        self.assertEqual(params["Channel"], "SIP/mcm/89690229926")
-        self.assertEqual(params["CallerID"], '"ats-call-7" <9690229926>')
+        self.assertEqual(params["Channel"], "SIP/mcm/85550000001")
+        self.assertEqual(params["CallerID"], '"ats-call-7" <5550000001>')
 
     def test_pjsip_default_and_prefix(self):
         p = _provider(number_format="digits", dial_prefix="0")
-        p.dial({"call_id": 1, "phone": "89690229926", "caller_id": "", "flow": "message"})
+        p.dial({"call_id": 1, "phone": "85550000001", "caller_id": "", "flow": "message"})
         params = p.client.actions[0][1]
-        self.assertEqual(params["Channel"], "PJSIP/089690229926@mcm")
+        self.assertEqual(params["Channel"], "PJSIP/085550000001@mcm")
 
     def test_empty_number_fails_fast(self):
         p = _provider(number_format="ru8")
@@ -116,7 +116,7 @@ class AmiDialTest(unittest.TestCase):
 
     def test_text_goes_to_dialplan_as_base64(self):
         p = _provider(number_format="ru8")
-        p.dial({"call_id": 3, "phone": "+79690229926", "caller_id": "+79690229926",
+        p.dial({"call_id": 3, "phone": "+75550000001", "caller_id": "+75550000001",
                 "flow": "message", "text": "Здравствуйте,\r\n это ATS"})
         params = p.client.actions[0][1]
         self.assertEqual(params["Variable"][0], "ATS_CALL_ID=3")
@@ -129,18 +129,18 @@ class AmiDialTest(unittest.TestCase):
     def test_pjsip_channel_syntax_and_pattern_override(self):
         """chan_pjsip набирается как PJSIP/номер@endpoint; шаблон можно заменить."""
         p = _provider(channel_pattern="{trunk}/{number}")
-        p.dial({"call_id": 9, "phone": "+79690229926", "caller_id": "", "flow": "message"})
-        self.assertEqual(p.client.actions[0][1]["Channel"], "mcm/+79690229926")
+        p.dial({"call_id": 9, "phone": "+75550000001", "caller_id": "", "flow": "message"})
+        self.assertEqual(p.client.actions[0][1]["Channel"], "mcm/+75550000001")
         p2 = _provider(number_format="raw")
-        p2.dial({"call_id": 9, "phone": "89690229926", "caller_id": "", "flow": "message"})
-        self.assertEqual(p2.client.actions[0][1]["Channel"], "PJSIP/89690229926@mcm")
+        p2.dial({"call_id": 9, "phone": "85550000001", "caller_id": "", "flow": "message"})
+        self.assertEqual(p2.client.actions[0][1]["Channel"], "PJSIP/85550000001@mcm")
 
     def test_record_variable_for_mixmonitor(self):
         p = _provider()
-        p.dial({"call_id": 8, "phone": "+79690229926", "caller_id": "", "flow": "message"})
+        p.dial({"call_id": 8, "phone": "+75550000001", "caller_id": "", "flow": "message"})
         self.assertIn("ATS_RECORD=1", p.client.actions[0][1]["Variable"])
         p2 = _provider(record_calls=False)
-        p2.dial({"call_id": 8, "phone": "+79690229926", "caller_id": "", "flow": "message"})
+        p2.dial({"call_id": 8, "phone": "+75550000001", "caller_id": "", "flow": "message"})
         self.assertNotIn("ATS_RECORD=1", p2.client.actions[0][1]["Variable"])
 
     def test_play_failure_reported_by_dialplan_variable(self):
@@ -148,19 +148,19 @@ class AmiDialTest(unittest.TestCase):
         p = _provider()
         out = []
         p.emit = lambda ev: out.append(dict(ev, provider=p.name))
-        p.channels[42] = "PJSIP/89690229926@mcm"
-        p._on_event({"Event": "VariableSet", "Channel": "PJSIP/89690229926@mcm",
+        p.channels[42] = "PJSIP/85550000001@mcm"
+        p._on_event({"Event": "VariableSet", "Channel": "PJSIP/85550000001@mcm",
                      "Variable": "ATS_PLAY", "Value": "failed: no TTS binary"})
         self.assertEqual(out[-1]["status"], "failed")
         self.assertIn("no TTS binary", out[-1]["detail"])
         out.clear()
-        p._on_event({"Event": "VariableSet", "Channel": "PJSIP/89690229926@mcm",
+        p._on_event({"Event": "VariableSet", "Channel": "PJSIP/85550000001@mcm",
                      "Variable": "ATS_PLAY", "Value": "ok"})
         self.assertEqual(out, [])
 
     def test_play_message_disabled(self):
         p = _provider(play_message=False, record_calls=False)
-        p.dial({"call_id": 4, "phone": "+79690229926", "caller_id": "", "flow": "message",
+        p.dial({"call_id": 4, "phone": "+75550000001", "caller_id": "", "flow": "message",
                 "text": "текст"})
         self.assertEqual(p.client.actions[0][1]["Variable"], ["ATS_CALL_ID=4"])
 
@@ -184,14 +184,14 @@ class AmiInboundTest(unittest.TestCase):
         p = _provider(inbound_contexts="from-mcm")
         out = self._events(p)
         p._on_event({"Event": "Newchannel", "Channel": "PJSIP/mcm-0000000a",
-                     "Context": "from-mcm", "Exten": "9690229937",
-                     "CallerIDNum": "9690229926"})
+                     "Context": "from-mcm", "Exten": "5550000000",
+                     "CallerIDNum": "5550000001"})
         self.assertEqual(out[-1]["event"], "inbound")
-        self.assertEqual(out[-1]["phone"], "9690229926")
-        self.assertEqual(out[-1]["did"], "9690229937")
+        self.assertEqual(out[-1]["phone"], "5550000001")
+        self.assertEqual(out[-1]["did"], "5550000000")
         # повторный Newchannel по тому же каналу не плодит дубль
         p._on_event({"Event": "Newchannel", "Channel": "PJSIP/mcm-0000000a",
-                     "Context": "from-mcm", "Exten": "9690229937"})
+                     "Context": "from-mcm", "Exten": "5550000000"})
         self.assertEqual(sum(1 for e in out if e["event"] == "inbound"), 1)
         p._on_event({"Event": "Newstate", "Channel": "PJSIP/mcm-0000000a",
                      "ChannelState": "6"})
@@ -280,7 +280,7 @@ class EngineAmiFlowTest(unittest.TestCase):
                                       "contact_name": "Клиент", "provider": "ami",
                                       "external_call_id": "PJSIP/mcm-out-{}".format(self.seq),
                                       "direction": "out", "status": status, "started_at": now,
-                                      "caller_id": "+79690229926"})
+                                      "caller_id": "+75550000001"})
         return camp_id, item_id, call_id
 
     def _call(self, call_id):
@@ -316,16 +316,16 @@ class EngineAmiFlowTest(unittest.TestCase):
     def test_inbound_logged_answered_and_finished(self):
         """Входящий с DID: журнал, поиск контакта по 10 цифрам, номер пула, финал."""
         now = config.now_iso()
-        db.q("DELETE FROM contacts WHERE phone IN ('+79863149340','79863149340')")
-        db.q("DELETE FROM numbers WHERE number='+79863149340'")
-        db.insert("contacts", {"name": "Иван Петров", "phone": "+79863149340", "consent": 1,
+        db.q("DELETE FROM contacts WHERE phone IN ('+75550000011','75550000011')")
+        db.q("DELETE FROM numbers WHERE number='+75550000011'")
+        db.insert("contacts", {"name": "Иван Петров", "phone": "+75550000011", "consent": 1,
                                "created": now, "updated": now})
-        num_id = db.insert("numbers", {"number": "+79863149340", "label": "MCM", "kind": "mobile",
+        num_id = db.insert("numbers", {"number": "+75550000011", "label": "MCM", "kind": "mobile",
                                        "provider": "ami", "active": 1, "daily_limit": 200})
         ch = "PJSIP/mcm-00000099"
         db.q("DELETE FROM calls WHERE external_call_id=?", (ch,))
         self.eng.handle_event({"provider": "ami", "event": "inbound", "channel": ch,
-                               "phone": "9863149340", "did": "9863149340"})
+                               "phone": "5550000011", "did": "5550000011"})
         call = db.fetch1("SELECT * FROM calls WHERE external_call_id=?", (ch,))
         self.assertTrue(call, "входящий должен попасть в журнал")
         self.assertEqual(call["direction"], "in")
@@ -335,7 +335,7 @@ class EngineAmiFlowTest(unittest.TestCase):
         self.assertEqual(call["provider"], "ami")
         # дубль события не создаёт второй звонок
         self.eng.handle_event({"provider": "ami", "event": "inbound", "channel": ch,
-                               "phone": "9863149340", "did": "9863149340"})
+                               "phone": "5550000011", "did": "5550000011"})
         self.assertEqual(len(db.fetch("SELECT id FROM calls WHERE external_call_id=?", (ch,))), 1)
         self.eng.handle_event({"provider": "ami", "event": "inbound_answer", "channel": ch})
         call = self._call(call["id"])
@@ -351,7 +351,7 @@ class EngineAmiFlowTest(unittest.TestCase):
         ch = "PJSIP/mcm-00000077"
         db.q("DELETE FROM calls WHERE external_call_id=?", (ch,))
         self.eng.handle_event({"provider": "ami", "event": "inbound", "channel": ch,
-                               "phone": "9362574897", "did": "9362574897"})
+                               "phone": "5550000021", "did": "5550000021"})
         call = db.fetch1("SELECT * FROM calls WHERE external_call_id=?", (ch,))
         self.assertEqual(call["contact_name"], "", "неизвестный номер — без контакта")
         self.eng.handle_event({"provider": "ami", "event": "inbound_end", "channel": ch})
@@ -363,7 +363,7 @@ class EngineAmiFlowTest(unittest.TestCase):
 class RecordsLinkTest(unittest.TestCase):
     def setUp(self):
         now = config.now_iso()
-        self.call_id = db.insert("calls", {"contact_phone": "79690229926", "provider": "ami",
+        self.call_id = db.insert("calls", {"contact_phone": "75550000001", "provider": "ami",
                                            "direction": "out", "status": "done",
                                            "started_at": now, "ended_at": now})
         s = db.get_settings()
@@ -698,7 +698,7 @@ class AmiCheckLiveTest(unittest.TestCase):
     OUTPUTS = {
         "core show version": "Asterisk 20.7.1~dfsg, built by pbuilder",
         "pjsip show contacts": "  Contact:  <Aor/ContactUri>\n"
-                               "  Contact:  mcm/sip:00083819@95.128.224.47:5060  Avail",
+                               "  Contact:  mcm/sip:00000000@sip.example-operator.ru:5060  Avail",
         "pjsip show endpoints": "  Endpoint: <Aor>\n  Endpoint: mcm mcm-aor",
         "dialplan show ats-out": "[ Context 'ats-out' ]\n  's' => 1 NoOp(ATS out)",
         "dialplan show ats-play": "[ Context 'ats-play' ]\n  's' => 1 AGI(ats_say.py)",
@@ -707,8 +707,8 @@ class AmiCheckLiveTest(unittest.TestCase):
 
     def setUp(self):
         now = config.now_iso()
-        db.q("DELETE FROM numbers WHERE number='+79690229926'")
-        db.insert("numbers", {"number": "+79690229926", "label": "MCM", "kind": "mobile",
+        db.q("DELETE FROM numbers WHERE number='+75550000001'")
+        db.insert("numbers", {"number": "+75550000001", "label": "MCM", "kind": "mobile",
                               "provider": "ami", "active": 1, "daily_limit": 120,
                               "quarantined": 0})
         self.srv = FakeAsteriskAMI(self.OUTPUTS)
@@ -732,7 +732,7 @@ class AmiCheckLiveTest(unittest.TestCase):
         self.assertTrue(rep["ok"], json.dumps(rep["checks"], ensure_ascii=False)[:600])
         self.assertTrue(by_name["ami_login"]["ok"])
         self.assertTrue(by_name["registration"]["ok"])
-        self.assertIn("95.128.224.47", by_name["registration"]["detail"])
+        self.assertIn("sip.example-operator.ru", by_name["registration"]["detail"])
         self.assertTrue(by_name["dialplan"]["ok"])
         self.assertTrue(by_name["numbers_pool"]["ok"])
 
@@ -741,9 +741,9 @@ class AmiCheckLiveTest(unittest.TestCase):
         и наивный подстрочный поиск делал пункт registration зелёным без регистрации."""
         self.srv.outputs = dict(self.OUTPUTS, **{
             "pjsip show contacts": "  Contact:  <Aor/ContactUri>\n"
-                                   "  Contact:  mcm/sip:00083819@95.128.224.47:5060  Unavailable",
+                                   "  Contact:  mcm/sip:00000000@sip.example-operator.ru:5060  Unavailable",
             "pjsip show endpoints": "  Endpoint: mcm  Unavailable  0 of 15\n"
-                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "    Registration: mcm-reg/sip:00000000@sip.example-operator.ru:5060"
                                     "  mcm-auth  Unregistered (exp. 30s ago)",
         })
         rep = self._check()
@@ -759,13 +759,13 @@ class AmiCheckLiveTest(unittest.TestCase):
         logs = tempfile.mkdtemp(prefix="ats_ast_logs_")
         with open(os.path.join(logs, "messages.log"), "w", encoding="utf-8") as fh:
             fh.write("[2026-10-14 20:49:02] WARNING[1]: res_pjsip_outbound_registration.c: "
-                     "Fatal response '401' received from 'sip:00083819@95.128.224.47:5060' on "
-                     "registration attempt to 'sip:00083819@95.128.224.47:5060', stopping "
+                     "Fatal response '401' received from 'sip:00000000@sip.example-operator.ru:5060' on "
+                     "registration attempt to 'sip:00000000@sip.example-operator.ru:5060', stopping "
                      "outbound registration\n")
         self.srv.outputs = dict(self.OUTPUTS, **{
             "pjsip show contacts": "  Contact:  <Aor/ContactUri>\n",
             "pjsip show endpoints": "  Endpoint: mcm  Unavailable  0 of 15\n"
-                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "    Registration: mcm-reg/sip:00000000@sip.example-operator.ru:5060"
                                     "  mcm-auth  Rejected (exp. 3s)",
         })
         saved = os.environ.pop("ATS_AST_LOG_DIR", None)
@@ -785,15 +785,15 @@ class AmiCheckLiveTest(unittest.TestCase):
         self.assertIn("Fatal response '401'", by2["registration"]["detail"])
         self.assertIn("stopping outbound registration", by2["registration"]["detail"])
         self.assertLessEqual(len(by2["registration"]["detail"]), 600)
-        self.assertNotIn("00083819@95.128.224.47:5060", by2["registration"]["detail"],
+        self.assertNotIn("00000000@sip.example-operator.ru:5060", by2["registration"]["detail"],
                          "URI регистратора только съедает лимит детали")
         self.assertTrue(by2["trunk_configured"]["ok"], "ругаться надо на статус, а не на транк")
 
     def test_expiring_registration_still_counts(self):
         self.srv.outputs = dict(self.OUTPUTS, **{
-            "pjsip show contacts": "  Contact:  (Line: 0) sip:00083819@95.128.224.47:5060  Avail",
+            "pjsip show contacts": "  Contact:  (Line: 0) sip:00000000@sip.example-operator.ru:5060  Avail",
             "pjsip show endpoints": "  Endpoint: mcm  Available  0 of 15\n"
-                                    "    Registration: mcm-reg/sip:00083819@95.128.224.47:5060"
+                                    "    Registration: mcm-reg/sip:00000000@sip.example-operator.ru:5060"
                                     "  mcm-auth  Expiring (exp. 60s)",
         })
         by_name = {c["name"]: c for c in self._check()["checks"]}
@@ -830,7 +830,8 @@ class ListenResolutionTest(unittest.TestCase):
         try:
             os.environ.pop("ATS_HOST", None)
             os.environ.pop("ATS_PORT", None)
-            self.assertEqual(resolve_listen({}), ("0.0.0.0", config.PORT_DEFAULT))
+            self.assertEqual(resolve_listen({}), ("127.0.0.1", config.PORT_DEFAULT),
+                             "умолчание — loopback (P1-аудита)")
             self.assertEqual(resolve_listen({"host": "127.0.0.1", "port": 9010}),
                              ("127.0.0.1", 9010))
             os.environ["ATS_PORT"] = "9793"
@@ -961,7 +962,7 @@ class _StubMulticomClient:
 
     def __init__(self, nums=None):
         self.nums = nums if nums is not None else [
-            {"number": "+79690229926"}, {"number": "89690229930"}, {"phone": "9362574897"}]
+            {"number": "+75550000001"}, {"number": "85550000000"}, {"phone": "5550000021"}]
 
     def get_numbers(self):
         return list(self.nums)
@@ -1002,7 +1003,7 @@ class MulticomPoolSyncProviderTest(unittest.TestCase):
     def test_default_tags_multicom(self):
         rep = self.engine.multicom_pool_sync()
         self.assertEqual(rep["provider"], "multicom")
-        self.assertEqual(sorted(rep["added"]), ["79690229926", "79690229930", "9362574897"])
+        self.assertEqual(sorted(rep["added"]), ["5550000021", "75550000000", "75550000001"])
         rows = db.fetch("SELECT number, provider, label FROM numbers")
         self.assertEqual({r["provider"] for r in rows}, {"multicom"})
 
