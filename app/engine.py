@@ -189,13 +189,43 @@ class Engine:
                 datetime.timedelta(seconds=self.INBOX_CLAIM_STALE_SEC)).strftime(
                     "%Y-%m-%d %H:%M:%S")
 
+    def _inbox_event_key(self, ev):
+        """Ключ идемпотентности события (P1 повторного ревью).
+
+        Один бизнес-эффект на (провайдер, звонок, событие): повторная
+        доставка того же логического события — даже с другим fingerprint
+        (другой raw-payload) — не применяет эффект дважды. Для веток со
+        собственной машиной состояний по fingerprint (МегаФон/Мультиком без
+        call_id) и входящих AMI-событий ключ не используется.
+        """
+        if ev.get("event") in ("inbound", "inbound_answer", "inbound_end"):
+            return ""
+        if ev.get("provider") in ("megafon_vats", "multicom") and ev.get("call_id") is None:
+            return ""
+        if ev.get("call_id") is None:
+            return ""
+        key = "{}:{}:{}".format(ev.get("provider") or "uis",
+                                ev.get("call_id"), ev.get("event"))
+        if ev.get("event") == "status":
+            key += ":{}".format(ev.get("status"))
+        return str(key)[:200]
+
     def _drain_inbox(self, limit=None):
         """Обработать накопленные вебхуки (в т.ч. после рестарта процесса).
 
-        Транзакционно клеймим строки new (и зависшие claimed), обрабатываем,
-        помечаем done/orphan; сбой обработчика — возврат в new с attempts+1
-        и last_error, событие не теряется. Идемпотентность повторной
-        обработки обеспечивает дедуп по fingerprint на уровне провайдера.
+        P1 повторного ревью — атомарность: claim, бизнес-изменения, запись в
+        processed_events и отметка done выполняются в ОДНОЙ транзакции.
+        Падение процесса между бизнес-эффектом и отметкой done откатывает
+        ВСЁ — строка возвращается в 'new' и обрабатывается заново, но
+        бизнес-эффект применяется ровно один раз (первый откатился).
+
+        Идемпотентность:
+        - идентичная повторная доставка — dedup по fingerprint на ingest;
+        - та же логика с другим payload — dedup по event_key
+          (processed_events) до бизнес-обработки;
+        - неизвестный call_id → status='orphan' с причиной (не done):
+          событие видно в разбирке, не теряется молча.
+        Сбой обработчика — возврат в new с attempts+1 и last_error.
         """
         limit = limit or self.INBOX_LIMIT
         stale = self._inbox_stale_ts()
@@ -204,8 +234,6 @@ class Engine:
             "OR (status='claimed' AND claimed_at<>'' AND claimed_at<?) "
             "ORDER BY id LIMIT ?", (stale, limit))
         for row in rows:
-            db.q("UPDATE webhook_inbox SET status='claimed', claimed_at=? WHERE id=?",
-                 (now_iso(), row["id"]))
             try:
                 ev = json.loads(row.get("payload_json") or "{}")
             except Exception as e:
@@ -213,23 +241,68 @@ class Engine:
                      "processed_at=? WHERE id=?",
                      ("bad payload json: {}".format(e)[:500], now_iso(), row["id"]))
                 continue
+            key = self._inbox_event_key(ev)
+            # orphan: generic-событие по несуществующему звонку (событие раньше
+            # звонка / чужой инстанс / восстановленная из бэкапа БД)
+            orphan_reason = ""
+            if key and not db.fetch1("SELECT 1 FROM calls WHERE id=?",
+                                     (ev.get("call_id"),)):
+                orphan_reason = ("call_id {} не найден: событие раньше локальной "
+                                 "записи звонка или чужой инстанс".format(ev.get("call_id")))
+            deduped = False
             try:
-                self.handle_event(ev)
-                db.q("UPDATE webhook_inbox SET status='done', processed_at=?, "
-                     "last_error='' WHERE id=?", (now_iso(), row["id"]))
+                with db.transaction():
+                    # перечитываем статус: параллельный дрен мог закрыть строку
+                    cur = db.fetch1("SELECT status FROM webhook_inbox WHERE id=?",
+                                    (row["id"],))
+                    if not cur or cur["status"] not in ("new", "claimed"):
+                        continue
+                    if orphan_reason:
+                        db.q("UPDATE webhook_inbox SET status='orphan', processed_at=?, "
+                             "last_error=? WHERE id=?",
+                             (now_iso(), orphan_reason[:500], row["id"]))
+                    else:
+                        if key and db.fetch1(
+                                "SELECT 1 FROM processed_events WHERE event_key=?",
+                                (key,)):
+                            deduped = True
+                        else:
+                            db.q("UPDATE webhook_inbox SET status='claimed', "
+                                 "claimed_at=? WHERE id=?", (now_iso(), row["id"]))
+                            self.handle_event(ev)
+                            if key:
+                                db.q("INSERT OR IGNORE INTO processed_events"
+                                     "(event_key, provider, inbox_id, processed_at) "
+                                     "VALUES(?,?,?,?)",
+                                     (key, str(ev.get("provider") or "")[:40],
+                                      row["id"], now_iso()))
+                        db.q("UPDATE webhook_inbox SET status='done', processed_at=?, "
+                             "last_error='' WHERE id=?", (now_iso(), row["id"]))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+                # Транзакция откатилась: бизнес-эффектов нет, claim нет.
+                # Фиксируем попытку отдельным запросом и возвращаем в new.
                 attempts = int(row.get("attempts") or 0) + 1
                 status = "new" if attempts < self.INBOX_MAX_ATTEMPTS else "failed"
-                db.q("UPDATE webhook_inbox SET status=?, attempts=?, last_error=? "
-                     "WHERE id=?",
+                db.q("UPDATE webhook_inbox SET status=?, attempts=?, last_error=?, "
+                     "claimed_at='' WHERE id=?",
                      (status, attempts, "handler: {}".format(e)[:500], row["id"]))
                 if status == "failed":
                     events.publish("system", {"kind": "webhook_inbox_failed",
                                               "inbox_id": row["id"],
                                               "provider": row.get("provider"),
                                               "event_type": row.get("event_type")})
+                continue
+            if orphan_reason:
+                events.publish("system", {"kind": "webhook_inbox_orphan",
+                                          "inbox_id": row["id"],
+                                          "provider": row.get("provider"),
+                                          "event_type": row.get("event_type"),
+                                          "detail": orphan_reason[:200]})
+            elif deduped:
+                print("[inbox] #{}: повторная доставка {} подавлена (processed_events)"
+                      .format(row["id"], key))
         # видимость для мониторинга: глубина inbox
         try:
             depth = db.fetch1("SELECT COUNT(*) c FROM webhook_inbox "
@@ -471,14 +544,12 @@ class Engine:
         """Пропущенный входящий: журнал + задача «перезвонить» в CRM."""
         db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? "
              "WHERE id=?", (now_iso(), reason[:200], call["id"]))
-        try:
-            self.crm.create_task(
-                "Перезвонить клиенту",
-                "Пропущенный входящий {} {} (звонок #{}, ВАТС {}) — {}".format(
-                    call.get("contact_name", ""), call.get("contact_phone", ""),
-                    call["id"], call.get("external_call_id", ""), reason))
-        except Exception as e:
-            print("[crm] create_task:", e)
+        self._crm_task(
+            "Перезвонить клиенту",
+            "Пропущенный входящий {} {} (звонок #{}, ВАТС {}) — {}".format(
+                call.get("contact_name", ""), call.get("contact_phone", ""),
+                call["id"], call.get("external_call_id", ""), reason),
+            call, "missed")
         self._push_crm(call, "missed")
         events.publish("call", {"id": call["id"], "status": "missed",
                                 "phone": call["contact_phone"], "direction": "in"})
@@ -548,14 +619,12 @@ class Engine:
                 "rating": int(ev.get("rating") or 0)})
             call = db.fetch1("SELECT * FROM calls WHERE id=?", (call_id,))
             if result == "missed":
-                try:
-                    self.crm.create_task(
-                        "Перезвонить клиенту",
-                        "Пропущенный входящий {} {} (звонок #{}, ВАТС {})".format(
-                            call.get("contact_name", ""), call.get("contact_phone", ""),
-                            call["id"], call.get("external_call_id", "")))
-                except Exception as e:
-                    print("[crm] create_task:", e)
+                self._crm_task(
+                    "Перезвонить клиенту",
+                    "Пропущенный входящий {} {} (звонок #{}, ВАТС {})".format(
+                        call.get("contact_name", ""), call.get("contact_phone", ""),
+                        call["id"], call.get("external_call_id", "")),
+                    call, "missed")
             self._push_crm(call, result)
             events.publish("call", {"id": call["id"], "status": result,
                                     "phone": call["contact_phone"]})
@@ -999,13 +1068,11 @@ class Engine:
         else:
             db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? WHERE id=?",
                  (now_iso(), "Пропущенный входящий"[:200], call["id"]))
-            try:
-                self.crm.create_task(
-                    "Перезвонить клиенту",
-                    "Пропущенный входящий {} {} (звонок #{})".format(
-                        call.get("contact_name", ""), call.get("contact_phone", ""), call["id"]))
-            except Exception as e:
-                print("[crm] create_task:", e)
+            self._crm_task(
+                "Перезвонить клиенту",
+                "Пропущенный входящий {} {} (звонок #{})".format(
+                    call.get("contact_name", ""), call.get("contact_phone", ""), call["id"]),
+                call, "missed")
             self._push_crm(db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],)), "missed")
             events.publish("call", {"id": call["id"], "status": "missed",
                                     "phone": call["contact_phone"], "direction": "in"})
@@ -1054,14 +1121,12 @@ class Engine:
             else:
                 db.q("UPDATE calls SET status='done', ended_at=?, result='missed', detail=? "
                      "WHERE id=?", (now_iso(), "Пропущенный входящий (Мультиком)"[:200], call["id"]))
-                try:
-                    self.crm.create_task(
-                        "Перезвонить клиенту",
-                        "Пропущенный входящий {} {} (звонок #{}, Мультиком {})".format(
-                            call.get("contact_name", ""), call.get("contact_phone", ""),
-                            call["id"], call.get("external_call_id", "")))
-                except Exception as e:
-                    print("[crm] create_task:", e)
+                self._crm_task(
+                    "Перезвонить клиенту",
+                    "Пропущенный входящий {} {} (звонок #{}, Мультиком {})".format(
+                        call.get("contact_name", ""), call.get("contact_phone", ""),
+                        call["id"], call.get("external_call_id", "")),
+                    call, "missed")
                 self._push_crm(call, "missed")
                 events.publish("call", {"id": call["id"], "status": "missed",
                                         "phone": call["contact_phone"], "direction": "in"})
@@ -1297,51 +1362,78 @@ class Engine:
             self._finish_attempt(call, item, "timeout", "Канал закрыт по таймауту", retryable=True)
 
     def _no_operator_finish(self, call, item, reason="Оператор не ответил"):
-        """Завершить звонок, ждавший оператора: статусы + задача «перезвонить» в CRM."""
+        """Завершить звонок, ждавший оператора: статусы + задача «перезвонить» в CRM.
+
+        CRM-действия — только через durable outbox (никакой сети в тике
+        движка, P1 повторного ревью); постановка — в одной транзакции с
+        бизнес-статусами: replay после сбоя не плодит дублей."""
         call = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
         if not call or call["status"] != "wait_operator":
             return
         ended = now_iso()
-        db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result='no_operator', detail=? WHERE id=?",
-             (ended, self._duration(call), reason[:200], call["id"]))
-        if item:
-            db.q("UPDATE campaign_items SET status='no_operator', completed_at=? WHERE id=?", (ended, item["id"]))
-        db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?", (ended, call["id"]))
-        try:
-            self.crm.create_task("Перезвонить клиенту", "Клиент {} {} ждал оператора, звонок #{} — {}".format(
-                call.get("contact_name", ""), call.get("contact_phone", ""), call["id"], reason))
-        except Exception as e:
-            print("[crm] create_task:", e)
-        self._push_crm(call, "no_operator")
+        with db.transaction():
+            db.q("UPDATE calls SET status='done', ended_at=?, duration_sec=?, result='no_operator', detail=? WHERE id=?",
+                 (ended, self._duration(call), reason[:200], call["id"]))
+            if item:
+                db.q("UPDATE campaign_items SET status='no_operator', completed_at=? WHERE id=?",
+                     (ended, item["id"]))
+            db.q("UPDATE acd SET status='missed', updated=? WHERE call_id=?", (ended, call["id"]))
+            self._crm_task("Перезвонить клиенту",
+                           "Клиент {} {} ждал оператора, звонок #{} — {}".format(
+                               call.get("contact_name", ""), call.get("contact_phone", ""),
+                               call["id"], reason),
+                           call, "no_operator")
+            self._push_crm(call, "no_operator")
         events.publish("call", {"id": call["id"], "status": "no_operator"})
 
     def _push_crm(self, call, final_status):
-        row = None
+        """Результат звонка в CRM — ТОЛЬКО через durable outbox.
+
+        P1 повторного ревью: раньше ПЕРВАЯ попытка push_result выполнялась
+        синхронно в потоке обработки звонка (сеть в цикле движка) — лежащая
+        CRM задерживала обработку событий и watchdog. Теперь любое
+        CRM-действие ставится в очередь (быстрая запись в SQLite), а доставку
+        делает _crm_worker_loop с backoff. Идемпотентность повторов — uniq
+        ats-call-<id> на стороне amoCRM + idem_key в outbox."""
         try:
-            row = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
+            row = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],)) if call else None
             if row:
-                self.crm.push_result(row)
+                db.crm_outbox_enqueue(
+                    "push_result", row, idem_key="push:{}:{}".format(row["id"], final_status))
         except Exception as e:
-            # Результат НЕ теряем: кладём в CRM outbox — движок повторит
-            # доставку с backoff (_crm_outbox_tick). Для amoCRM это защита
-            # от 401/429/5xx/сетевых сбоев и рестартов.
-            print("[crm] push_result:", e)
-            try:
-                if row is None and call and call.get("id"):
-                    row = db.fetch1("SELECT * FROM calls WHERE id=?", (call["id"],))
-                if row:
-                    db.crm_outbox_enqueue("push_result", row, error=e)
-            except Exception as e2:
-                print("[crm] outbox enqueue failed:", e2)
+            # Даже постановка в очередь не прошла — единственный допустимый
+            # шум: событие теряется для CRM, но звонок/статусы не страдают.
+            print("[crm] outbox enqueue failed (push_result, call #{}): {}".format(
+                (call or {}).get("id"), e))
+
+    def _crm_task(self, title, desc, call, reason):
+        """Задача CRM («Перезвонить») — только через durable outbox.
+
+        idem_key 'task:<call_id>:<reason>' не даёт повторной постановке
+        (replay вебхука, рестарт) создать дубли; на стороне amoCRM дубли
+        от «ответ потерялся» дополнительно гасятся маркером ATS#<id>."""
+        try:
+            db.crm_outbox_enqueue("create_task",
+                                  {"title": str(title), "desc": str(desc),
+                                   "call_id": (call or {}).get("id"),
+                                   "phone": (call or {}).get("contact_phone", ""),
+                                   "contact_name": (call or {}).get("contact_name", "")},
+                                  idem_key="task:{}:{}".format((call or {}).get("id"), reason))
+        except Exception as e:
+            print("[crm] outbox enqueue failed (create_task, call #{}): {}".format(
+                (call or {}).get("id"), e))
 
     # ---------- CRM outbox: повторная доставка результатов ----------
     def _crm_outbox_tick(self, limit=5):
-        """Отправить созревшие записи CRM outbox (вызывается тиком движка).
+        """Отправить созревшие записи CRM outbox (вызывается CRM-воркером).
 
-        kind=push_result: payload — снапшот записи calls на момент сбоя.
-        uniq звонка (ats-call-<id>) делает повтор идемпотентным на стороне
-        amoCRM: дубль не создастся, даже если первый POST дошёл, а ответ
-        потерялся по сети.
+        kind=push_result: payload — снапшот записи calls. uniq звонка
+        (ats-call-<id>) делает повтор идемпотентным на стороне amoCRM:
+        дубль не создастся, даже если первый POST дошёл, а ответ потерялся.
+        kind=create_task: payload — {title, desc, call_id, phone}: маркер
+        ATS#<call_id> в тексте + поиск открытых задач гасят дубли повторов.
+        После исчерпания повторов — dead-letter (status='failed') + событие
+        для мониторинга; рестарт подхватывает pending-строки автоматически.
         """
         rows = db.crm_outbox_due(limit=limit)
         if not rows:
@@ -1354,16 +1446,31 @@ class Engine:
                                          f"bad payload json: {e}")
                 continue
             try:
-                self.crm.push_result(payload)
+                if str(row.get("kind") or "") == "create_task":
+                    self.crm.create_task(payload.get("title") or "Перезвонить клиенту",
+                                         payload.get("desc") or "",
+                                         call_id=payload.get("call_id"),
+                                         phone=payload.get("phone"))
+                else:
+                    self.crm.push_result(payload)
                 db.crm_outbox_mark_done(row["id"])
-                print(f"[crm] outbox #{row['id']} доставлен после "
-                      f"{row.get('attempts', 0)} повторов")
+                if int(row.get("attempts") or 0):
+                    print(f"[crm] outbox #{row['id']} доставлен после "
+                          f"{row.get('attempts', 0)} повторов")
             except Exception as e:
                 ok = db.crm_outbox_mark_retry(
                     row["id"], int(row.get("attempts") or 0) + 1, e)
                 if not ok:
+                    # dead-letter: action не потеряно молча — видно в БД и в
+                    # событиях для мониторинга (разбор вручную)
                     print(f"[crm] outbox #{row['id']} НЕ доставлен "
-                          f"(превышены повторы): {e}")
+                          f"(dead-letter, превышены повторы): {e}")
+                    events.publish("system", {
+                        "kind": "crm_outbox_failed",
+                        "outbox_id": row["id"],
+                        "kind_action": row.get("kind"),
+                        "call_id": (payload or {}).get("id")
+                        or (payload or {}).get("call_id")})
 
     # ---------- завершение попытки / автодозвон ----------
     def _finish_attempt(self, call, item, result, detail, ok=False, retryable=False):

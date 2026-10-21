@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """HTTP-сервер ATS v2: статика (app/ui), REST API v2, SSE для событий."""
 import json
+import os
 import re
 import sys
 import threading
@@ -42,8 +43,11 @@ UPLOAD_PATH_SUFFIXES = ("/contacts/import-file", "/calls/recording")
 
 # Потолок одновременных SSE-подписчиков и на одного пользователя: без него
 # каждый открытый таб держит поток, и сотни соединений исчерпают потоки/память.
-MAX_SSE_CLIENTS = 200
-MAX_SSE_PER_USER = 10
+# Жёсткие лимиты SSE — это_capacity-границы инстанса, а не «настройка на
+# скорость»: повышать только по данным нагрузочного теста на целевом стенде
+# (P2 повторного ревью). Окружение позволяет менять их без правки кода.
+MAX_SSE_CLIENTS = int(os.environ.get("ATS_MAX_SSE") or 200)
+MAX_SSE_PER_USER = int(os.environ.get("ATS_MAX_SSE_PER_USER") or 10)
 
 
 class BodyTooLarge(Exception):
@@ -58,15 +62,17 @@ def _body_limit_for(path):
     return MAX_BODY_JSON
 
 
-def auth_ok(headers, query_ticket=""):
-    """URL-доступ (SSE, записи): заголовок X-Ats-Token или одноразовый ?ticket=.
+def auth_ok(headers, query_ticket="", purpose="recording", resource=""):
+    """URL-доступ (SSE, записи): заголовок X-Ats-Token или одноразовый ?ticket=
+    С СОВПАДАЮЩИМ назначением (purpose+resource).
 
-    Долгоживущий токен сессии в query string не принимается (P1-аудита:
-    URL попадает в access-логи прокси и историю браузера). Полная проверка
-    сессии/активности пользователя — api.need_auth.
+    Долгоживущий токен сессии в query string не принимается (P1-аудита).
+    Полная проверка сессии/активности пользователя и scope билета —
+    api.need_auth_url (P1 повторного ревью: билет больше не аутентифицирует
+    произвольные маршруты).
     """
     from . import api
-    sess, err, code = api.need_auth(headers, query_ticket=query_ticket)
+    sess, err, code = api.need_auth_url(headers, query_ticket, purpose, resource)
     if err:
         return False
     return True
@@ -150,21 +156,26 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _static(self, rel):
-        # защита от path traversal: файл обязан лежать внутри STATIC_DIR
+        # защита от path traversal: файл обязан лежать внутри STATIC_DIR.
+        # Возвращает True, если отдан реальный файл, False — SPA-fallback
+        # (index.html). В любом случае отправляется РОВНО один ответ.
         root = STATIC_DIR.resolve()
         try:
             path = (root / rel).resolve()
             path.relative_to(root)
         except Exception:
             path = root / "index.html"
+        found = True
         if not path.exists() or path.is_dir():
             path = root / "index.html"
+            found = False
         data = path.read_bytes()
         ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml",
                  ".png": "image/png", ".ico": "image/x-icon"}.get(path.suffix.lower(),
                                                                   "application/octet-stream")
         self._send_bytes(data, ctype)
+        return found
 
     # ---------- GET ----------
     def do_GET(self):
@@ -198,9 +209,12 @@ class Handler(BaseHTTPRequestHandler):
                                         {"Content-Disposition": "attachment; filename=" + fname})
             return self._send_json(payload, status)
 
-        rel = u.path.lstrip("/")
-        self._static(rel)
-        self._send_json({"ok": False, "error": "not_found"}, 404)
+        # Статика/SPA-fallback: ровно ОДИН HTTP-ответ на запрос. Раньше здесь
+        # после _static() отправлялся второй ответ (404 JSON) в то же
+        # keep-alive соединение — нарушение HTTP/1.1-фрейминга (P1-ревью):
+        # следующий запрос по соединению читал мусор от предыдущего.
+        self._static(u.path.lstrip("/"))
+        return
 
     def _recording_signed(self, call_id, query):
         from . import records
@@ -223,7 +237,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _recording(self, call_id, query):
         qticket = (query.get("ticket") or [""])[0]
-        if not auth_ok(self.headers, qticket):
+        # Билет записи привязан к конкретному call_id (purpose='recording',
+        # resource='call:<id>'): чужой звонок и чужое назначение — отказ.
+        if not auth_ok(self.headers, qticket, purpose="recording",
+                       resource="call:{}".format(call_id)):
             return self._send_json({"ok": False, "error": "auth_required"}, 401)
         import os
         call = db.fetch1("SELECT recording FROM calls WHERE id=?", (call_id,))
@@ -248,7 +265,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": False, "error": "sse_capacity",
                                     "detail": "слишком много SSE-подписчиков"}, 503)
         from . import api as _api
-        sess, err, code = _api.need_auth(self.headers, query_ticket=qticket)
+        # SSE-билет: purpose='sse', resource='events' — только handshake
+        # EventSource (P1 повторного ревью: scope у URL-билетов)
+        sess, err, code = _api.need_auth_url(self.headers, qticket, "sse", "events")
         if err:
             return self._send_json(err, code)
         login = sess["login"]

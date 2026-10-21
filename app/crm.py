@@ -25,7 +25,8 @@ class CrmDriver:
         """Записать результат звонка в CRM. call — словарь записи calls."""
         raise NotImplementedError
 
-    def create_task(self, title, desc="", responsible=""):
+    def create_task(self, title, desc="", responsible="", call_id=None, phone=None):
+        """Создать задачу. call_id — маркер идемпотентности повторов outbox."""
         raise NotImplementedError
 
 
@@ -53,12 +54,14 @@ class CsvCrm(CrmDriver):
                         call.get("status"), call.get("result"), call.get("detail"), call.get("agent_result")])
         return path
 
-    def create_task(self, title, desc="", responsible=""):
+    def create_task(self, title, desc="", responsible="", call_id=None, phone=None):
+        # CSV-драйвер — стенд: дедуп на уровне файла не предусмотрен, дубль
+        # повторов предотвращается idem_key outbox (уникальный индекс).
         path = config.CRM_OUT_DIR / "crm_tasks.csv"
-        self._ensure_header(path, ["created", "title", "desc", "responsible"])
+        self._ensure_header(path, ["created", "title", "desc", "responsible", "call_id"])
         with open(path, "a", encoding="utf-8-sig", newline="") as f:
             csv.writer(f, delimiter=";").writerow([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                   title, desc, responsible])
+                                                   title, desc, responsible, call_id or ""])
         return path
 
 
@@ -83,12 +86,14 @@ class Bitrix24Crm(CrmDriver):
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read().decode("utf-8"))
 
-    def create_task(self, title, desc="", responsible=""):
+    def create_task(self, title, desc="", responsible="", call_id=None, phone=None):
         if not self._configured():
             raise RuntimeError("Bitrix24 не настроен (webhook_url).")
         import urllib.request
         url = self.settings["bitrix24"]["webhook_url"] + "/tasks.task.add.json"
-        fields = {"fields": {"TITLE": title, "DESCRIPTION": desc,
+        # call_id в заголовок задачи: видимый оператору маркер идемпотентности
+        t_title = "[ATS#{}] {}".format(call_id, title) if call_id else title
+        fields = {"fields": {"TITLE": t_title, "DESCRIPTION": desc,
                              "RESPONSIBLE_ID": responsible or 1}}
         req = urllib.request.Request(url, data=json.dumps(fields).encode("utf-8"),
                                      headers={"Content-Type": "application/json"})
@@ -428,15 +433,45 @@ class AmoCrm(CrmDriver):
 
         return call_res
 
-    def create_task(self, title, desc="", responsible=""):
+    def create_task(self, title, desc="", responsible="", call_id=None, phone=None):
+        """Задача в amoCRM с идемпотентностью повторов outbox (P1 повторного
+        ревью): маркер ATS#<call_id> в тексте + проверка открытых задач до
+        создания. Гасит дубль «сервер создал задачу, а ответ потерялся».
+        """
         client = self._client()
         mcfg = self._mcfg()
         try:
             resp_id = _amo_responsible_id(mcfg, responsible)
         except (TypeError, ValueError):
             resp_id = 1
-        return client.create_task(text=f"{title}\n{desc}".strip(),
+        marker = "ATS#{}".format(call_id) if call_id else ""
+        text = ("[{}] ".format(marker) if marker else "") + f"{title}\n{desc}".strip()
+        entity_id = None
+        if marker:
+            # ищем дубль: по контакту (точный фильтр), иначе — по открытым задачам
+            if phone:
+                try:
+                    from .providers.amocrm import pick_exact_contact
+                    with self._contact_lock:
+                        contacts = client.search_contacts(str(phone))
+                        contact, _conflict = pick_exact_contact(contacts, str(phone))
+                        entity_id = (contact or {}).get("id")
+                except Exception as e:
+                    print(f"[amocrm] dedupe task search contact {phone}: {e}")
+            try:
+                dup = client.find_task_by_marker(marker, entity_id=entity_id)
+                if dup:
+                    print(f"[amocrm] задача {marker} уже существует "
+                          f"(id={dup.get('id')}) — дубль не создан")
+                    return dup
+            except Exception as e:
+                # Поиск не удался — доставляем (лучше дубли, чем потеря задачи);
+                # повторные дубли гасятся маркером при следующем успехе поиска.
+                print(f"[amocrm] dedupe task check failed, создаём: {e}")
+        return client.create_task(text=text,
                                   responsible_user_id=resp_id,
+                                  entity_id=entity_id if (marker and phone and entity_id) else None,
+                                  entity_type="contacts" if (marker and phone and entity_id) else None,
                                   task_type_id=mcfg.get("task_type_id") or 1)
 
 

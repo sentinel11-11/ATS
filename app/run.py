@@ -110,7 +110,13 @@ def main(argv=None):
         if len(new_admin_pw) < 6:
             print("[ATS v2] Пароль слишком короткий (минимум 6 символов) — не изменён.")
             return 1
-        if db.set_admin_password(new_admin_pw):
+        try:
+            changed = db.set_admin_password(new_admin_pw)
+        except Exception as e:
+            print("[ATS v2] Не удалось завершить смену пароля (сессии не отозваны, "
+                  "пароль НЕ изменён): {}".format(e))
+            return 1
+        if changed:
             print("[ATS v2] Пароль администратора (admin) обновлён.")
         else:
             print("[ATS v2] Пользователь admin не найден — пароль не изменён.")
@@ -142,7 +148,13 @@ def main(argv=None):
         if len(pwd) < 6:
             print("[ATS v2] Пароль слишком короткий (минимум 6 символов) — не изменён.")
             return 1
-        if db.set_user_password(login, pwd):
+        try:
+            changed = db.set_user_password(login, pwd)
+        except Exception as e:
+            print("[ATS v2] Не удалось завершить смену пароля (сессии не отозваны, "
+                  "пароль НЕ изменён): {}".format(e))
+            return 1
+        if changed:
             print("[ATS v2] Пароль пользователя '{}' обновлён.".format(
                 str(login).strip().lower()))
         else:

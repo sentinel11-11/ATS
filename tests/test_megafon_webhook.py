@@ -264,6 +264,11 @@ class EngineMegafonTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.vats.stop()
 
+    def _pump_crm(self):
+        """Доставить CRM-outbox синхронно (в проде это делает воркер)."""
+        for _ in range(3):
+            self.engine._crm_outbox_tick(limit=50)
+
     def _mkcontact(self, phone, name="Клиент"):
         return db.insert("contacts", {"name": name, "phone": phone, "grp": "",
                                       "note": "", "consent": 1, "consent_source": "t",
@@ -350,6 +355,7 @@ class EngineMegafonTest(unittest.TestCase):
         self.assertEqual(call["external_status"], "Success")
         atts = db.fetch("SELECT * FROM attempts WHERE call_id=?", (call["id"],))
         self.assertEqual(len(atts), 1)  # 1 звонок, 0 дублей
+        self._pump_crm()  # результаты CRM — через durable outbox (P1 повторного ревью)
         self.assertTrue(self._crm_has("79260000101"))
         sts = [r["status"] for r in db.fetch(
             "SELECT status FROM provider_events WHERE external_call_id=?", (ext,))]
@@ -395,6 +401,7 @@ class EngineMegafonTest(unittest.TestCase):
                               "phone": "79260000103", "direction": "in"}))
         call = db.fetch1("SELECT * FROM calls WHERE external_call_id='5002'")
         self.assertEqual(call["result"], "missed")
+        self._pump_crm()  # задачи CRM — через durable outbox (P1 повторного ревью)
         tasks = config.CRM_OUT_DIR / "crm_tasks.csv"
         self.assertIn("79260000103", tasks.read_text(encoding="utf-8-sig"))
 
@@ -482,6 +489,7 @@ class EngineMegafonTest(unittest.TestCase):
         self.assertEqual((call["result"], call["contact_name"], call["wait_sec"]),
                          ("missed", "Журналов", 13))
         self.assertEqual(call["missed_status"], "3")
+        self._pump_crm()  # результаты CRM — через durable outbox (P1 повторного ревью)
         self.assertTrue(self._crm_has("79260000109"))
 
 
