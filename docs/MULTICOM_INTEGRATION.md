@@ -14,7 +14,7 @@
 
 | Что выдал Мультиком | Чем подключать | Документ |
 |---|---|---|
-| Только SIP-регистрацию (логин/пароль/сервер 95.128.224.47:5060, пул DID, формат `8XXXXXXXXXX`) | SIP-транк → Asterisk → ATS (`settings.provider=ami`) | **`docs/MULTICOM_SIP_CONNECT.md`** — пошагово, с проверками и письмом оператору |
+| Только SIP-регистрацию (логин/пароль/сервер sip.example-operator.ru:5060, пул DID, формат `8XXXXXXXXXX`) | SIP-транк → Asterisk → ATS (`settings.provider=ami`) | **`docs/MULTICOM_SIP_CONNECT.md`** — пошагово, с проверками и письмом оператору |
 | REST API (makecall/status) + webhook | провайдер `multicom` (этот документ) + транк для голоса | §1–§9 ниже |
 | И то, и другое | `ami` как основной транспорт, `multicom` как топ-ап статусов (вебхук correlation по `external_call_id`) | §5, §6 |
 

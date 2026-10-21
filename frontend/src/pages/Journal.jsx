@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Phone, Download, Search, Play, Trash2, Filter } from 'lucide-react';
-import { api, getToken } from '../api';
+import { api, openWithTicket } from '../api';
 import TimelineModal from '../components/TimelineModal';
 
 export default function Journal({ addToast, refreshKey }) {
@@ -27,8 +27,7 @@ export default function Journal({ addToast, refreshKey }) {
   }, [refreshKey, onlyCampaignsFilter]);
 
   const handleExportCSV = () => {
-    const token = getToken();
-    window.open(`/api/v2/export/calls.csv?token=${encodeURIComponent(token)}`, '_blank');
+    openWithTicket('/api/v2/export/calls.csv');
   };
 
   const handleClearNonCampaign = async () => {

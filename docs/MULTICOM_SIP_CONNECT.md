@@ -16,14 +16,14 @@ API всё-таки дадут), `docs/AMOCRM_INTEGRATION.md` (CRM), `docs/DEPLO
 
 | Дано | Значение |
 |---|---|
-| Логин SIP-регистрации | `00083819` |
+| Логин SIP-регистрации | `00000000` |
 | Пароль | `9xF4txEyRK` (в репозиторий не коммитить!) |
-| Сервер регистрации | `95.128.224.47`, порт `5060`, UDP/TCP |
+| Сервер регистрации | `sip.example-operator.ru`, порт `5060`, UDP/TCP |
 | Кодеки | G.711 (a-law/u-law), G.729 |
-| Номера (DID) | 15 шт., например `9690229926`, `9863149340`, `9362574897` |
+| Номера (DID) | 15 шт., например `5550000001`, `5550000011`, `5550000021` |
 | Формат исходящего набора | `8_КодГорода_Номер` (пример `84952588233`), международный `810_…` |
 | B-номер входящего вызова | 10 цифр (`4952588233`) |
-| «Тишина» в одну сторону | открыть в файрволе сеть `95.128.224.0/21` |
+| «Тишина» в одну сторону | открыть в файрволе сеть `192.0.2.0/21` |
 | Wiki оператора | `http://95.128.229.229/wiki/index.php` (страница «Asterisk») |
 
 Ключевое: **REST API, ключа авторизации и webhook-эндпоинта оператор не выдавал**.
@@ -33,7 +33,7 @@ API всё-таки дадут), `docs/AMOCRM_INTEGRATION.md` (CRM), `docs/DEPLO
 Рабочая схема для такого набора данных одна:
 
 ```
-     движок ATS  ──AMI (5038)──►  Asterisk  ──SIP/RTP──► 95.128.224.47 (Мультиком) ──► абонент
+     движок ATS  ──AMI (5038)──►  Asterisk  ──SIP/RTP──► sip.example-operator.ru (Мультиком) ──► абонент
         ▲                          │
         └───── события/запись ─────┘
 ```
@@ -148,18 +148,18 @@ Asterisk и ATS могут быть на одной машине (тогда AMI
 
 ```bash
 # iptables (CentOS/старая Ubuntu)
-iptables -I INPUT -p udp -s 95.128.224.0/21 --dport 5060 -j ACCEPT
-iptables -I INPUT -p tcp -s 95.128.224.0/21 --dport 5060 -j ACCEPT
-iptables -I INPUT -p udp -s 95.128.224.0/21 --dport 10000:20000 -j ACCEPT   # RTP от оператора
+iptables -I INPUT -p udp -s 192.0.2.0/21 --dport 5060 -j ACCEPT
+iptables -I INPUT -p tcp -s 192.0.2.0/21 --dport 5060 -j ACCEPT
+iptables -I INPUT -p udp -s 192.0.2.0/21 --dport 10000:20000 -j ACCEPT   # RTP от оператора
 iptables -A INPUT -p udp --dport 5060 -j DROP        # остальной SIP-скан — в мусор
 service iptables save
 
 # nftables (Debian 12 / Ubuntu 22+)
 nft add table ip mcm
 nft add chain ip mcm in '{ type filter hook input priority 0 ; }'
-nft add rule ip mcm in ip saddr 95.128.224.0/21 udp dport 5060 accept
-nft add rule ip mcm in ip saddr 95.128.224.0/21 tcp dport 5060 accept
-nft add rule ip mcm in ip saddr 95.128.224.0/21 udp dport 10000-20000 accept
+nft add rule ip mcm in ip saddr 192.0.2.0/21 udp dport 5060 accept
+nft add rule ip mcm in ip saddr 192.0.2.0/21 tcp dport 5060 accept
+nft add rule ip mcm in ip saddr 192.0.2.0/21 udp dport 10000-20000 accept
 nft add rule ip mcm in udp dport 5060 counter drop
 ```
 
@@ -172,7 +172,7 @@ nft add rule ip mcm in udp dport 5060 counter drop
 Проверка сети до всякой телефонии:
 
 ```bash
-nc -zvu 95.128.224.47 5060 && echo "udp 5060 ок"     # UDP «проверится» только по отсутствию ICMP
+nc -zvu sip.example-operator.ru 5060 && echo "udp 5060 ок"     # UDP «проверится» только по отсутствию ICMP
 ip -4 addr show                         # понять, какой адрес увидит оператор
 ```
 
@@ -260,9 +260,9 @@ sudo — отсюда `env: «MCM_PASS»: No such file or directory`. `export` +
 `res/res_pjsip_outbound_registration.c`) и закреплены тестом
 `test_template_uses_only_real_asterisk20_options`.
 
-Переопределяемые значения по умолчанию: `MCM_LOGIN` (`00083819`), `MCM_HOST`/`MCM_PORT`
-(`95.128.224.47`/`5060`), `MCM_TRUNK` (`mcm` — имя секции и оно же `settings.ami.trunk`),
-`MCM_NET` (`95.128.224.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (пусто = `alaw,ulaw`,
+Переопределяемые значения по умолчанию: `MCM_LOGIN` (`00000000`), `MCM_HOST`/`MCM_PORT`
+(`sip.example-operator.ru`/`5060`), `MCM_TRUNK` (`mcm` — имя секции и оно же `settings.ami.trunk`),
+`MCM_NET` (`192.0.2.0/21`), `MCM_RTP` (`10000-20000`), `MCM_CODECS` (пусто = `alaw,ulaw`,
 `g729` подмешивается сам, если `asterisk -rx "core show codec"` его знает — в
 `asterisk-modules` Ubuntu 24.04 модуля нет, см. шаг 3 `docs/MULTICOM_SETUP_STEPS.md`),
 `MCM_MAX_CHANNELS` (`15`), `MCM_NUMBERS` (список из письма), `MCM_NUMBER_PROVIDER` (`ami`),
@@ -308,7 +308,7 @@ asterisk -rx "module reload res_pjsip.so"
 asterisk -rx "pjsip show transports"    # transport-udp  Active  0.0.0.0:5060
 asterisk -rx "pjsip show endpoints"      # Endpoint:  <Aor>      mcm            → mcm/mcm-aor
 asterisk -rx "pjsip show aors"           # Contact:   <Aor/ContactUri> …
-asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
+asterisk -rx "pjsip show contacts"       # sip.example-operator.ru … Avail
 ```
 
 - `pjsip show contacts` показывает `Avail`/`Non-Corr` — да, контакт появляется **после**
@@ -323,7 +323,7 @@ asterisk -rx "pjsip show contacts"       # 95.128.224.47 … Avail
 - `State: Unavailable` у endpoint'а транка — норма: исходящему транку нечего показывать, пока
   нет контакта в AOR. На набор `PJSIP/<номер>@mcm` это не влияет; если нужен осознанный
   device state по регистрации — в `[mcm-reg]` ставят `line=yes` и `endpoint=mcm`.
-- Сырой SIP можно посмотреть так: `asterisk -rx "pjsip set logger on host 95.128.224.47"`,
+- Сырой SIP можно посмотреть так: `asterisk -rx "pjsip set logger on host sip.example-operator.ru"`,
   затем `tail -f /var/log/asterisk/messages.log | grep -i "40[13]\|REGISTER"`.
 
 Если у вас Asterisk 10–18 и вы хотите ровно как в документации оператора — `chan_sip`:
@@ -451,8 +451,8 @@ SIP-регистрацию (§1), поэтому форма нужна здес�
 | API URL | `api_url` | Оставить `https://api.multicom.ru/v1` (дефолт) или пустым. Реального API у нас нет: клиент умеет `GET /account`, `GET /numbers`, `POST /calls/make`, `POST /calls/{id}/hangup`; если оператор пришлёт свой контракт, пути правятся ключами `account_path`, `numbers_path`, `makecall_path`, `hangup_path` (только через `/settings/raw`, в UI их нет) |
 | API Key / Token | `api_key` | Пусто. Пока ключа нет, обе кнопки и провайдер `multicom` возвращают `Мультиком не настроен: укажите API Key…` — это намеренный fail-fast: АТС не должна делать вид, что звонит. Хранить можно не в БД, а в env `ATS_MULTICOM_API_KEY` |
 | ID Аккаунта / Лицевой счет | `account_id` | Номер договора/лицевого счёта из письма Мультикома. Используется как заголовок `X-Account-Id` во всех REST-запросах; для `ami`-маршрута — только справка |
-| SIP Сервер (sip_host) | `sip_host` | `95.128.224.47:5060` (регрессор из письма). **ATS к нему не подключается и не регистрируется** — это делает Asterisk (`/etc/asterisk/pjsip.conf` + строка `register=`, §5). Поле справочное, чтобы реквизиты были в одном месте |
-| SIP Логин | `sip_user` | `00083819` |
+| SIP Сервер (sip_host) | `sip_host` | `sip.example-operator.ru:5060` (регрессор из письма). **ATS к нему не подключается и не регистрируется** — это делает Asterisk (`/etc/asterisk/pjsip.conf` + строка `register=`, §5). Поле справочное, чтобы реквизиты были в одном месте |
+| SIP Логин | `sip_user` | `00000000` |
 | SIP Пароль | `sip_secret` | Лучше оставить пустым в UI. Значение нужно только Asterisk'у, и держать его надо в `pjsip.conf` (права 640, владелец `root:asterisk`), а не в `ats.db`: в настройках АТС секрет лежит в БД и маскируется в API, но файл с 640 защищён лучше. В UI поле есть, чтобы можно было пробросить его в генератор конфига, если решите хранить там |
 | Сотрудник ATS по умолчанию (user) | `default_user` | `ats`. Подставляется в `user` тела `POST /calls/make` — «кто инициировал звонок» на стороне оператора; в `ami`-режиме не используется |
 | Секрет вебхука (X-Multicom-Secret) | `webhook_secret` | Пусто, пока оператор не подтвердил, что шлёт события. При пустом секрете приём `POST /api/v2/webhooks/multicom` закрыт отдачей 403 (fail-closed) — это норма, а не поломка. Если дадут: сгенерировать длинный случайный ключ (`openssl rand -hex 32`), вписать сюда и передать агрегатору в заголовке `X-Multicom-Secret` |
@@ -502,7 +502,7 @@ curl -s -X POST $ATS/api/v2/multicom/pool-sync -H "X-Ats-Token: $TOK" -H 'Conten
 | `channel_pattern` | пусто | полный шаблон диал-строки, если нужно иначе (`{number}`, `{trunk}`) |
 | `number_format` | `ru8` | Мультиком требует `8XXXXXXXXXX`; в базе остаётся `+7…` |
 | `dial_prefix` | пусто | надбавка после формата (например `0` для выхода на межгород) |
-| `caller_id_format` | `d10` | CLI 10 цифр (`9690229926`) — как оператор сам отдаёт номер; `digits`/`e164` — если потребуют полный |
+| `caller_id_format` | `d10` | CLI 10 цифр (`5550000001`) — как оператор сам отдаёт номер; `digits`/`e164` — если потребуют полный |
 | `context` | `ats-out` | контекст, куда Originate кладёт исходящий канал |
 | `ring_timeout_ms` | `35000` | сколько звонить абонента |
 | `play_message` | `true` | озвучка текста в `message` через AGI |
@@ -514,7 +514,7 @@ curl -s -X POST $ATS/api/v2/multicom/pool-sync -H "X-Ats-Token: $TOK" -H 'Conten
 | `operator_trunk` | пусто (= `trunk`) | отдельный транк для исходящих на сотрудников, если нужен |
 | `op_context` | `from-internal` | контекст ответившего оператора (обычно `Wait` + `Bridge`) |
 | `acd_answer_timeout`, `bridge_timeout` | `35`, `10` | ожидания АЦД |
-| `acd_callerid` | `9690229926` | какой CLI показывать сотруднику при входящем/переводе |
+| `acd_callerid` | `5550000001` | какой CLI показывать сотруднику при входящем/переводе |
 
 Быстрее всего — `sudo -E ./deploy/asterisk/install-multicom-trunk.sh --ami --ats` (пароль AMI
 генерируется, `settings.ami` и `provider=ami` пишутся через API тем же запросом; флага
@@ -560,9 +560,9 @@ ATS_TOKEN=$TOK sudo -E ./deploy/asterisk/install-multicom-trunk.sh --numbers-onl
 Вручную:
 
 ```bash
-for n in 9690229926 9690229930 9690229937 9690229938 9690229942 \
-         9863149340 9863149348 9863149351 9863149365 9863149385 \
-         9362574897 9362577603 9362962622 9362968878 9362968932; do
+for n in 5550000001 5550000000 5550000000 5550000000 5550000000 \
+         5550000011 5550000000 5550000000 5550000000 5550000000 \
+         5550000021 5550000000 9362962622 9362968878 9362968932; do
   curl -s -X POST $ATS/api/v2/numbers/save -H "X-Ats-Token: $TOK" -H 'Content-Type: application/json' \
     -d "{\"number\":\"+7$n\",\"label\":\"MCM $n\",\"kind\":\"mobile\",\"provider\":\"ami\",\"daily_limit\":120}"
 done
@@ -656,7 +656,7 @@ tail -f /var/log/asterisk/messages.log | grep "ATS in"
 Позвоните на один из 15 DID: в `Звонках` появляется запись `direction=in` (статус
 `ringing` → `done_ok` после разговора, либо `missed` + задача в amoCRM «Перезвонить
 клиенту»). Контакт подтянется, если 10-значный CLI совпал с номером в базе — ATS ищет
-по всем написаниям (`9690229926`/`7969…`/`+7969…`/`8969…`).
+по всем написаниям (`5550000001`/`7969…`/`+7969…`/`8969…`).
 
 ### 11.5 Проверка записей и amoCRM
 
@@ -710,7 +710,7 @@ curl -s $ATS/api/v2/health | python3 -m json.tool
 
 ## 12а. Если объекты созданы, а регистрация не подтверждена
 
-`pjsip show endpoints` показывает `mcm`, `OutAuth: mcm-auth/00083819`, `Aor: mcm-aor`,
+`pjsip show endpoints` показывает `mcm`, `OutAuth: mcm-auth/00000000`, `Aor: mcm-aor`,
 `Identify: mcm-identify/mcm Match: <IP>/32`, но `pjsip show registrations` = `Unregistered` или
 `Rejected` — это не наша конфигурация, а handshake с регистратором. Порядок:
 
@@ -720,7 +720,7 @@ grep -aE "No response received|Fatal response|Forbidden|Maximum retries|Failed t
   /var/log/asterisk/messages.log | tail -10
 asterisk -rx "pjsip show registrations"
 # 2) уходит ли REGISTER и что ответили — только по pcap
-timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host 95.128.224.47'
+timeout 90 tcpdump -nn -i any -s 0 -w /tmp/sip5060.pcap 'udp port 5060 and host sip.example-operator.ru'
 grep -ac "REGISTER sip" /tmp/sip5060.pcap                          # сколько наших попыток ушло
 grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c    # что ответили (пусто = молчат)
 ```
@@ -742,7 +742,7 @@ grep -aoE "SIP/2.0 [0-9]{3}" /tmp/sip5060.pcap | sort | uniq -c    # что от
 Последняя строка — это то, что на проде читалось как «нам отказали», а было вот чем:
 
 ```
-WARNING res_pjsip_outbound_registration.c: No response received from 'sip:00083819@95.128.224.47:5060'
+WARNING res_pjsip_outbound_registration.c: No response received from 'sip:00000000@sip.example-operator.ru:5060'
         on registration attempt to '…', retrying in '60'        ← 20:45:38, 20:47:10, 20:48:42
 WARNING res_pjsip_outbound_registration.c: Maximum retries reached when attempting outbound
         registration to '…', stopping registration attempt      ← 20:50:14
@@ -751,12 +751,12 @@ WARNING res_pjsip_outbound_registration.c: Maximum retries reached when attempti
 Ни `401`, ни `403`: на `REGISTER` не ответили вообще, и после десяти попыток Asterisk счёл
 дальнейшее бессмысленным. Значит пароль — последняя из версий, а проверять надо по порядку:
 
-1. уходит ли пакет оттуда, откуда ждут: `ip route get 95.128.224.47` (в `src` — публичный
+1. уходит ли пакет оттуда, откуда ждут: `ip route get sip.example-operator.ru` (в `src` — публичный
    `89.223.127.145`, а не адрес внутреннего интерфейса) и `ss -lnup sport = :5060`
    (иначе ответы и исходящие идут с неожиданного адреса, и их не узнают);
 2. нет ли наших правил на исход: `nft list ruleset | head -30`, `iptables -S | head -20` —
    `ufw inactive` не значит, что filter-таблица пуста;
-3. жив ли порт у них: `timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo "tcp=$?"` →
+3. жив ли порт у них: `timeout 6 bash -c '</dev/tcp/sip.example-operator.ru/5060'; echo "tcp=$?"` →
    `0` = TCP открыт (у части площадок Мультикома регистрация принимается только по TCP — тогда нужен
    `[transport-tcp]` и `transport=transport-tcp` в `[mcm-reg]`), `1` с `Connection refused` =
    порт закрыт, но хост отвечает, `124` = пакеты фильтруют молча (это и есть «тишина» в логе);
@@ -768,10 +768,10 @@ WARNING res_pjsip_outbound_registration.c: Maximum retries reached when attempti
 
 ```
 21:23:58 / 21:25:30 / 21:27:02 / 21:28:39 / 21:30:11   No response received … retrying in '60'
-ip route get 95.128.224.47 → src 89.223.127.145 dev eth0        (исходим с правильного адреса)
+ip route get sip.example-operator.ru → src 89.223.127.145 dev eth0        (исходим с правильного адреса)
 ss -lnup sport = :5060      → 0.0.0.0:5060,asterisk             (транспорт слушает)
 nft list ruleset / iptables -S → пустые filter, политики ACCEPT (у нас нечего чинить)
-timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo tcp=$? → tcp=124
+timeout 6 bash -c '</dev/tcp/sip.example-operator.ru/5060'; echo tcp=$? → tcp=124
 ```
 
 Шаг `retry_interval=60` + таймаут транзакции ≈ 92 с — интервалы в логу ровно такие, то есть
@@ -780,7 +780,7 @@ timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo tcp=$? → tcp=124
 неверный пароль (на пароль отвечают `401`, и мы бы его увидели) и не наш конфиг: это либо нет
 нашего IP в их allowlist, либо registrar живёт на другом порту/транспорте, либо логин не
 активирован и трафик от нас дропают молча. Дополнительно стоит проверить только 5061/TLS:
-`timeout 5 bash -c '</dev/tcp/95.128.224.47/5061'; echo tls=$?` — если откроется, просить у
+`timeout 5 bash -c '</dev/tcp/sip.example-operator.ru/5061'; echo tls=$?` — если откроется, просить у
 них сертификат/порт и переводить регистрацию на TLS. `install-multicom-trunk.sh --check` теперь
 классифицирует случай сам: «по логу это тишина, а не отказ (… ) — пароль тут ни при чём» или
 «по логу это отказ: …», и печатает обе пробы.
@@ -800,7 +800,7 @@ timeout 6 bash -c '</dev/tcp/95.128.224.47/5060'; echo tcp=$? → tcp=124
 
 Отдельно: строка вида `ERROR pjproject: sip_parser.c Error parsing '2531229586': String value was greater
 than the maximum allowed value` в логе — это мусор от сканеров на открытом 5060, а не про наш транк.
-Закрывать его (`ufw allow from 95.128.224.0/21 … && ufw enable`) нужно, но на регистрацию он не влияет.
+Закрывать его (`ufw allow from 192.0.2.0/21 … && ufw enable`) нужно, но на регистрацию он не влияет.
 
 ## 13. Что ответить Мультикому (письмо-запрос)
 
@@ -808,7 +808,7 @@ than the maximum allowed value` в логе — это мусор от скан�
 не заработает, либо заработает и потом встанет.
 
 ```
-Тема: 00083819 — подключение АТС (Asterisk) к SIP-транку: параметры и лимиты
+Тема: 00000000 — подключение АТС (Asterisk) к SIP-транку: параметры и лимиты
 
 Виталий, добрый день!
 
@@ -819,22 +819,22 @@ IP-телефонный шлюз (Asterisk, chan_pjsip) с исходящими/
 1. Сетевой доступ: добавьте, пожалуйста, в allowlist наш статический IP
    <ПУБЛИЧНЫЙ_IP> (сигнализация UDP/TCP 5060 и RTP 10000-20000/udp).
    Наша сеть для маршрутизации: <СЕТЬ/маска>. Обращаем внимание: при «тишине»
-   по вашей рекомендации открыли сеть 95.128.224.0/21.
-2. Логин 00083819: одно место (регистрация) на 15 номеров — верно ли, что входящие
+   по вашей рекомендации открыли сеть 192.0.2.0/21.
+2. Логин 00000000: одно место (регистрация) на 15 номеров — верно ли, что входящие
    на все 15 DID приходят на один транк с B-номером 10 цифр в Request-URI?
    Нужны ли отдельные учётные записи/контексты на номер?
 3. Ограничения: максимальное число одновременных исходящих вызовов (каналов),
    допустимая интенсивность вызовов (NUMBER/мин), лимит длительности разговора,
    допустимая доля неотвеченных, политика блокировок при массовом обзвоне.
-4. Caller ID: в каком формате вы принимаете A-номер (9690229926 / 89690229926 /
-   +79690229926) и разрешено ли подставлять любой из 15 наших номеров в каждом
+4. Caller ID: в каком формате вы принимаете A-номер (5550000001 / 85550000001 /
+   +75550000001) и разрешено ли подставлять любой из 15 наших номеров в каждом
    вызове (у нас исходящий пул ротируется по лимитам).
 5. Формат набора: подтверждаем 8XXXXXXXXXX по РФ и 810… по международной;
    нужен ли префикс для мобильных/городских направлений внутри сети.
 6. Кодеки: G.711a/u-law ок; G.729 — требуется ли лицензия с вашей стороны и
    включён ли transcoding на ваших SBC?
 7. DTMF: rfc2833 (и/или inband) — как предпочтительнее для ваших шлюзов?
-8. Биллинг/отчёты: есть ли выгрузка CDR (CSV/API/e-mail) по номеру 00083819 —
+8. Биллинг/отчёты: есть ли выгрузка CDR (CSV/API/e-mail) по номеру 00000000 —
    нужна сверка длительностей и статуса «отвечен/неотвечен»; доступны ли записи
    разговоров на вашей стороне (мы пишем свои)?
 9. Приём вызовов: как быстро поднимается резерв при недоступности нашего IP,

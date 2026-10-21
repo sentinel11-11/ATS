@@ -12,22 +12,93 @@ from urllib.parse import parse_qs, urlparse
 from . import api, config, db, events
 from .api import json_bytes
 
+# учёт SSE-соединений по пользователю (лимит MAX_SSE_PER_USER)
+_SSE_USERS = {}
+_SSE_USERS_LOCK = threading.Lock()
+
+
+def _sse_user_inc(login):
+    with _SSE_USERS_LOCK:
+        n = _SSE_USERS.get(login, 0) + 1
+        _SSE_USERS[login] = n
+        return n
+
+
+def _sse_user_dec(login):
+    with _SSE_USERS_LOCK:
+        n = _SSE_USERS.get(login, 0) - 1
+        if n > 0:
+            _SSE_USERS[login] = n
+        else:
+            _SSE_USERS.pop(login, None)
+
 STATIC_DIR = config.APP / "ui"
-MAX_BODY = 64 * 1024 * 1024  # базы контактов в base64 (до ~48 МБ файлом) + записи разговоров
+# Раздельные лимиты тела (C4, P1-аудита): обычный JSON — небольшой; тяжёлые
+# загрузки (базы контактов в base64, записи разговоров) — отдельные маршруты.
+# Превышение → 413 + закрытие соединения (тело не читаем в память).
+MAX_BODY_JSON = 2 * 1024 * 1024       # 2 MiB на обычные JSON-маршруты
+MAX_BODY_UPLOAD = 64 * 1024 * 1024    # 64 MiB только на импорт/загрузку аудио
+UPLOAD_PATH_SUFFIXES = ("/contacts/import-file", "/calls/recording")
+
+# Потолок одновременных SSE-подписчиков и на одного пользователя: без него
+# каждый открытый таб держит поток, и сотни соединений исчерпают потоки/память.
+MAX_SSE_CLIENTS = 200
+MAX_SSE_PER_USER = 10
 
 
-def auth_ok(headers, query_token=""):
-    from . import security
-    tok = headers.get("X-Ats-Token") or query_token or ""
-    return security.get_session(tok) is not None
+class BodyTooLarge(Exception):
+    """Тело запроса превышает лимит для этого маршрута."""
+
+
+def _body_limit_for(path):
+    p = path.rstrip("/")
+    for suf in UPLOAD_PATH_SUFFIXES:
+        if p.endswith(suf):
+            return MAX_BODY_UPLOAD
+    return MAX_BODY_JSON
+
+
+def auth_ok(headers, query_ticket=""):
+    """URL-доступ (SSE, записи): заголовок X-Ats-Token или одноразовый ?ticket=.
+
+    Долгоживущий токен сессии в query string не принимается (P1-аудита:
+    URL попадает в access-логи прокси и историю браузера). Полная проверка
+    сессии/активности пользователя — api.need_auth.
+    """
+    from . import api
+    sess, err, code = api.need_auth(headers, query_ticket=query_ticket)
+    if err:
+        return False
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "ATSv2"
+    # таймаут на чтение запроса от клиента (медленные/зависшие body не держат
+    # поток вечно; SSE-запись им не ограничена — там свой keepalive-ритм)
+    timeout = 75
 
     def log_message(self, fmt, *args):
         return  # тихий режим
+
+    def end_headers(self):
+        """Security-заголовки на каждый ответ (включая ошибки и статикой)."""
+        try:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # UI — единый origin: свои скрипты/стили/шрифты, fetch и EventSource
+            # на тот же origin; инлайн-стили React (style={{...}}) разрешены,
+            # инлайн-скрипты — нет. CSP API/JSON-ответам не мешает.
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; script-src 'self'; "
+                             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                             "connect-src 'self'; media-src 'self'; font-src 'self'; "
+                             "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+        except Exception:
+            pass
+        super().end_headers()
 
     # ---------- helpers ----------
     def _api_headers(self):
@@ -53,13 +124,16 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, obj, status=200):
         self._send_bytes(json_bytes(obj), "application/json; charset=utf-8", status)
 
-    def _body(self):
+    def _body(self, limit=None):
+        limit = limit or MAX_BODY_JSON
         try:
             n = int(self.headers.get("Content-Length", "0") or "0")
         except Exception:
             n = 0
-        if n <= 0 or n > MAX_BODY:
+        if n <= 0:
             return {}
+        if n > limit:
+            raise BodyTooLarge(n)
         raw = self.rfile.read(n)
         ctype = str(self.headers.get("Content-Type", "") or "").lower()
         if "application/x-www-form-urlencoded" in ctype:
@@ -148,8 +222,8 @@ class Handler(BaseHTTPRequestHandler):
                           "Cache-Control": "private, max-age=60"})
 
     def _recording(self, call_id, query):
-        qtoken = (query.get("token") or [""])[0]
-        if not auth_ok(self.headers, qtoken):
+        qticket = (query.get("ticket") or [""])[0]
+        if not auth_ok(self.headers, qticket):
             return self._send_json({"ok": False, "error": "auth_required"}, 401)
         import os
         call = db.fetch1("SELECT recording FROM calls WHERE id=?", (call_id,))
@@ -168,9 +242,21 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- SSE ----------
     def _sse(self):
         q = parse_qs(urlparse(self.path).query)
-        qtok = (q.get("token") or [""])[0]
-        if not auth_ok(self.headers, qtok):
-            return self._send_json({"ok": False, "error": "auth_required"}, 401)
+        qticket = (q.get("ticket") or [""])[0]
+        # лимиты соединений ДО расходования билета и открытия потока (C4)
+        if events.subscriber_count() >= MAX_SSE_CLIENTS:
+            return self._send_json({"ok": False, "error": "sse_capacity",
+                                    "detail": "слишком много SSE-подписчиков"}, 503)
+        from . import api as _api
+        sess, err, code = _api.need_auth(self.headers, query_ticket=qticket)
+        if err:
+            return self._send_json(err, code)
+        login = sess["login"]
+        if _sse_user_inc(login) > MAX_SSE_PER_USER:
+            _sse_user_dec(login)
+            return self._send_json({"ok": False, "error": "sse_limit_per_user",
+                                    "detail": "слишком много открытых вкладок/соединений"},
+                                   429)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -186,11 +272,23 @@ class Handler(BaseHTTPRequestHandler):
                     break
         finally:
             stream.close()
+            _sse_user_dec(login)
 
     # ---------- POST ----------
     def do_POST(self):
         u = urlparse(self.path)
-        body = self._body()
+        try:
+            body = self._body(_body_limit_for(u.path))
+        except BodyTooLarge as e:
+            # 413 + разрыв keep-alive: тело не читаем (иначе висящее соединение
+            # ждёт байты, которых мы не планируем забирать)
+            self.close_connection = True
+            payload = json_bytes({"ok": False, "error": "payload_too_large",
+                                  "detail": "лимит {} байт для этого маршрута "
+                                            "превышен ({})".format(
+                                      _body_limit_for(u.path), e.args[0])})
+            return self._send_bytes(payload, "application/json; charset=utf-8", 413,
+                                    {"Connection": "close", "Retry-After": "5"})
         payload, status = api.route("POST", u.path, body, self._api_headers())
         if payload is None:
             return self._send_json({"ok": False, "error": "not_found"}, 404)

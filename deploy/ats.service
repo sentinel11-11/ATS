@@ -27,8 +27,9 @@ WorkingDirectory=/opt/ats
 EnvironmentFile=-/etc/ats/ats.env
 Environment=PYTHONUNBUFFERED=1
 Environment=ATS_DATA_DIR=/var/lib/ats
-# Адрес слушания — из ATS_HOST/ATS_PORT (см. /etc/ats/ats.env), иначе 0.0.0.0:9124
-# (умолчания приложения). Сменить порт: правка ATS_PORT в ats.env + daemon-reload.
+# Адрес слушания — из ATS_HOST/ATS_PORT (см. /etc/ats/ats.env), иначе 127.0.0.1:9124
+# (умолчание приложения: loopback — наружу только через reverse-proxy с TLS,
+# docs/DEPLOY.md §6; публичный bind — осознанно через ATS_HOST=0.0.0.0).
 ExecStart=/usr/bin/python3 -m app.run
 Restart=always
 RestartSec=3

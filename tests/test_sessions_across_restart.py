@@ -116,3 +116,86 @@ class SessionsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FailClosedSessionsTest(unittest.TestCase):
+    """P1-аудита: production-аутентификация обязана отказывать при сбое
+    persistent-хранилища сессий, а не «пропускать по кэшу процесса».
+
+    Режим memory-fallback — только явный (ATS_FAST тестов или
+    ATS_MEMORY_SESSIONS=1); по умолчанию (без флагов) — strict.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def setUp(self):
+        db.q("DELETE FROM sessions")
+        security.SESSIONS.clear()
+        self._saved_flag = security.SESSIONS_MEMORY_FALLBACK
+
+    def tearDown(self):
+        security.SESSIONS_MEMORY_FALLBACK = self._saved_flag
+        security.SESSIONS.clear()
+
+    def _db_down(self):
+        real = security._db
+        security._db = lambda: (_ for _ in ()).throw(RuntimeError("no db"))
+        return real
+
+    def test_strict_mode_rejects_when_db_down(self):
+        """Без явного флага ошибка БД = отказ, а не сессия «из воздуха»."""
+        security.SESSIONS_MEMORY_FALLBACK = False
+        real = self._db_down()
+        try:
+            with self.assertRaises(security.SessionStorageUnavailable):
+                security.create_token("admin", "admin")
+            self.assertEqual(security.SESSIONS, {},
+                             "токен без persistent-строки не должен оставаться в кэше")
+            # и существующий кэш не спасает: get_session тоже отказывает
+            security.SESSIONS["forged"] = {"login": "admin", "role": "admin",
+                                           "exp": time.time() + 3600}
+            with self.assertRaises(security.SessionStorageUnavailable):
+                security.get_session("forged")
+        finally:
+            security._db = real
+
+    def test_strict_mode_need_auth_returns_503(self):
+        """API отвечает контролируемым 503, а не 500/тихим допуском."""
+        from app import api
+        security.SESSIONS_MEMORY_FALLBACK = False
+        real = self._db_down()
+        try:
+            s, err, code = api.need_auth({"X-Ats-Token": "whatever"})
+            self.assertIsNone(s)
+            self.assertEqual(code, 503)
+            self.assertEqual(err["error"], "auth_storage_unavailable")
+        finally:
+            security._db = real
+
+    def test_revoked_db_row_is_not_revived_by_cache(self):
+        """Строку сессии удалили (logout/сброс в другом процессе/реплике) —
+        локальный кэш не может «оживить» токен. Работает в обоих режимах."""
+        for mode in (False, True):
+            with self.subTest(memory_fallback=mode):
+                security.SESSIONS_MEMORY_FALLBACK = mode
+                tok = security.create_token("admin", "admin")
+                self.assertIsNotNone(security.get_session(tok))  # кэш прогрет
+                db.q("DELETE FROM sessions WHERE token_hash=?",
+                     (security.token_hash(tok),))
+                self.assertIsNone(security.get_session(tok),
+                                  "кэш процесса воскресил отозванную сессию")
+                self.assertNotIn(tok, security.SESSIONS)
+
+    def test_memory_fallback_still_works_when_explicitly_enabled(self):
+        """Явный режим стенда/тестов: БД лежит — сессии живут в памяти."""
+        security.SESSIONS_MEMORY_FALLBACK = True
+        real = self._db_down()
+        try:
+            tok = security.create_token("admin", "admin")
+            s = security.get_session(tok)
+            self.assertIsNotNone(s)
+            self.assertEqual(s["login"], "admin")
+        finally:
+            security._db = real

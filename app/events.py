@@ -25,6 +25,12 @@ def publish(event_type: str, payload=None):
                     pass
 
 
+def subscriber_count():
+    """Число активных SSE-подписчиков (для лимитов соединений, C4)."""
+    with _lock:
+        return len(_subscribers)
+
+
 class EventStream:
     """Один клиент SSE."""
     def __init__(self):

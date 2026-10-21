@@ -23,8 +23,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "asterisk" / "install-multicom-trunk.sh"
 FAKE_ASTERISK = """#!/bin/sh
 case "$*" in
-  *"show registrations"*|*"show contacts"*) echo "  00083819@95.128.224.47  200 OK  Registered" ;;
-  *"show endpoints"*) echo "  mcm                                    95.128.224.47:5060" ;;
+  *"show registrations"*|*"show contacts"*) echo "  00000000@sip.example-operator.ru  200 OK  Registered" ;;
+  *"show endpoints"*) echo "  mcm                                    sip.example-operator.ru:5060" ;;
   *"dialplan show"*) echo "Context 'ats-out'" ;;
   *) echo "ok" ;;
 esac
@@ -82,13 +82,13 @@ class RenderTest(unittest.TestCase):
         left = [l for l in out.splitlines() if "__MCM_" in l
                 and "password=" not in l and not l.lstrip().startswith(";")]
         self.assertEqual(left, [], "незаменённые плейсхолдеры: %s" % left)
-        self.assertIn("username=00083819", out)
+        self.assertIn("username=00000000", out)
         self.assertIn("auth_type=userpass", out)
         self.assertNotIn("auth_name=", out, "auth_name — поле из Asterisk 12/13; на 16+ объект auth с ним не загружается")
-        self.assertIn("server_uri=sip:00083819@95.128.224.47:5060", out)
-        self.assertIn("client_uri=sip:00083819@95.128.224.47:5060", out)
-        self.assertIn("from_domain=95.128.224.47", out)
-        self.assertIn("match=95.128.224.47/32", out)
+        self.assertIn("server_uri=sip:00000000@sip.example-operator.ru:5060", out)
+        self.assertIn("client_uri=sip:00000000@sip.example-operator.ru:5060", out)
+        self.assertIn("from_domain=sip.example-operator.ru", out)
+        self.assertIn("match=sip.example-operator.ru/32", out)
         self.assertIn("device_state_busy_at=15", out)
 
     def test_codecs_from_env(self):
@@ -188,7 +188,7 @@ class RenderTest(unittest.TestCase):
 
     def test_dangerous_values_rejected(self):
         """';' и перенос строки в значении = новая строка/секция в конфиге Asterisk."""
-        for var, val in (("MCM_LOGIN", "00083819; type=endpoint"),
+        for var, val in (("MCM_LOGIN", "00000000; type=endpoint"),
                          ("MCM_HOST", "1.2.3.4\n[evil]"),
                          ("MCM_PORT", "5060;")):
             with self.subTest(var=var):
@@ -239,7 +239,7 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         conf_path = self.dir / "pjsip-multicom.conf"
         conf = conf_path.read_text(encoding="utf-8")
         self.assertIn("password=p@ss-w0rd", conf)
-        self.assertIn("username=00083819", conf)
+        self.assertIn("username=00000000", conf)
         self.assertNotIn("auth_name=", conf)
         self.assertNotIn("__MCM_", conf)
         self.assertGreater(len(conf), 1000, "файл подозрительно короткий — шаблон не отрендерился")
@@ -261,7 +261,7 @@ class InstallTest(unittest.TestCase, _TmpAsteriskDirMixin):
         не создаются endpoint и registration, которые на него ссылаются."""
         self.assertEqual(run(env=self.env).returncode, 0)
         conf = self.dir / "pjsip-multicom.conf"
-        conf.write_text(conf.read_text(encoding="utf-8").replace("username=00083819", "auth_name=00083819"),
+        conf.write_text(conf.read_text(encoding="utf-8").replace("username=00000000", "auth_name=00000000"),
                         encoding="utf-8")
         p = run(["--check"], env=self.env)
         self.assertEqual(p.returncode, 1)
@@ -483,7 +483,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         self.env.update({"ATS_URL": "http://127.0.0.1:%d" % self.port, "ATS_TOKEN": "tok"})
 
     def test_numbers_only_tags_ami_and_e164(self):
-        p = run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="9690229926 9690229930"))
+        p = run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="5550000001 5550000000"))
         self.assertEqual(p.returncode, 0, (p.stdout + p.stderr)[-800:])
         posts = [(path, body) for path, h, body in _ApiHandler.captured]
         self.assertEqual([x[0] for x in posts], ["/api/v2/numbers/save"] * 2)
@@ -495,7 +495,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
             self.assertEqual(headers.get("X-Ats-Token"), "tok")
 
     def test_garbage_in_number_list_is_skipped(self):
-        run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="abc 9690229926"))
+        run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="abc 5550000001"))
         self.assertEqual(len(_ApiHandler.captured), 1, "мусор не должен уходить в API")
 
     def test_number_provider_validated(self):
@@ -563,7 +563,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.write_text(
             '#!/bin/sh\n'
             'case "$*" in\n'
-            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Unregistered      (exp. 30s ago)" ;;\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00000000@sip.example-operator.ru:5060                 mcm-auth                    Unregistered      (exp. 30s ago)" ;;\n'
             '  *) echo "ok" ;;\n'
             'esac\nexit 0\n', encoding="utf-8")
         fake.chmod(0o755)
@@ -582,7 +582,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.write_text(
             '#!/bin/sh\n'
             'case "$*" in\n'
-            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Registered      (exp. 3550s)" ;;\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00000000@sip.example-operator.ru:5060                 mcm-auth                    Registered      (exp. 3550s)" ;;\n'
             '  *) echo "ok" ;;\n'
             'esac\nexit 0\n', encoding="utf-8")
         fake.chmod(0o755)
@@ -596,7 +596,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.write_text(
             '#!/bin/sh\n'
             'case "$*" in\n'
-            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060                 mcm-auth                    Rejected        (exp. 60s)" ;;\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00000000@sip.example-operator.ru:5060                 mcm-auth                    Rejected        (exp. 60s)" ;;\n'
             '  *) echo "ok" ;;\n'
             'esac\nexit 0\n', encoding="utf-8")
         fake.chmod(0o755)
@@ -611,8 +611,8 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         (logs / "messages.log").parent.mkdir(exist_ok=True)
         (logs / "messages.log").write_text(
             "[2026-10-14 20:49:02] WARNING[1234]: res_pjsip_outbound_registration.c: "
-            "Fatal response '401' received from 'sip:00083819@95.128.224.47:5060' on "
-            "registration attempt to 'sip:00083819@95.128.224.47:5060', stopping outbound registration\n",
+            "Fatal response '401' received from 'sip:00000000@sip.example-operator.ru:5060' on "
+            "registration attempt to 'sip:00000000@sip.example-operator.ru:5060', stopping outbound registration\n",
             encoding="utf-8")
         c = run(["--check"], env=dict(self.env, ASTERISK_CMD=str(fake), AST_LOG_DIR=str(logs)))
         self.assertEqual(c.returncode, 1)
@@ -628,7 +628,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake.write_text("#!/bin/sh\necho \"No objects found.\"\nexit 0\n", encoding="utf-8")
         fake.chmod(0o755)
         env = dict(self.env, AMIPASS="amipass123", ASTERISK_CMD=str(fake), REG_TIMEOUT="1",
-                   MCM_NUMBERS="9690229926", ATS_KEEP_PROVIDER="1")
+                   MCM_NUMBERS="5550000001", ATS_KEEP_PROVIDER="1")
         p = run(["--ats", "--numbers"], env=env)
         self.assertEqual(p.returncode, 1, "код возврата должен сигнализировать о проблеме")
         self.assertIn("регистрации нет", p.stderr)
@@ -645,7 +645,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         засчитывал добавление номера даже когда API отказался его принимать."""
         _ApiHandler.response = {"ok": False, "error": "bad_number"}
         try:
-            p = run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="9690229926"))
+            p = run(["--numbers-only"], env=dict(self.env, MCM_NUMBERS="5550000001"))
         finally:
             _ApiHandler.response = {"ok": True}
         self.assertEqual(p.returncode, 1, (p.stdout + p.stderr)[-500:])
@@ -662,7 +662,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         dead_port = probe.getsockname()[1]
         probe.close()
         p = run(["--numbers-only"], env=dict(self.env, ATS_URL="http://127.0.0.1:%d" % dead_port,
-                                             ATS_UP_TIMEOUT="1", MCM_NUMBERS="9690229926"))
+                                             ATS_UP_TIMEOUT="1", MCM_NUMBERS="5550000001"))
         self.assertEqual(p.returncode, 1)
         out = p.stdout + p.stderr
         self.assertIn("не отвечает", out)
@@ -676,7 +676,7 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         fake = self.dir / "ast-rej"
         fake.write_text(
             '#!/bin/sh\ncase "$*" in\n'
-            '  *"show registrations"*) echo " mcm-reg/sip:00083819@95.128.224.47:5060  mcm-auth  Rejected  (exp. 55s)" ;;\n'
+            '  *"show registrations"*) echo " mcm-reg/sip:00000000@sip.example-operator.ru:5060  mcm-auth  Rejected  (exp. 55s)" ;;\n'
             '  *) echo "  Endpoint: mcm  Unavailable  0 of 15" ;;\nesac\nexit 0\n', encoding="utf-8")
         fake.chmod(0o755)
         logs = self.dir / "logs"
@@ -684,18 +684,18 @@ class ApiTest(unittest.TestCase, _TmpAsteriskDirMixin):
         env = dict(self.env, ASTERISK_CMD=str(fake), AST_LOG_DIR=str(logs), REG_TIMEOUT="1")
         (logs / "messages.log").write_text(
             "[Oct 14 21:31:43] WARNING[700904] res_pjsip_outbound_registration.c: No response received "
-            "from 'sip:00083819@95.128.224.47:5060' on registration attempt to "
-            "'sip:00083819@95.128.224.47:5060', retrying in '60'\n", encoding="utf-8")
+            "from 'sip:00000000@sip.example-operator.ru:5060' on registration attempt to "
+            "'sip:00000000@sip.example-operator.ru:5060', retrying in '60'\n", encoding="utf-8")
         p = run(["--check"], env=env)
         out = p.stdout + p.stderr
         self.assertIn("по логу это тишина", out)
         self.assertIn("пароль тут ни при чём", out)
-        self.assertIn("/dev/tcp/95.128.224.47/5060", out, "нужна команда пробы порта")
+        self.assertIn("/dev/tcp/sip.example-operator.ru/5060", out, "нужна команда пробы порта")
         self.assertIn("timeout 90 tcpdump", out, "и проба по pcap")
         self.assertNotEqual(p.returncode, 0)
         (logs / "messages.log").write_text(
             "[Oct 14 21:40:00] WARNING[1] res_pjsip_outbound_registration.c: Fatal response '401' received "
-            "from 'sip:00083819@95.128.224.47:5060' on registration attempt to '…', stopping outbound "
+            "from 'sip:00000000@sip.example-operator.ru:5060' on registration attempt to '…', stopping outbound "
             "registration\n", encoding="utf-8")
         q = run(["--check"], env=env)
         self.assertIn("по логу это отказ", q.stdout + q.stderr)

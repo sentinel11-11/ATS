@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, Plus, Trash2, Users, FileSpreadsheet, ShieldAlert, Search, Filter, AlertTriangle, CheckCircle, Info, Download, Check, X } from 'lucide-react';
-import { api, getToken } from '../api';
+import { api, openWithTicket } from '../api';
 import Modal from '../components/Modal';
 
 export default function Contacts({ addToast, refreshKey }) {
@@ -61,8 +61,7 @@ export default function Contacts({ addToast, refreshKey }) {
   };
 
   const handleExportCSV = () => {
-    const token = getToken();
-    window.open(`/api/v2/export/contacts.csv?token=${encodeURIComponent(token)}`, '_blank');
+    openWithTicket('/api/v2/export/contacts.csv');
   };
 
   // Toggle consent for a single contact

@@ -30,6 +30,25 @@ export function setSession(token, user) {
   }
 }
 
+// Одноразовый короткоживущий билет для URL-доступа (SSE/экспорт/записи).
+// Токен сессии в query string не передаём: URL попадает в access-логи
+// прокси и историю браузера, а билет живёт 60 секунд и гасится первым же использованием.
+export async function fetchTicket() {
+  const res = await api('/auth/ticket', { method: 'POST' });
+  if (res && res.ok && res.ticket) return res.ticket;
+  return null;
+}
+
+export async function openWithTicket(path) {
+  const ticket = await fetchTicket();
+  if (!ticket) {
+    window.dispatchEvent(new CustomEvent('ats_unauthorized'));
+    return;
+  }
+  const sep = path.includes('?') ? '&' : '?';
+  window.open(`${path}${sep}ticket=${encodeURIComponent(ticket)}`, '_blank');
+}
+
 export async function api(path, options = {}) {
   const method = options.method || (options.body ? 'POST' : 'GET');
   const headers = { ...options.headers };

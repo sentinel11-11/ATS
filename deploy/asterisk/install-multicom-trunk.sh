@@ -51,8 +51,8 @@
 #      --numbers   завести 15 номеров из письма в пул АТС (через API, см. MCM_NUMBERS)
 #      --numbers-only  только номера: файл транка не трогать, root не нужен
 #  Переменные (значения по умолчанию = данные из письма):
-#      MCM_LOGIN=00083819 MCM_HOST=95.128.224.47 MCM_PORT=5060 MCM_TRUNK=mcm
-#      MCM_NET=95.128.224.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw
+#      MCM_LOGIN=00000000 MCM_HOST=sip.example-operator.ru MCM_PORT=5060 MCM_TRUNK=mcm
+#      MCM_NET=192.0.2.0/21 MCM_RTP=10000-20000 MCM_CODECS=alaw,ulaw
 #      MCM_MAX_CHANNELS=15 REG_TIMEOUT=40 AST_DIR=/etc/asterisk
 #      AGI_DIR=/var/lib/asterisk/agi-bin ATS_ENV_FILE=/etc/ats/ats.env
 #      ATS_KEEP_PROVIDER=1 — settings.ami записать, но текущий провайдер не менять
@@ -69,11 +69,11 @@ ASTERISK_CMD="${ASTERISK_CMD:-asterisk}"
 AST_LOG_DIR="${AST_LOG_DIR:-/var/log/asterisk}"
 OUT_PATH="$AST_DIR/pjsip-multicom.conf"
 
-MCM_LOGIN="${MCM_LOGIN:-00083819}"
-MCM_HOST="${MCM_HOST:-95.128.224.47}"
+MCM_LOGIN="${MCM_LOGIN:-00000000}"
+MCM_HOST="${MCM_HOST:-sip.example-operator.ru}"
 MCM_PORT="${MCM_PORT:-5060}"
 MCM_TRUNK="${MCM_TRUNK:-mcm}"
-MCM_NET="${MCM_NET:-95.128.224.0/21}"
+MCM_NET="${MCM_NET:-192.0.2.0/21}"
 MCM_RTP="${MCM_RTP:-10000-20000}"
 MCM_CODECS="${MCM_CODECS:-}"   # пусто = выбираем сами: g729 только если модуль есть в Asterisk
 MCM_MAX_CHANNELS="${MCM_MAX_CHANNELS:-15}"
@@ -83,9 +83,9 @@ MCM_MAX_CHANNELS="${MCM_MAX_CHANNELS:-15}"
 MCM_INBOUND_DIAL="${MCM_INBOUND_DIAL:-PJSIP/101&PJSIP/102}"
 REG_TIMEOUT="${REG_TIMEOUT:-40}"
 # Номера из письма (10 цифр, без «7»): идут в пул АТС, а не в Asterisk.
-MCM_NUMBERS="${MCM_NUMBERS:-9690229926 9690229930 9690229937 9690229938 9690229942 \
-9863149340 9863149348 9863149351 9863149365 9863149385 \
-9362574897 9362577603 9362962622 9362968878 9362968932}"
+MCM_NUMBERS="${MCM_NUMBERS:-5550000001 5550000000 5550000000 5550000000 5550000000 \
+5550000011 5550000000 5550000000 5550000000 5550000000 \
+5550000021 5550000000 9362962622 9362968878 9362968932}"
 MCM_NUMBER_PROVIDER="${MCM_NUMBER_PROVIDER:-ami}"     # движок фильтрует пул строго по этому полю
 MCM_DAILY_LIMIT="${MCM_DAILY_LIMIT:-120}"
 ATS_URL="${ATS_URL:-http://127.0.0.1:9124}"

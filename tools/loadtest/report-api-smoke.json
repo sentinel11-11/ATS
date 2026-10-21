@@ -1,0 +1,20 @@
+{
+  "scenario": "api_polling",
+  "env": "self-hosted sim",
+  "users": 100,
+  "sessions": 40,
+  "pollers": 10,
+  "duration_sec": 12.0,
+  "api": {
+    "rps": 190.6,
+    "total_requests": 2287,
+    "errors": 0,
+    "error_rate": 0.0,
+    "latency_ms": {
+      "p50": 2.0,
+      "p95": 5.1,
+      "p99": 7.5,
+      "max": 16.2
+    }
+  }
+}
