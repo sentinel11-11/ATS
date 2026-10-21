@@ -428,7 +428,14 @@ CREATE TABLE IF NOT EXISTS auth_tickets(
   role        TEXT NOT NULL DEFAULT 'operator',
   exp         REAL NOT NULL,
   used        INTEGER NOT NULL DEFAULT 0,
-  created     TEXT NOT NULL DEFAULT ''
+  created     TEXT NOT NULL DEFAULT '',
+  -- Назначение билета (P1 повторного ревью): билет аутентифицирует ТОЛЬКО
+  -- объявленный при выпуске purpose+resource, а не любой защищённый маршрут.
+  -- sse → resource='events'; export → 'export/calls.csv'|'export/contacts.csv';
+  -- recording → 'call:<id>'. 'legacy' — билеты, выпущенные до этого фиксa
+  -- (миграция): ни одному purpose не соответствуют, умирают за TTL 60 с.
+  purpose     TEXT NOT NULL DEFAULT 'legacy',
+  resource    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_auth_tickets_login ON auth_tickets(login);
 -- Durable inbox вебхуков телефонии (P1-аудита, C2): событие ОБЯЗАНО быть
@@ -497,6 +504,16 @@ def _migrate(c):
     ucols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
     if "active" not in ucols:
         c.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        c.commit()
+    # Билеты до внедрения scope не имеют назначения: помечаем 'legacy', чтобы
+    # consume_ticket с явным purpose их больше не принимал (P1 повторного
+    # ревью). Живут такие строки не дольше TTL 60 с.
+    tcols = [r[1] for r in c.execute("PRAGMA table_info(auth_tickets)").fetchall()]
+    if "purpose" not in tcols:
+        c.execute("ALTER TABLE auth_tickets ADD COLUMN purpose TEXT NOT NULL DEFAULT 'legacy'")
+        c.commit()
+    if "resource" not in tcols:
+        c.execute("ALTER TABLE auth_tickets ADD COLUMN resource TEXT NOT NULL DEFAULT ''")
         c.commit()
     ccols = [r[1] for r in c.execute("PRAGMA table_info(contacts)").fetchall()]
     if "database_id" not in ccols:

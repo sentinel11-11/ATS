@@ -58,15 +58,17 @@ def _body_limit_for(path):
     return MAX_BODY_JSON
 
 
-def auth_ok(headers, query_ticket=""):
-    """URL-доступ (SSE, записи): заголовок X-Ats-Token или одноразовый ?ticket=.
+def auth_ok(headers, query_ticket="", purpose="recording", resource=""):
+    """URL-доступ (SSE, записи): заголовок X-Ats-Token или одноразовый ?ticket=
+    С СОВПАДАЮЩИМ назначением (purpose+resource).
 
-    Долгоживущий токен сессии в query string не принимается (P1-аудита:
-    URL попадает в access-логи прокси и историю браузера). Полная проверка
-    сессии/активности пользователя — api.need_auth.
+    Долгоживущий токен сессии в query string не принимается (P1-аудита).
+    Полная проверка сессии/активности пользователя и scope билета —
+    api.need_auth_url (P1 повторного ревью: билет больше не аутентифицирует
+    произвольные маршруты).
     """
     from . import api
-    sess, err, code = api.need_auth(headers, query_ticket=query_ticket)
+    sess, err, code = api.need_auth_url(headers, query_ticket, purpose, resource)
     if err:
         return False
     return True
@@ -231,7 +233,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _recording(self, call_id, query):
         qticket = (query.get("ticket") or [""])[0]
-        if not auth_ok(self.headers, qticket):
+        # Билет записи привязан к конкретному call_id (purpose='recording',
+        # resource='call:<id>'): чужой звонок и чужое назначение — отказ.
+        if not auth_ok(self.headers, qticket, purpose="recording",
+                       resource="call:{}".format(call_id)):
             return self._send_json({"ok": False, "error": "auth_required"}, 401)
         import os
         call = db.fetch1("SELECT recording FROM calls WHERE id=?", (call_id,))
@@ -256,7 +261,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"ok": False, "error": "sse_capacity",
                                     "detail": "слишком много SSE-подписчиков"}, 503)
         from . import api as _api
-        sess, err, code = _api.need_auth(self.headers, query_ticket=qticket)
+        # SSE-билет: purpose='sse', resource='events' — только handshake
+        # EventSource (P1 повторного ревью: scope у URL-билетов)
+        sess, err, code = _api.need_auth_url(self.headers, qticket, "sse", "events")
         if err:
             return self._send_json(err, code)
         login = sess["login"]

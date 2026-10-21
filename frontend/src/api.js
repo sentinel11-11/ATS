@@ -32,15 +32,19 @@ export function setSession(token, user) {
 
 // Одноразовый короткоживущий билет для URL-доступа (SSE/экспорт/записи).
 // Токен сессии в query string не передаём: URL попадает в access-логи
-// прокси и историю браузера, а билет живёт 60 секунд и гасится первым же использованием.
-export async function fetchTicket() {
-  const res = await api('/auth/ticket', { method: 'POST' });
+// прокси и в историю браузера, а билет живёт 60 секунд и гасится первым же
+// использованием. Билет выпускается ПОД КОНКРЕТНОЕ НАЗНАЧЕНИЕ
+// (purpose+resource) и не аутентифицирует другие маршруты.
+export async function fetchTicket(purpose = 'sse', resource = '') {
+  const res = await api('/auth/ticket', { method: 'POST', body: { purpose, resource } });
   if (res && res.ok && res.ticket) return res.ticket;
   return null;
 }
 
 export async function openWithTicket(path) {
-  const ticket = await fetchTicket();
+  // Экспорт: назначение — конкретный файл выгрузки (проверяется на сервере)
+  const resource = path.replace(/^\/(api\/v2|api|v2)\//, '/').replace(/^\//, '');
+  const ticket = await fetchTicket('export', resource);
   if (!ticket) {
     window.dispatchEvent(new CustomEvent('ats_unauthorized'));
     return;

@@ -68,6 +68,10 @@ class UrlTicketsTest(unittest.TestCase):
     def call(self, method, path, body=None, token="", headers=None):
         data = json.dumps(body).encode() if body is not None else None
         h = dict(headers or {})
+        # urllib без явного Content-Type шлёт form-urlencoded — сервер тогда
+        # не распарсит JSON-тело (см. этап F, api_load)
+        if data is not None and "Content-Type" not in h:
+            h["Content-Type"] = "application/json"
         if token:
             h["X-Ats-Token"] = token
         req = urllib.request.Request(self.base + path, data=data, method=method, headers=h)
@@ -77,19 +81,28 @@ class UrlTicketsTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, e.read(), dict(e.headers)
 
+    def issue(self, purpose, resource=""):
+        code, body, _ = self.call("POST", "/api/v2/auth/ticket",
+                                  {"purpose": purpose, "resource": resource},
+                                  token=self.token)
+        self.assertEqual(code, 200, "выдача билета {}: {}".format(purpose, body))
+        return json.loads(body)["ticket"]
+
     def test_ticket_issue_requires_session(self):
-        code, body, _ = self.call("POST", "/api/v2/auth/ticket")
+        code, body, _ = self.call("POST", "/api/v2/auth/ticket",
+                                  {"purpose": "sse"})
         self.assertEqual(code, 401, "выдача билета без сессии должна требовать вход")
-        code, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
+        code, body, _ = self.call("POST", "/api/v2/auth/ticket",
+                                  {"purpose": "sse"}, token=self.token)
         self.assertEqual(code, 200)
         j = json.loads(body)
         self.assertTrue(j["ok"])
         self.assertIn("ticket", j)
+        self.assertEqual(j.get("purpose"), "sse")
         self.assertLessEqual(j["expires_in"], security.TICKET_TTL + 1)
 
     def test_ticket_opens_export_once(self):
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("export", "export/calls.csv")
         code, body, _ = self.call("GET", "/api/v2/export/calls.csv?ticket=" + ticket)
         self.assertEqual(code, 200, "валидный билет обязан открывать экспорт")
         # билет одноразовый
@@ -97,8 +110,7 @@ class UrlTicketsTest(unittest.TestCase):
         self.assertEqual(code2, 401, "повторное использование билета должно отклоняться")
 
     def test_expired_ticket_rejected(self):
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("export", "export/calls.csv")
         db.q("UPDATE auth_tickets SET exp=? WHERE ticket_hash=?",
              (time.time() - 1, security.token_hash(ticket)))
         code, _, _ = self.call("GET", "/api/v2/export/calls.csv?ticket=" + ticket)
@@ -117,14 +129,12 @@ class UrlTicketsTest(unittest.TestCase):
 
     def test_ticket_is_not_a_session_token(self):
         """Билет не даёт доступ к обычным API-маршрутам через заголовок."""
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("export", "export/calls.csv")
         code, _, _ = self.call("GET", "/api/v2/dashboard", headers={"X-Ats-Token": ticket})
         self.assertEqual(code, 401, "билет — не сессия: в заголовке он не работает")
 
     def test_sse_via_ticket(self):
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("sse", "events")
         req = urllib.request.Request(self.base + "/api/v2/events?ticket=" + ticket)
         with urllib.request.urlopen(req, timeout=10) as r:
             self.assertEqual(r.status, 200)
@@ -150,8 +160,7 @@ class UrlTicketsTest(unittest.TestCase):
             headers={"X-Ats-Ticket-Actor": json.dumps({"login": "admin", "role": "admin"})})
         self.assertEqual(code, 401, "мусорный билет должен отклоняться до аудита")
         # а валидный билет с подделанным заголовком не подменяет актора
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("export", "export/calls.csv")
         self.call("GET", "/api/v2/export/calls.csv?ticket=" + ticket,
                   headers={"X-Ats-Ticket-Actor": json.dumps({"login": "fake", "role": "admin"})})
         row = db.fetch1("SELECT actor_login FROM audit_logs WHERE path LIKE '%export%' "
@@ -161,63 +170,12 @@ class UrlTicketsTest(unittest.TestCase):
                       "подделанный актор аудита: %r" % (row and row["actor_login"]))
 
     def test_ticket_ttl_and_hash_storage(self):
-        _, body, _ = self.call("POST", "/api/v2/auth/ticket", {}, token=self.token)
-        ticket = json.loads(body)["ticket"]
+        ticket = self.issue("sse", "events")
         rows = db.fetch("SELECT ticket_hash FROM auth_tickets")
         self.assertIn(security.token_hash(ticket), [r["ticket_hash"] for r in rows],
                       "в БД должен лежать хэш билета, не сам билет")
         for r in rows:
             self.assertNotIn(ticket, r["ticket_hash"])
-
-
-class SecurityHeadersAndBindTest(unittest.TestCase):
-    """P1-аудита: security-заголовки на всех ответах; loopback-умолчание."""
-
-    @classmethod
-    def setUpClass(cls):
-        # свой сервер: порядок классов в загрузчике алфавитный, полагаться на
-        # чужой setUpClass нельзя
-        from app.server import create_server
-        cls.httpd = create_server("127.0.0.1", 0)
-        cls.base = "http://127.0.0.1:{}".format(cls.httpd.server_address[1])
-        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
-        time.sleep(0.2)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.httpd.shutdown()
-
-    def _call(self, method, path):
-        req = urllib.request.Request(self.base + path, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, r.read(), dict(r.headers)
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(), dict(e.headers)
-
-    def test_security_headers_on_api_responses(self):
-        code, _, headers = self._call("GET", "/api/v2/dashboard")
-        self.assertEqual(code, 401)
-        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
-        self.assertEqual(headers.get("X-Frame-Options"), "DENY")
-        self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
-        self.assertIn("frame-ancestors 'none'", headers.get("Content-Security-Policy", ""))
-
-    def test_security_headers_on_static_ui(self):
-        code, body, headers = self._call("GET", "/ui/index.html")
-        self.assertEqual(code, 200)
-        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
-        self.assertIn("default-src 'self'", headers.get("Content-Security-Policy", ""))
-
-    def test_loopback_is_default_bind(self):
-        from app import config as cfg
-        self.assertEqual(cfg.HOST_DEFAULT, "127.0.0.1",
-                         "приложение не терминирует TLS — умолчание loopback")
-        self.assertEqual(cfg.DEFAULT_SETTINGS.get("host"), "127.0.0.1")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class SecurityHeadersAndBindTest(unittest.TestCase):

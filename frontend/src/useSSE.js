@@ -12,7 +12,7 @@ export function useSSE(onEvent) {
 
     async function connect() {
       if (cancelled) return;
-      const ticket = await fetchTicket();
+      const ticket = await fetchTicket('sse', 'events');
       if (cancelled) return;
       if (!ticket) {
         // сессия истекла / сервер недоступен — повторим с задержкой

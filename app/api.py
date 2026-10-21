@@ -115,29 +115,21 @@ def _mask_secrets(obj):
     return obj
 
 
-def need_auth(headers, role=None, query_ticket=""):
-    """Авторизация API-запроса.
+def need_auth(headers, role=None):
+    """Авторизация API-запроса: ТОЛЬКО заголовок X-Ats-Token/X-Admin-Token.
 
-    Порядок: заголовок X-Ats-Token/X-Admin-Token (полная сессия) →
-    одноразовый короткоживущий ?ticket= (только для URL-доступа: SSE,
-    экспорт, записи). Долгоживущий токен сессии в query string больше
-    НЕ принимается: URL утекает в access-логи прокси и историю браузера.
+    Одноразовые ?ticket= здесь НЕ принимаются (P1 повторного ревью): билет
+    аутентифицировал любой защищённый маршрут, включая POST-админ-действия.
+    Билеты принимаются только need_auth_url() на явно перечисленных
+    GET-маршрутах с совпадающим назначением (sse/export/recording).
+    Долгоживущий токен сессии в query string также не принимается: URL
+    утекает в access-логи прокси и историю браузера.
     """
     tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or ""
     s = None
     try:
         if tok:
             s = security.get_session(tok)
-        if not s and query_ticket:
-            s = security.consume_ticket(query_ticket)
-            if s:
-                # чтобы аудит экспортов по билету видел реального актора;
-                # клиентские подделки этого заголовка стираются в route()
-                try:
-                    headers["X-Ats-Ticket-Actor"] = json.dumps(
-                        {"login": s["login"], "role": s["role"]})
-                except Exception:
-                    pass
     except security.SessionStorageUnavailable:
         # production, fail-closed: хранилище сессий недоступно — контролируемый
         # отказ 503, а не неявный допуск по кэшу процесса (см. app/security.py)
@@ -161,6 +153,47 @@ def need_auth(headers, role=None, query_ticket=""):
         s["role"] = user["role"]
     if role and s["role"] != role and s["role"] != "admin":
         return None, {"ok": False, "error": "admin_required"}, 403
+    return s, None, None
+
+
+def need_auth_url(headers, query_ticket, purpose, resource, role=None):
+    """Авторизация URL-доступа (window.open/EventSource): сессия ИЛИ билет.
+
+    Единственное место, где одноразовый ?ticket= принимается, — и только с
+    точным совпадением purpose+resource, объявленным при выпуске билета:
+      sse       → resource 'events'        (GET /api/v2/events);
+      export    → resource 'export/<файл>' (GET /api/v2/export/*.csv);
+      recording → resource 'call:<id>'     (GET /api/v2/calls/<id>/recording).
+    Заголовок сессии работает как обычно (curl/скрипты).
+    """
+    tok = headers.get("X-Ats-Token") or headers.get("X-Admin-Token") or ""
+    if tok:
+        return need_auth(headers, role=role)
+    if not query_ticket:
+        return None, {"ok": False, "error": "auth_required"}, 401
+    try:
+        s = security.consume_ticket(query_ticket, purpose=purpose, resource=resource)
+    except security.SessionStorageUnavailable:
+        return None, {"ok": False, "error": "auth_storage_unavailable",
+                      "detail": "хранилище сессий недоступно; повторите позже"}, 503
+    except Exception:
+        return None, {"ok": False, "error": "auth_required"}, 401
+    if not s:
+        return None, {"ok": False, "error": "auth_required"}, 401
+    # Билет выпущен на пользователя — сверяем его актуальность с БД так же,
+    # как для сессии: деактивация/смена роли после выпуска билета действует.
+    user = db.fetch1("SELECT role, active FROM users WHERE login=?", (s["login"],))
+    if not user or user["active"] != 1:
+        return None, {"ok": False, "error": "auth_required"}, 401
+    s["role"] = user["role"]
+    if role and s["role"] != role and s["role"] != "admin":
+        return None, {"ok": False, "error": "admin_required"}, 403
+    # актор аудита из проверенного билета (подделку клиентом route() стирает)
+    try:
+        headers["X-Ats-Ticket-Actor"] = json.dumps(
+            {"login": s["login"], "role": s["role"]})
+    except Exception:
+        pass
     return s, None, None
 
 
@@ -325,27 +358,78 @@ def _route(method, path, body, headers):
     if p == ["health"] and method == "GET":
         return _health(), 200
     if p == ["auth", "me"]:
-        sess2, err2, code2 = need_auth(headers, query_ticket=qticket)
+        sess2, err2, code2 = need_auth(headers)
         if err2:
             return err2, code2
         user2 = db.fetch1("SELECT id FROM users WHERE login=?", (sess2["login"],))
         return {"ok": True, "user_id": user2["id"] if user2 else None,
                 "login": sess2["login"], "role": sess2["role"]}, 200
 
-    sess, err, code = need_auth(headers, query_ticket=qticket)
+    # ---------- URL-билеты: только перечисленные GET-маршруты ----------
+    # Экспорт открывается window.open с ?ticket=: единственный REST-маршрут,
+    # где билет принимается, — и только с совпадающим назначением
+    # (purpose='export', resource='export/<файл>'). Состояние он менять
+    # не может: метод строго GET (P1 повторного ревью).
+    if p[:1] == ["export"] and method == "GET":
+        sess, err, code = need_auth_url(headers, qticket, "export", "/".join(p))
+        if err:
+            return err, code
+        if sess["role"] != "admin":
+            return {"ok": False, "error": "admin_required"}, 403
+        if p == ["export", "contacts.csv"]:
+            return _export_contacts()
+        if p == ["export", "calls.csv"]:
+            return _export_calls()
+        return {"ok": False, "error": "not_found"}, 404
+
+    sess, err, code = need_auth(headers)
     if err:
         return err, code
 
     if p == ["auth", "ticket"] and method == "POST":
-        # Одноразовый билет для URL-доступа (SSE/экспорт/записи): EventSource и
-        # window.open не умеют заголовки, а токен сессии в URL больше не кладём.
+        # Одноразовый билет для URL-доступа: EventSource и window.open не
+        # умеют заголовки, а токен сессии в URL больше не кладём. Билет
+        # выпускается ПОД КОНКРЕТНОЕ НАЗНАЧЕНИЕ (purpose+resource) и не
+        # аутентифицирует ничего, кроме заявленного URL (P1 повторного
+        # ревью: раньше билет открывал любые защищённые маршруты).
+        purpose = str((body or {}).get("purpose") or "").strip().lower()
+        resource = str((body or {}).get("resource") or "").strip()
+        if purpose not in security.TICKET_PURPOSES:
+            return {"ok": False, "error": "bad_purpose",
+                    "detail": "purpose обязан быть одним из: {}".format(
+                        ", ".join(security.TICKET_PURPOSES))}, 400
+        if purpose == "sse":
+            resource = "events"
+        elif purpose == "export":
+            # нормализуем путь (/api/v2/export/calls.csv → export/calls.csv)
+            # и проверяем по whitelist известных выгрузок
+            norm = resource
+            for pref in ("/api/v2/", "/api/", "/v2/", "/"):
+                if norm.startswith(pref):
+                    norm = norm[len(pref):]
+                    break
+            if norm not in ("export/contacts.csv", "export/calls.csv"):
+                return {"ok": False, "error": "bad_resource",
+                        "detail": "допустимые ресурсы: export/contacts.csv, "
+                                  "export/calls.csv"}, 400
+            resource = norm
+        elif purpose == "recording":
+            m = re.fullmatch(r"(?:/api/v2|/v2)?/calls/(\d+)/recording", resource) or \
+                re.fullmatch(r"call:(\d+)", resource)
+            if not m:
+                return {"ok": False, "error": "bad_resource",
+                        "detail": "resource для записи: call:<id>"}, 400
+            resource = "call:{}".format(int(m.group(1)))
         try:
-            ticket = security.create_ticket(sess["login"], sess["role"])
+            ticket = security.create_ticket(sess["login"], sess["role"], purpose,
+                                            resource=resource)
+        except ValueError:
+            return {"ok": False, "error": "bad_purpose"}, 400
         except Exception:
             return {"ok": False, "error": "auth_storage_unavailable",
                     "detail": "хранилище сессий недоступно; повторите позже"}, 503
-        return {"ok": True, "ticket": ticket,
-                "expires_in": security.TICKET_TTL}, 200
+        return {"ok": True, "ticket": ticket, "purpose": purpose,
+                "resource": resource, "expires_in": security.TICKET_TTL}, 200
 
     def admin_only():
         if sess["role"] != "admin":
@@ -602,14 +686,8 @@ def _route(method, path, body, headers):
         return {"scenarios": out}, 200
 
     # ---------- только админ ----------
-    if p == ["export", "contacts.csv"]:
-        if sess["role"] != "admin":
-            return {"ok": False, "error": "admin_required"}, 403
-        return _export_contacts()
-    if p == ["export", "calls.csv"]:
-        if sess["role"] != "admin":
-            return {"ok": False, "error": "admin_required"}, 403
-        return _export_calls()
+    # (экспорты export/*.csv обслуживаются выше, в ветке URL-билетов:
+    #  GET + purpose='export' + resource='export/<файл>')
 
     if sess["role"] != "admin":
         # разрешённые операторские действия

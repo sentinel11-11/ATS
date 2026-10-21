@@ -208,15 +208,32 @@ def get_session(token: str):
 # access-логи reverse-proxy, историю браузера, скриншоты. Для SSE/экспортов/
 # записей UI сначала запрашивает билет (POST /auth/ticket, заголовок
 # X-Ats-Token), затем открывает URL с ?ticket=...: TTL короткий, ровно одно
-# использование, в БД только SHA-256. Билет — НЕ сессия: остальных API-прав
-# у него нет (need_auth принимает его только как query_ticket).
+# использование, в БД только SHA-256.
+#
+# P1 повторного ревью — НАЗНАЧЕНИЕ БИЛЕТА: раньше билет аутентифицировал
+# ЛЮБОЙ защищённый маршрут (включая POST с административным действием).
+# Теперь билет выпускается под конкретный purpose+resource и гасится только
+# при точном совпадении: sse → 'events', export → 'export/<имя>.csv',
+# recording → 'call:<id>'. Проверка назначения — ДО погашения: попытка
+# применить билет не по назначению не расходует его.
 
 TICKET_TTL = 60            # секунд: хватает на открытие ссылки/EventSource
 MAX_TICKETS_PER_USER = 30  # незакрытых билетов на пользователя (анти-спам)
+TICKET_PURPOSES = ("sse", "export", "recording")
 
 
-def create_ticket(login: str, role: str, ttl: float = TICKET_TTL) -> str:
-    """Выдать одноразовый билет (требует активной сессии — см. api /auth/ticket)."""
+def create_ticket(login: str, role: str, purpose: str,
+                  ttl: float = TICKET_TTL, resource: str = "") -> str:
+    """Выдать одноразовый билет ПОД КОНКРЕТНОЕ НАЗНАЧЕНИЕ.
+
+    purpose: 'sse' (resource всегда 'events'), 'export' (resource —
+    'export/<файл>'), 'recording' (resource — 'call:<id>').
+    Требует активной сессии — см. api /auth/ticket.
+    """
+    purpose = str(purpose or "").strip().lower()
+    if purpose not in TICKET_PURPOSES:
+        raise ValueError("bad ticket purpose: {!r}".format(purpose))
+    resource = str(resource or "").strip()[:200]
     t = secrets.token_hex(20)
     now = time.time()
     d = _db()
@@ -229,28 +246,38 @@ def create_ticket(login: str, role: str, ttl: float = TICKET_TTL) -> str:
         if stale:
             ph = ",".join("?" * len(stale))
             d.q("DELETE FROM auth_tickets WHERE ticket_hash IN ({})".format(ph), stale)
-    d.q("INSERT INTO auth_tickets(ticket_hash, login, role, exp, used, created) "
-        "VALUES(?,?,?, ?,0,?)",
-        (token_hash(t), login, role, now + ttl, time.strftime("%Y-%m-%d %H:%M:%S")))
+    d.q("INSERT INTO auth_tickets(ticket_hash, login, role, exp, used, created, "
+        "purpose, resource) VALUES(?,?,?, ?,0,?,?,?)",
+        (token_hash(t), login, role, now + ttl,
+         time.strftime("%Y-%m-%d %H:%M:%S"), purpose, resource))
     return t
 
 
-def consume_ticket(ticket: str):
-    """Погасить билет: возвращает {login, role} или None.
+def consume_ticket(ticket: str, purpose: str, resource: str = ""):
+    """Погасить билет с проверкой назначения. Возвращает {login, role} или None.
 
-    Одноразовость — атомарным UPDATE: два конкурентных запроса с одним
-    билетом не получат оба доступ (used=1 меняет затронутые строки на 0).
+    Назначение сверяется ДО атомарного UPDATE used=1: попытка применить
+    билет не по назначению (или к чужому ресурсу) отклоняется, НЕ расходуя
+    билет — легитимное использование остаётся возможным. Одноразовость на
+    совпадающем назначении — атомарным UPDATE: два конкурентных запроса с
+    одним билетом не получат оба доступ.
     """
     if not ticket:
         return None
+    purpose = str(purpose or "").strip().lower()
+    if purpose not in TICKET_PURPOSES:
+        return None
     h = token_hash(ticket)
     d = _db()
+    row = d.fetch1("SELECT login, role, used, exp, purpose, resource "
+                   "FROM auth_tickets WHERE ticket_hash=?", (h,))
+    if not row or int(row["used"] or 0) != 0 or float(row["exp"]) <= time.time():
+        return None
+    if str(row["purpose"] or "") != purpose or str(row["resource"] or "") != str(resource):
+        return None  # не по назначению: билет не расходуем
     cur = d.q("UPDATE auth_tickets SET used=1 WHERE ticket_hash=? AND used=0 AND exp>?",
               (h, time.time()))
     if not cur.rowcount:
-        return None
-    row = d.fetch1("SELECT login, role FROM auth_tickets WHERE ticket_hash=?", (h,))
-    if not row:
         return None
     return {"login": row["login"], "role": row["role"]}
 
