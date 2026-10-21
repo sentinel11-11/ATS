@@ -657,12 +657,15 @@ def set_user_password(login: str, password: str) -> bool:
     if not user:
         return False
     salt = config_secure_salt()
-    q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
-      (salt, hash_password(password, salt), user["id"]))
+    # Смена пароля + отзыв ВСЕХ сессий — одна транзакция (fail-closed,
+    # P1 повторного ревью): сбой отзыва откатывает и смену пароля, иначе
+    # украденный токен пережил бы сброс.
+    with transaction():
+        q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
+          (salt, hash_password(password, salt), user["id"]))
+        drop_sessions_for(login)
     if login == "admin":
         drop_initial_credentials()  # пароль из файла больше недействителен — файл удаляем
-    # Смена пароля инвалидирует ВСЕ сессии: украденный токен умирает мгновенно.
-    drop_sessions_for(login)
     return True
 
 

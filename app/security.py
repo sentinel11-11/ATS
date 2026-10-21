@@ -94,25 +94,39 @@ def create_token(login: str, role: str) -> str:
 
 
 def drop_token(token: str):
-    with _lock():
-        SESSIONS.pop(token, None)
+    """Отозвать токен сессии. Fail-closed (P1 повторного ревью):
+
+    сначала DELETE в persistent store, и только после успеха — кэш памяти.
+    При ошибке БД бросает SessionStorageUnavailable: вызывающий маршрут
+    обязан ответить 503, а не «ok» — иначе клиент считает выход успешным,
+    а строка сессии в БД продолжит действовать (get_session её увидит).
+    """
     try:
         _db().q("DELETE FROM sessions WHERE token_hash=?", (token_hash(token),))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        raise SessionStorageUnavailable(
+            "session revocation failed: {}".format(e)) from e
+    with _lock():
+        SESSIONS.pop(token, None)
 
 
 def drop_sessions_for(login: str):
-    """Завершить все активные сессии пользователя (смена/сброс пароля, деактивация)."""
+    """Завершить все активные сессии пользователя (смена/сброс пароля, деактивация).
+
+    Fail-closed: DELETE в БД до очистки кэша; при сбое — исключение
+    SessionStorageUnavailable (смена пароля/деактивация откатываются
+    транзакцией вызывающего — сессии не должны переживать отзыв).
+    """
     want = str(login or "").strip().lower()
+    try:
+        _db().q("DELETE FROM sessions WHERE lower(login)=?", (want,))
+    except Exception as e:  # noqa: BLE001
+        raise SessionStorageUnavailable(
+            "session revocation failed for {!r}: {}".format(login, e)) from e
     with _lock():
         for tok in [tk for tk, s in SESSIONS.items()
                     if str(s.get("login") or "").strip().lower() == want]:
             SESSIONS.pop(tok, None)
-    try:
-        _db().q("DELETE FROM sessions WHERE lower(login)=?", (want,))
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def refresh_session_role(token: str, role: str):

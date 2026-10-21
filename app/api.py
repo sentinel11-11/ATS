@@ -148,7 +148,13 @@ def need_auth(headers, role=None, query_ticket=""):
     # Пользователь мог быть деактивирован/удалён или ему сменили роль — сверяем с БД
     user = db.fetch1("SELECT role, active FROM users WHERE login=?", (s["login"],))
     if not user or user["active"] != 1:
-        security.drop_token(tok)
+        # Доступ уже запрещён (user inactive/удалён — сверка с БД выше). Отзыв
+        # токена здесь — уборка кэша: сбой БД не меняет решение, следующий
+        # запрос всё равно пройдёт эту же сверку и откажет.
+        try:
+            security.drop_token(tok)
+        except security.SessionStorageUnavailable:
+            pass
         return None, {"ok": False, "error": "auth_required"}, 401
     if user["role"] != s["role"]:
         security.refresh_session_role(tok, user["role"])
@@ -199,7 +205,17 @@ def _route(method, path, body, headers):
         _login_fail(login, ip)
         return {"ok": False, "error": "bad_login"}, 403
     if p == ["auth", "logout"]:
-        security.drop_token(headers.get("X-Ats-Token", ""))
+        # Fail-closed (P1 повторного ревью): «ok» только при подтверждённом
+        # отзыве в persistent store. Иначе клиент считает выход успешным, а
+        # строка сессии в БД продолжит действовать после восстановления БД.
+        try:
+            security.drop_token(headers.get("X-Ats-Token", ""))
+        except security.SessionStorageUnavailable as e:
+            events.publish("system", {"kind": "logout_revocation_failed",
+                                      "detail": str(e)[:200]})
+            return {"ok": False, "error": "auth_storage_unavailable",
+                    "detail": "выход не завершён: сессия не отозвана; "
+                              "повторите позже"}, 503
         return OK, 200
     if p == ["webhooks", "uis"] and method == "POST":
         s = db.get_settings()
@@ -1532,9 +1548,17 @@ def _user_save(body, sess):
                 return {"ok": False, "error": "cannot_disable_self"}, 400
             if u["role"] == "admin" and _count_admins() <= 1:
                 return {"ok": False, "error": "last_admin"}, 400
-        db.q("UPDATE users SET active=? WHERE id=?", (active, uid))
-        if not active:
-            security.drop_sessions_for(u["login"])
+        # Деактивация + отзыв сессий — одна транзакция: сбой отзыва
+        # откатывает деактивацию (fail-closed, P1 повторного ревью).
+        try:
+            with db.transaction():
+                db.q("UPDATE users SET active=? WHERE id=?", (active, uid))
+                if not active:
+                    security.drop_sessions_for(u["login"])
+        except security.SessionStorageUnavailable:
+            return {"ok": False, "error": "auth_storage_unavailable",
+                    "detail": "деактивация не завершена: сессии не отозваны; "
+                              "повторите позже"}, 503
         return {"ok": True, "id": uid}, 200
     login = str(body.get("login") or "").strip().lower()
     role = str(body.get("role") or "operator")
@@ -1564,32 +1588,43 @@ def _user_save(body, sess):
             return {"ok": False, "error": "login_exists"}, 400
         if u["role"] == "admin" and (role != "admin" or active == 0) and _count_admins() <= 1:
             return {"ok": False, "error": "last_admin"}, 400
-        db.q("UPDATE users SET login=?, role=?, active=? WHERE id=?", (login, role, active, uid))
-        if password:
-            salt = security.new_salt()
-            db.q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
-                 (salt, security.hash_password(password, salt), uid))
-        # синхронизация записи оператора (для ACD/статусов)
-        if role == "operator":
-            op = db.fetch1("SELECT id FROM operators WHERE user_id=?", (uid,))
-            if op:
-                if "vats_login" in body:
-                    db.q("UPDATE operators SET name=?, ext=?, vats_login=? WHERE id=?",
-                         (name, ext, vats_login, op["id"]))
+        # Всё редактирование + отзыв сессий при смене пароля — одна транзакция:
+        # сбой отзыва откатывает и смену пароля (украденный токен не должен
+        # переживать сброс пароля; fail-closed, P1 повторного ревью).
+        try:
+            with db.transaction():
+                db.q("UPDATE users SET login=?, role=?, active=? WHERE id=?",
+                     (login, role, active, uid))
+                if password:
+                    salt = security.new_salt()
+                    db.q("UPDATE users SET salt=?, password_hash=? WHERE id=?",
+                         (salt, security.hash_password(password, salt), uid))
+                # синхронизация записи оператора (для ACD/статусов)
+                if role == "operator":
+                    op = db.fetch1("SELECT id FROM operators WHERE user_id=?", (uid,))
+                    if op:
+                        if "vats_login" in body:
+                            db.q("UPDATE operators SET name=?, ext=?, vats_login=? WHERE id=?",
+                                 (name, ext, vats_login, op["id"]))
+                        else:
+                            db.q("UPDATE operators SET name=?, ext=? WHERE id=?",
+                                 (name, ext, op["id"]))
+                    else:
+                        db.insert("operators", {"user_id": uid, "name": name, "ext": ext,
+                                                "vats_login": vats_login,
+                                                "status": "offline", "updated": now_iso()})
                 else:
-                    db.q("UPDATE operators SET name=?, ext=? WHERE id=?",
-                         (name, ext, op["id"]))
-            else:
-                db.insert("operators", {"user_id": uid, "name": name, "ext": ext,
-                                        "vats_login": vats_login,
-                                        "status": "offline", "updated": now_iso()})
-        else:
-            db.q("DELETE FROM operators WHERE user_id=?", (uid,))
-        # если сменили пароль — завершаем старые сессии (текущая админа не трогаем)
-        if password and uid != me_id:
-            security.drop_sessions_for(u["login"])
-            if u["login"] != login:
-                security.drop_sessions_for(login)
+                    db.q("DELETE FROM operators WHERE user_id=?", (uid,))
+                # если сменили пароль — завершаем старые сессии (текущая
+                # админа не трогаем)
+                if password and uid != me_id:
+                    security.drop_sessions_for(u["login"])
+                    if u["login"] != login:
+                        security.drop_sessions_for(login)
+        except security.SessionStorageUnavailable:
+            return {"ok": False, "error": "auth_storage_unavailable",
+                    "detail": "изменение не завершено: старые сессии не отозваны; "
+                              "повторите позже"}, 503
         return {"ok": True, "id": uid}, 200
 
     # создание
@@ -1618,9 +1653,17 @@ def _user_delete(body, sess):
         return {"ok": False, "error": "cannot_delete_self"}, 400
     if u["role"] == "admin" and _count_admins() <= 1:
         return {"ok": False, "error": "last_admin"}, 400
-    db.q("DELETE FROM operators WHERE user_id=?", (uid,))
-    db.q("DELETE FROM users WHERE id=?", (uid,))
-    security.drop_sessions_for(u["login"])
+    # Удаление + отзыв сессий — одна транзакция (fail-closed, P1 повторного
+    # ревью): сбой отзыва откатывает удаление.
+    try:
+        with db.transaction():
+            db.q("DELETE FROM operators WHERE user_id=?", (uid,))
+            db.q("DELETE FROM users WHERE id=?", (uid,))
+            security.drop_sessions_for(u["login"])
+    except security.SessionStorageUnavailable:
+        return {"ok": False, "error": "auth_storage_unavailable",
+                "detail": "удаление не завершено: сессии не отозваны; "
+                          "повторите позже"}, 503
     return OK, 200
 
 
